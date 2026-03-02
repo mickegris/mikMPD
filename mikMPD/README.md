@@ -1,63 +1,16 @@
-//
-//  MPDModels.swift
-//  MPDClient
-//
-//  Created by User on 2024-04-27.
-//
+# MPD Client
 
-import Foundation
+A lightweight, fast, and clean client for Music Player Daemon (MPD) built with Swift and SwiftUI. Browse your library, control playback, manage the queue, and toggle outputs — all with a native Apple platform experience.
 
-// MARK: - MPDSong
+## Overview
+This app connects to an MPD server on your network and provides a streamlined interface for everyday listening. It focuses on quick navigation, clear metadata, and sensible defaults.
 
-/// Represents a song in the MPD library or queue.
-struct MPDSong: Identifiable, Equatable {
-    let id: String // Unique identifier for the song, e.g., file path
-    let title: String
-    let artist: String
-    let album: String
-    let duration: TimeInterval // Duration in seconds
-    
-    // Computed property for album art cache key: "artist|album"
-    var albumArtKey: String {
-        "\(artist)|\(album)"
-    }
-}
+## Features
+- Browse the MPD library by directories, files, and playlists
+- View and control the current queue and playback state
+- Track metadata display (title, artist, album, duration)
+- Album art keying using `artist|album` for artwork caching
+- Full partition and output handling
+- Lightweight models and utilities for a responsive UI
 
-// MARK: - MPDOutput
 
-/// Represents an MPD audio output device.
-struct MPDOutput: Identifiable, Equatable {
-    let id: Int // Output ID from MPD server
-    let name: String
-    let enabled: Bool
-}
-
-// MARK: - MPDBrowseItem
-
-/// Represents an item in the MPD browse view (directory, file, or playlist).
-enum MPDBrowseItem: Identifiable, Equatable {
-    case directory(name: String)
-    case file(song: MPDSong)
-    case playlist(name: String)
-    
-    var id: String {
-        switch self {
-        case .directory(let name):
-            return "dir:\(name)"
-        case .file(let song):
-            return "file:\(song.id)"
-        case .playlist(let name):
-            return "playlist:\(name)"
-        }
-    }
-}
-
-// MARK: - Utilities
-
-/// Formats a time interval as "MM:SS" string.
-func formatTime(_ duration: TimeInterval) -> String {
-    let totalSeconds = Int(duration)
-    let minutes = totalSeconds / 60
-    let seconds = totalSeconds % 60
-    return String(format: "%02d:%02d", minutes, seconds)
-}

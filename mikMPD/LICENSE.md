@@ -1,6 +1,6 @@
 MIT License
 
-Copyright (c) 2026 Mikael <mikael@frillesas.se>
+Copyright (c) 2026 Mikael <mikael at frillesas se>
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
