@@ -33,6 +33,7 @@ final class MPDStore: ObservableObject {
     @Published var currentSongID: String = ""
     @Published var bitrate:     String = ""
     @Published var audioFmt:    String = ""
+    @Published var currentPartition: String = ""
 
     // Other state
     @Published var currentSong     = MPDSong()
@@ -51,6 +52,10 @@ final class MPDStore: ObservableObject {
     @AppStorage("mpd_host")     var host:    String = "192.168.1.1"
     @AppStorage("mpd_port")     var portStr: String = "6600"
     @AppStorage("mpd_password") var password: String = ""
+    @AppStorage("rememberPartitions") private var rememberPartitions: Bool = false
+    @AppStorage("lastUsedPartitionName") private var lastUsedPartitionName: String?
+    @AppStorage("lastSwitchedPartitionName") private var lastSwitchedPartitionName: String?
+
     var port: Int { Int(portStr) ?? 6600 }
 
     // MARK: - Private
@@ -60,6 +65,7 @@ final class MPDStore: ObservableObject {
     private var displayTimer: Timer?
     private var artPending:   Set<String> = []
     private var lastSongID    = ""
+    private var isRestoringPartition = false
 
     // Seek lock: elapsed from poll is ignored until this date passes
     private var seekLockUntil: Date = .distantPast
@@ -169,6 +175,7 @@ final class MPDStore: ObservableObject {
             let ran  = s["random"]  == "1"
             let sin  = s["single"]  == "1"
             let con  = s["consume"] == "1"
+            let curPartition = s["partition"] ?? ""
 
             let song        = cRecs.first.map { MPDSong($0) } ?? MPDSong()
             let songChanged = song.songID != self.lastSongID
@@ -189,6 +196,16 @@ final class MPDStore: ObservableObject {
                 self.currentSongID = sid
                 self.bitrate      = br
                 self.audioFmt     = af
+
+                let previousPartition = self.currentPartition
+                self.currentPartition = curPartition
+                if self.rememberPartitions, (self.lastUsedPartitionName == nil || self.lastUsedPartitionName?.isEmpty == true), !curPartition.isEmpty {
+                    self.lastUsedPartitionName = curPartition
+                }
+                if self.rememberPartitions, !curPartition.isEmpty, curPartition != previousPartition {
+                    self.lastUsedPartitionName = curPartition
+                }
+
                 self.repeatMode   = rep
                 self.randomMode   = ran
                 self.singleMode   = sin
@@ -238,7 +255,10 @@ final class MPDStore: ObservableObject {
         Q.async { [weak self] in
             guard let self else { return }
             let parts = (try? self.socket.command("listpartitions"))?.compactMap { $0["partition"] } ?? []
-            DispatchQueue.main.async { self.partitions = parts }
+            DispatchQueue.main.async {
+                self.partitions = parts
+                self.restorePartitionIfNeeded()
+            }
         }
     }
 
@@ -459,9 +479,35 @@ final class MPDStore: ObservableObject {
     }
 
     func switchPartition(_ name: String) {
+        // If remembering is enabled at the time of switch, also set the remembered name
+        if rememberPartitions {
+            lastUsedPartitionName = name
+        }
+        
         Q.async { [weak self] in
             _ = try? self?.socket.command("partition \(name)")
-            DispatchQueue.main.async { self?.loadOutputs(); self?.loadPartitions() }
+            DispatchQueue.main.async {
+                self?.loadOutputs(); self?.loadPartitions()
+            }
+        }
+    }
+
+    private func restorePartitionIfNeeded() {
+        // If remember is ON but we don't yet have a remembered name, seed it from the current partition
+        if rememberPartitions, (lastUsedPartitionName == nil || lastUsedPartitionName?.isEmpty == true) {
+            lastUsedPartitionName = currentPartition
+        }
+        
+        guard rememberPartitions, let saved = lastUsedPartitionName, !saved.isEmpty else { return }
+        guard partitions.contains(saved) else { return }
+        guard !isRestoringPartition else { return }
+        // Only switch if we are not already on the saved partition
+        if currentPartition == saved { return }
+        isRestoringPartition = true
+        switchPartition(saved)
+        // Clear the flag shortly after the switch triggers reloads
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.isRestoringPartition = false
         }
     }
 

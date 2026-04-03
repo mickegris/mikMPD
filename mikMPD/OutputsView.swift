@@ -1,6 +1,7 @@
 import SwiftUI
 struct OutputsView: View {
     @EnvironmentObject var store: MPDStore
+    @AppStorage("rememberPartitions") private var rememberPartitions = false
     var body: some View {
         NavigationStack {
             List {
@@ -17,6 +18,7 @@ struct OutputsView: View {
                   footer: { Text("Toggle to enable or disable.") }
                 if !store.partitions.isEmpty {
                     Section("Partitions") {
+                        Toggle("Remember partitions between restarts", isOn: $rememberPartitions)
                         ForEach(store.partitions, id: \.self) { name in
                             Button { store.switchPartition(name) } label: {
                                 HStack {
