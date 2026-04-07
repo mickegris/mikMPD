@@ -1,6 +1,6 @@
 import SwiftUI
 
-enum LibTab: String, CaseIterable { case albums="Albums"; case artists="Artists"; case genres="Genres" }
+enum LibTab: String, CaseIterable { case albums="Albums"; case artists="Artists"; case genres="Genres"; case radio="Radio" }
 
 struct LibraryView: View {
     @State private var tab: LibTab = .albums
@@ -14,6 +14,7 @@ struct LibraryView: View {
                 case .albums:  AlbumListView()
                 case .artists: ArtistListView()
                 case .genres:  GenreListView()
+                case .radio:   RadioView()
                 }
             }
             .navigationTitle("Library").navigationBarTitleDisplayMode(.inline)
@@ -187,6 +188,58 @@ struct GenreDetailView: View {
         .listStyle(.insetGrouped)
         .navigationTitle(genre.isEmpty ? "(none)" : genre).navigationBarTitleDisplayMode(.inline)
         .onAppear{ store.listTag("album",filter:"genre",value:genre){albums=$0;loading=false} }
+    }
+}
+
+// MARK: - Radio
+struct RadioStation: Identifiable {
+    let name: String
+    let url: String
+    var id: String { url }
+}
+
+private let radioStations: [RadioStation] = [
+    RadioStation(name: "SR P1", url: "https://live1.sr.se/p1-aac-320"),
+    RadioStation(name: "SR P2 (MP3)", url: "https://live1.sr.se/p2-aac-320"),
+    RadioStation(name: "SR P2 (FLAC)", url: "https://live1.sr.se/p2-flac"),
+    RadioStation(name: "SR P3", url: "https://live1.sr.se/p3-aac-320"),
+    RadioStation(name: "SR P4 Göteborg", url: "https://live1.sr.se/p4gbg-aac-320"),
+]
+
+struct RadioView: View {
+    @EnvironmentObject var store: MPDStore
+    @State private var customURL = ""
+
+    var body: some View {
+        List {
+            Section("Stations") {
+                ForEach(radioStations) { station in
+                    Button {
+                        store.addAndPlay(uri: station.url)
+                    } label: {
+                        Label(station.name, systemImage: "antenna.radiowaves.left.and.right")
+                    }
+                }
+            }
+            Section("Custom Stream") {
+                HStack {
+                    TextField("Stream URL", text: $customURL)
+                        .keyboardType(.URL)
+                        .textContentType(.URL)
+                        .autocapitalization(.none)
+                        .disableAutocorrection(true)
+                    Button {
+                        let url = customURL.trimmingCharacters(in: .whitespaces)
+                        guard !url.isEmpty else { return }
+                        store.addAndPlay(uri: url)
+                    } label: {
+                        Image(systemName: "play.fill")
+                    }
+                    .disabled(customURL.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
     }
 }
 
