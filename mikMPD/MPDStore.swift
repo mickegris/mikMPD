@@ -258,26 +258,14 @@ final class MPDStore: ObservableObject {
                     partsMap[oid] = part
                 }
             }
-            print("DEBUG loadOutputs: got \(recs.count) records, \(outs.count) outputs")
-            if let firstRec = recs.first {
-                print("DEBUG loadOutputs: first record keys: \(firstRec.keys.sorted())")
-            }
             DispatchQueue.main.async {
                 self.outputs = outs
-                // Update outputPartitions based on name mapping
                 self.updateOutputPartitionsFromNames()
                 
-                print("DEBUG loadOutputs: partsMapEmpty=\(partsMap.isEmpty), partsMap=\(partsMap), outputs=\(outs.count), partitions=\(self.partitions.count)")
                 if !partsMap.isEmpty {
-                    // If MPD provides partition info directly, use it (future MPD versions might)
                     self.outputPartitions = partsMap
-                    print("DEBUG loadOutputs: using partition info from outputs response")
                 } else if !self.partitions.isEmpty && self.isConnected && self.outputNameToPartition.isEmpty {
-                    // Only probe if we haven't probed yet
-                    print("DEBUG loadOutputs: partition info not in outputs, will probe")
                     self.rebuildOutputPartitionsByProbing()
-                } else {
-                    print("DEBUG loadOutputs: not probing (partitions.isEmpty=\(self.partitions.isEmpty), isConnected=\(self.isConnected), already have mapping=\(!self.outputNameToPartition.isEmpty))")
                 }
             }
         }
@@ -294,7 +282,6 @@ final class MPDStore: ObservableObject {
         }
         if !map.isEmpty {
             outputPartitions = map
-            print("DEBUG updateOutputPartitionsFromNames: mapped \(map.count) outputs: \(map)")
         }
     }
 
@@ -530,59 +517,33 @@ final class MPDStore: ObservableObject {
     }
     
     func moveOutputToPartition(_ id: String, targetPartition: String) {
-        let originalPartition = currentPartition  // Remember where we started
+        let originalPartition = currentPartition
         
-        guard !targetPartition.isEmpty else {
-            print("DEBUG moveOutputToPartition: targetPartition is empty!")
-            return
-        }
-        
-        // Find the output name from the ID
-        guard let outputName = outputs.first(where: { $0.outputID == id })?.name else {
-            print("DEBUG moveOutputToPartition: could not find output with ID \(id)")
-            return
-        }
-        
-        print("DEBUG moveOutputToPartition: moving output '\(outputName)' (ID: \(id)) to partition '\(targetPartition)'")
+        guard !targetPartition.isEmpty else { return }
+        guard let outputName = outputs.first(where: { $0.outputID == id })?.name else { return }
         
         Q.async { [weak self] in
             guard let self else { return }
             do {
-                // MPD's moveoutput syntax: moveoutput <outputname>
-                // The output automatically moves to the current partition
-                // So we need to: 1) switch to target partition, 2) moveoutput, 3) switch back
-                print("DEBUG moveOutputToPartition: switching to partition '\(targetPartition)'")
                 let partCmd = "partition \(targetPartition)"
-                print("DEBUG sending command: \(partCmd)")
                 _ = try self.socket.command(partCmd)
                 Thread.sleep(forTimeInterval: 0.1)
                 
-                print("DEBUG moveOutputToPartition: executing moveoutput for '\(outputName)'")
                 let moveCmd = "moveoutput \"\(outputName.esc)\""
-                print("DEBUG sending command: \(moveCmd)")
-                let result = try self.socket.command(moveCmd)
-                print("DEBUG moveOutputToPartition: command succeeded, result=\(result)")
+                _ = try self.socket.command(moveCmd)
                 
-                // Switch back to original partition
                 if !originalPartition.isEmpty {
-                    print("DEBUG moveOutputToPartition: switching back to '\(originalPartition)'")
                     _ = try? self.socket.command("partition \(originalPartition)")
                 }
                 
-                // Update the canonical mapping to reflect the move
                 DispatchQueue.main.async {
                     self.outputNameToPartition[outputName] = targetPartition
-                    print("DEBUG moveOutputToPartition: updated mapping - '\(outputName)' now in '\(targetPartition)'")
-                    print("DEBUG moveOutputToPartition: canonical mapping is now: \(self.outputNameToPartition)")
                 }
             } catch {
-                print("DEBUG moveOutputToPartition: command failed - \(error.localizedDescription)")
-                // Try to switch back even if move failed
                 if !originalPartition.isEmpty {
                     _ = try? self.socket.command("partition \(originalPartition)")
                 }
             }
-            // Give MPD time to process
             Thread.sleep(forTimeInterval: 0.2)
             DispatchQueue.main.async {
                 self.loadOutputs()
@@ -591,9 +552,6 @@ final class MPDStore: ObservableObject {
     }
 
     func switchPartition(_ name: String) {
-        print("DEBUG switchPartition: switching to '\(name)'")
-        
-        // If remembering is enabled at the time of switch, also set the remembered name
         if rememberPartitions {
             lastUsedPartitionName = name
         }
@@ -601,17 +559,12 @@ final class MPDStore: ObservableObject {
         Q.async { [weak self] in
             guard let self else { return }
             do {
-                let result = try self.socket.command("partition \(name)")
-                print("DEBUG switchPartition: command succeeded, result=\(result)")
+                _ = try self.socket.command("partition \(name)")
                 
-                // Immediately update currentPartition on main thread
-                // Don't wait for poll, because poll might not see the partition field
                 DispatchQueue.main.async { [weak self] in
                     self?.currentPartition = name
-                    print("DEBUG switchPartition: set currentPartition to '\(name)'")
                 }
             } catch {
-                print("DEBUG switchPartition: command failed - \(error.localizedDescription)")
             }
             
             DispatchQueue.main.async { [weak self] in
@@ -647,52 +600,35 @@ final class MPDStore: ObservableObject {
         let original = currentPartition
         let allParts = partitions
         guard !allParts.isEmpty else { return }
-        print("DEBUG probing outputs by partition: parts=\(allParts), original=\(original)")
+        // print("DEBUG probing outputs by partition: parts=\(allParts), original=\(original)")
 
         Q.async { [weak self] in
             guard let self else { return }
 
-            print("DEBUG probing started")
-
-            // Map output NAME (not ID) to partition, since output IDs are reused across partitions
             var outputNameToPartition: [String: String] = [:]
 
             for part in allParts {
-                print("DEBUG probing partition: \(part)")
-                // Switch to this partition
                 _ = try? self.socket.command("partition \(part)")
-                // Fetch outputs for this partition
                 let recs = (try? self.socket.command("outputs")) ?? []
                 for r in recs {
                     if let name = r["outputname"], !name.isEmpty {
-                        // Skip if we've already seen this output name in a non-default partition
                         if let existingPart = outputNameToPartition[name], existingPart != "default" {
-                            // Already assigned to a non-default partition, keep it
                             continue
                         }
-                        // Prefer non-default partitions for assignment
                         if part != "default" || outputNameToPartition[name] == nil {
                             outputNameToPartition[name] = part
-                            print("DEBUG   output '\(name)' (ID: \(r["outputid"] ?? "?")) assigned to partition '\(part)'")
                         }
                     }
                 }
             }
 
-            // Restore original partition (best effort)
             if !original.isEmpty {
                 _ = try? self.socket.command("partition \(original)")
             }
 
             DispatchQueue.main.async {
-                // Store the canonical name-based mapping
                 self.outputNameToPartition = outputNameToPartition
-                
-                // Update the ID-based mapping for current outputs
                 self.updateOutputPartitionsFromNames()
-                
-                print("DEBUG final outputPartitions (by name): \(outputNameToPartition)")
-                print("DEBUG currentPartition=\(self.currentPartition), isConnected=\(self.isConnected)")
             }
         }
     }

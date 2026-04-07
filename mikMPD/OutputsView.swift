@@ -40,7 +40,6 @@ struct OutputsView: View {
                                     // Show move options for all partitions except the one it's currently in
                                     ForEach(store.partitions.filter { $0 != part }, id: \.self) { targetPartition in
                                         Button {
-                                            print("DEBUG: Moving output \(out.outputID) (\(out.name)) from '\(part)' to '\(targetPartition)'")
                                             store.moveOutputToPartition(out.outputID, targetPartition: targetPartition)
                                         } label: {
                                             Label("Move to \(targetPartition)", systemImage: "arrow.right.circle")

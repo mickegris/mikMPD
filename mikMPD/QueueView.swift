@@ -26,6 +26,11 @@ struct QueueView: View {
                     Button("Clear", role: .destructive) { store.clearQueue() }.disabled(store.queue.isEmpty)
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
+                    Button { store.toggleConsume() } label: {
+                        Image(systemName: store.consumeMode ? "arrow.down.circle.fill" : "arrow.down.circle")
+                    }
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
                     Button { store.loadQueue() } label: { Image(systemName: "arrow.clockwise") }
                 }
             }
