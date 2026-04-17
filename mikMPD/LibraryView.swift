@@ -200,15 +200,31 @@ struct RadioStation: Identifiable {
 
 private let radioStations: [RadioStation] = [
     RadioStation(name: "SR P1", url: "https://live1.sr.se/p1-aac-320"),
-    RadioStation(name: "SR P2 (MP3)", url: "https://live1.sr.se/p2-aac-320"),
+    RadioStation(name: "SR P2 (AAC)", url: "https://live1.sr.se/p2-aac-320"),
     RadioStation(name: "SR P2 (FLAC)", url: "https://live1.sr.se/p2-flac"),
     RadioStation(name: "SR P3", url: "https://live1.sr.se/p3-aac-320"),
     RadioStation(name: "SR P4 Göteborg", url: "https://live1.sr.se/p4gbg-aac-320"),
 ]
 
+struct SavedStation: Codable, Identifiable, Equatable {
+    let name: String
+    let url: String
+    var id: String { url }
+}
+
 struct RadioView: View {
     @EnvironmentObject var store: MPDStore
+    @AppStorage("savedRadioStations") private var savedStationsData: Data = Data()
+    @State private var customName = ""
     @State private var customURL = ""
+
+    private var savedStations: [SavedStation] {
+        (try? JSONDecoder().decode([SavedStation].self, from: savedStationsData)) ?? []
+    }
+
+    private func saveSavedStations(_ stations: [SavedStation]) {
+        savedStationsData = (try? JSONEncoder().encode(stations)) ?? Data()
+    }
 
     var body: some View {
         List {
@@ -221,7 +237,28 @@ struct RadioView: View {
                     }
                 }
             }
-            Section("Custom Stream") {
+            Section("Saved Stations") {
+                if savedStations.isEmpty {
+                    Text("No saved stations").foregroundStyle(.secondary).font(.subheadline)
+                } else {
+                    ForEach(savedStations) { station in
+                        Button {
+                            store.addAndPlay(uri: station.url)
+                        } label: {
+                            Label(station.name, systemImage: "antenna.radiowaves.left.and.right")
+                        }
+                    }
+                    .onDelete { offsets in
+                        var stations = savedStations
+                        stations.remove(atOffsets: offsets)
+                        saveSavedStations(stations)
+                    }
+                }
+            }
+            Section("Add Custom Station") {
+                TextField("Station Name", text: $customName)
+                    .autocapitalization(.none)
+                    .disableAutocorrection(true)
                 HStack {
                     TextField("Stream URL", text: $customURL)
                         .keyboardType(.URL)
@@ -230,10 +267,16 @@ struct RadioView: View {
                         .disableAutocorrection(true)
                     Button {
                         let url = customURL.trimmingCharacters(in: .whitespaces)
+                        let name = customName.trimmingCharacters(in: .whitespaces)
                         guard !url.isEmpty else { return }
-                        store.addAndPlay(uri: url)
+                        let displayName = name.isEmpty ? url : name
+                        var stations = savedStations
+                        stations.append(SavedStation(name: displayName, url: url))
+                        saveSavedStations(stations)
+                        customName = ""
+                        customURL = ""
                     } label: {
-                        Image(systemName: "play.fill")
+                        Image(systemName: "plus.circle.fill")
                     }
                     .disabled(customURL.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
