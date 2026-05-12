@@ -67,11 +67,19 @@ struct NowPlayingView: View {
                 .foregroundColor(store.isConnected ? .green : .red)
                 .font(.caption)
             
-            Text(store.isConnected 
-                ? "Connected to \(store.host):\(store.portStr)"
-                : "Not connected")
+            VStack(alignment: .leading, spacing: 2) {
+                Text(store.isConnected 
+                    ? "Connected to \(store.host):\(store.portStr)"
+                    : "Not connected")
                 .font(.caption)
                 .foregroundColor(store.isConnected ? .secondary : .red)
+
+                if store.isConnected {
+                    Text("Partition: \(store.currentPartition)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
         .padding(.horizontal)
         .padding(.vertical, 6)
