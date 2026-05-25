@@ -416,6 +416,66 @@ final class MPDStore: ObservableObject {
             self?.poll()
         }
     }
+    
+    // Non-mutating browse that just returns items via completion
+    func browse(_ path: String, completion: @escaping ([MPDBrowseItem]) -> Void) {
+        let cmd = path.isEmpty ? "lsinfo" : "lsinfo \"\(path.esc)\""
+        Q.async { [weak self] in
+            guard let self else { return }
+            let recs = (try? self.socket.command(cmd)) ?? []
+ //           print("DEBUG lsinfo \(path): \(recs)")
+            var items: [MPDBrowseItem] = []
+            for r in (try? self.socket.command(cmd)) ?? [] {
+                if let d = r["directory"]     { items.append(MPDBrowseItem(kind: .directory, path: d)) }
+                else if let f = r["file"]     { items.append(MPDBrowseItem(kind: .file,      path: f)) }
+                else if let p = r["playlist"] { items.append(MPDBrowseItem(kind: .playlist,  path: p)) }
+            }
+            DispatchQueue.main.async { completion(items) }
+        }
+    }
+
+    func probeCDTracks(completion: @escaping ([MPDBrowseItem]) -> Void) {
+        Q.async { [weak self] in
+            guard let self else { return }
+            var items: [MPDBrowseItem] = []
+            for i in 1...99 {
+                let uri = "cdda:///\(i)"
+                do {
+                    let result = try self.socket.command("addid \"\(uri.esc)\"")
+                    if let id = result.first?["Id"] ?? result.first?["id"] {
+                        _ = try? self.socket.command("deleteid \(id)")
+                        items.append(MPDBrowseItem(kind: .file, path: uri))
+                    } else {
+                        break
+                    }
+                } catch {
+                    // ACK from MPD means this track doesn't exist — we're done
+                    break
+                }
+            }
+            DispatchQueue.main.async { completion(items) }
+        }
+    }
+    
+    func playCD(track: String? = nil) {
+        let uri = track ?? "cdda:///"
+        Q.async { [weak self] in
+            guard let self else { return }
+            _ = try? self.socket.command("clear")
+            _ = try? self.socket.command("add \"\(uri.esc)\"")
+            _ = try? self.socket.command("play 0")
+            self.poll()
+            DispatchQueue.main.async { self.loadQueue() }
+        }
+    }
+
+    func addCD(track: String) {
+        Q.async { [weak self] in
+            guard let self else { return }
+            _ = try? self.socket.command("add \"\(track.esc)\"")
+            DispatchQueue.main.async { self.loadQueue() }
+        }
+    }
 
     func next() {
         Q.async { [weak self] in _ = try? self?.socket.command("next"); self?.poll() }

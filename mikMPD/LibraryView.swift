@@ -1,6 +1,6 @@
 import SwiftUI
 
-enum LibTab: String, CaseIterable { case albums="Albums"; case artists="Artists"; case genres="Genres"; case radio="Radio" }
+enum LibTab: String, CaseIterable { case albums="Albums"; case artists="Artists"; case genres="Genres"; case radio="Radio"; case cd="CD" }
 
 struct LibraryView: View {
     @State private var tab: LibTab = .albums
@@ -15,6 +15,7 @@ struct LibraryView: View {
                 case .artists: ArtistListView()
                 case .genres:  GenreListView()
                 case .radio:   RadioView()
+                case .cd:      CDView()
                 }
             }
             .navigationTitle("Library").navigationBarTitleDisplayMode(.inline)
@@ -286,6 +287,80 @@ struct RadioView: View {
     }
 }
 
+// MARK: - CD
+struct CDView: View {
+    @EnvironmentObject var store: MPDStore
+    @State private var tracks: [MPDBrowseItem] = []
+    @State private var loading = false
+
+    var body: some View {
+        List {
+            Section("Audio CD") {
+                Button {
+                    store.playCD()
+                } label: {
+                    Label("Play Whole CD", systemImage: "play.circle.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .padding(.vertical, 4)
+
+                Button {
+                    loadTracks()
+                } label: {
+                    Label("Load Track List", systemImage: "arrow.clockwise")
+                }
+                .disabled(loading)
+            }
+
+            if loading {
+                Section("Tracks") {
+                    HStack { Spacer(); ProgressView(); Spacer() }
+                }
+            } else if !tracks.isEmpty {
+                Section("Tracks") {
+                    ForEach(Array(tracks.enumerated()), id: \.offset) { i, track in
+                        Button {
+                            store.playCD(track: track.path)
+                        } label: {
+                            Label("Track \(i + 1)", systemImage: "opticaldisc")
+                        }
+                        .swipeActions(edge: .leading) {
+                            Button {
+                                store.playCD(track: track.path)
+                            } label: {
+                                Label("Play", systemImage: "play.fill")
+                            }
+                            .tint(.blue)
+                        }
+                        .swipeActions(edge: .trailing) {
+                            Button {
+                                store.addCD(track: track.path)
+                            } label: {
+                                Label("Add to Queue", systemImage: "plus")
+                            }
+                            .tint(.green)
+                        }
+                    }
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+        .navigationTitle("CD")
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear { loadTracks() }
+    }
+
+    private func loadTracks() {
+        loading = true
+        tracks = []
+        store.probeCDTracks { items in
+            tracks = items
+            loading = false
+        }
+    }
+}
+
 // MARK: - Shared helpers
 struct SongRow: View {
     let song:MPDSong
@@ -315,3 +390,4 @@ struct ArtThumb: View {
         .onAppear{ if let s=song { store.fetchArtIfNeeded(for:s) } }
     }
 }
+
