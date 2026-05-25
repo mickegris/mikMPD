@@ -91,13 +91,43 @@ final class MPDSocket {
         defer { freeaddrinfo(res) }
         let s = socket(ai.pointee.ai_family, ai.pointee.ai_socktype, ai.pointee.ai_protocol)
         guard s >= 0 else { throw MPDError.connectionFailed("socket() failed") }
-        var tv = timeval(tv_sec: 5, tv_usec: 0)
-        setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
-        setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
-        guard Darwin.connect(s, ai.pointee.ai_addr, ai.pointee.ai_addrlen) == 0 else {
+
+        // Non-blocking connect with 5s timeout
+        let flags = fcntl(s, F_GETFL)
+        _ = fcntl(s, F_SETFL, flags | O_NONBLOCK)
+        let ret = Darwin.connect(s, ai.pointee.ai_addr, ai.pointee.ai_addrlen)
+        if ret != 0 && errno != EINPROGRESS {
             Darwin.close(s)
             throw MPDError.connectionFailed("connect() failed: \(String(cString: strerror(errno)))")
         }
+        if ret != 0 {
+            var wset = fd_set()
+            withUnsafeMutablePointer(to: &wset) { ptr in
+                ptr.withMemoryRebound(to: Int32.self, capacity: Int(FD_SETSIZE) / 32) { buf in
+                    buf.initialize(repeating: 0, count: Int(FD_SETSIZE) / 32)
+                    buf[Int(s) / 32] |= Int32(1 << (Int(s) % 32))
+                }
+            }
+            var tv = timeval(tv_sec: 5, tv_usec: 0)
+            let sel = select(s + 1, nil, &wset, nil, &tv)
+            if sel <= 0 {
+                Darwin.close(s)
+                throw MPDError.connectionFailed(sel == 0 ? "Connection timed out" : "select() failed")
+            }
+            var sockErr: Int32 = 0
+            var errLen = socklen_t(MemoryLayout<Int32>.size)
+            getsockopt(s, SOL_SOCKET, SO_ERROR, &sockErr, &errLen)
+            if sockErr != 0 {
+                Darwin.close(s)
+                throw MPDError.connectionFailed("connect() failed: \(String(cString: strerror(sockErr)))")
+            }
+        }
+
+        // Restore blocking mode, set I/O timeouts
+        _ = fcntl(s, F_SETFL, flags)
+        var tv = timeval(tv_sec: 5, tv_usec: 0)
+        setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+        setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
         return s
     }
 

@@ -1,5 +1,22 @@
 import SwiftUI
 @main struct MPDClientApp: App {
     @StateObject private var store = MPDStore()
-    var body: some Scene { WindowGroup { ContentView().environmentObject(store) } }
+    @Environment(\.scenePhase) private var scenePhase
+    var body: some Scene {
+        WindowGroup {
+            ContentView().environmentObject(store)
+        }
+        .onChange(of: scenePhase) { _, phase in
+            switch phase {
+            case .background:
+                store.disconnect()
+            case .active:
+                if !store.isConnected {
+                    store.connect()
+                }
+            default:
+                break
+            }
+        }
+    }
 }

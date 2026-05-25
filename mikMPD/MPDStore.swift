@@ -75,6 +75,7 @@ final class MPDStore: ObservableObject {
     private var artPending:   Set<String> = []
     private var lastSongID    = ""
     private var isRestoringPartition = false
+    private var partitionToRestore: String?
 
     // Seek lock: elapsed from poll is ignored until this date passes
     private var seekLockUntil: Date = .distantPast
@@ -100,10 +101,16 @@ final class MPDStore: ObservableObject {
             self.connectionError = nil
         }
         let h = host, p = port, pw = password
+        let restorePartition = partitionToRestore
+        partitionToRestore = nil
         Q.async { [weak self] in
             guard let self else { return }
             do {
                 try self.socket.connect(host: h, port: p, password: pw)
+                if let part = restorePartition, !part.isEmpty {
+                    _ = try? self.socket.command("partition \"\(part.esc)\"")
+                }
+                self.poll()
                 DispatchQueue.main.async {
                     self.isConnected = true
                     self.startTimers()
@@ -119,6 +126,9 @@ final class MPDStore: ObservableObject {
 
     func disconnect() {
         stopTimers()
+        if !currentPartition.isEmpty {
+            partitionToRestore = currentPartition
+        }
         Q.async { self.socket.disconnect() }
         DispatchQueue.main.async { self.isConnected = false }
     }
