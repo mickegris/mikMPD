@@ -193,25 +193,19 @@ struct GenreDetailView: View {
 }
 
 // MARK: - Radio
-struct RadioStation: Identifiable {
-    let name: String
-    let url: String
-    var id: String { url }
-}
-
-private let radioStations: [RadioStation] = [
-    RadioStation(name: "SR P1", url: "https://live1.sr.se/p1-aac-320"),
-    RadioStation(name: "SR P2 (AAC)", url: "https://live1.sr.se/p2-aac-320"),
-    RadioStation(name: "SR P2 (FLAC)", url: "https://live1.sr.se/p2-flac"),
-    RadioStation(name: "SR P3", url: "https://live1.sr.se/p3-aac-320"),
-    RadioStation(name: "SR P4 Göteborg", url: "https://live1.sr.se/p4gbg-aac-320"),
-]
-
 struct SavedStation: Codable, Identifiable, Equatable {
     let name: String
     let url: String
     var id: String { url }
 }
+
+private let builtInStations: [SavedStation] = [
+    SavedStation(name: "SR P1", url: "https://live1.sr.se/p1-aac-320"),
+    SavedStation(name: "SR P2 (AAC)", url: "https://live1.sr.se/p2-aac-320"),
+    SavedStation(name: "SR P2 (FLAC)", url: "https://live1.sr.se/p2-flac"),
+    SavedStation(name: "SR P3", url: "https://live1.sr.se/p3-aac-320"),
+    SavedStation(name: "SR P4 Göteborg", url: "https://live1.sr.se/p4gbg-aac-320"),
+]
 
 struct RadioView: View {
     @EnvironmentObject var store: MPDStore
@@ -230,7 +224,7 @@ struct RadioView: View {
     var body: some View {
         List {
             Section("Stations") {
-                ForEach(radioStations) { station in
+                ForEach(builtInStations) { station in
                     Button {
                         store.addAndPlay(uri: station.url)
                     } label: {

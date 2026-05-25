@@ -7,7 +7,8 @@ struct SearchView: View {
     @State private var artists: [String] = []
     @State private var albums: [(artist: String, album: String)] = []
     @State private var isSearching = false
-    
+    @State private var searchTask: Task<Void, Never>?
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
@@ -32,10 +33,15 @@ struct SearchView: View {
             .navigationTitle("Search")
             .searchable(text: $query, prompt: "Songs, artists, albums…")
             .onChange(of: query) { _, newValue in
-                if !newValue.isEmpty {
-                    performSearch(newValue)
-                } else {
+                searchTask?.cancel()
+                if newValue.isEmpty {
                     clearResults()
+                } else {
+                    searchTask = Task {
+                        try? await Task.sleep(for: .milliseconds(300))
+                        guard !Task.isCancelled else { return }
+                        performSearch(newValue)
+                    }
                 }
             }
         }
@@ -148,27 +154,16 @@ struct SearchView: View {
     private func performSearch(_ query: String) {
         isSearching = true
         selectedSongs.removeAll()
-        
-        // Search for songs
+
         store.search(field: "any", query: query)
-        
-        // Search for artists whose name contains the query
-        store.listTag("artist") { allArtists in
-            self.artists = allArtists.filter { artist in
-                artist.localizedCaseInsensitiveContains(query)
-            }
-        }
-        
-        // Search for albums
-        // First, find all artists that match
+
         store.listTag("artist") { allArtists in
             let matchingArtists = allArtists.filter { $0.localizedCaseInsensitiveContains(query) }
-            
-            // Get albums for matching artists
+            self.artists = matchingArtists
+
             var albumArtistPairs: [(artist: String, album: String)] = []
             let group = DispatchGroup()
-            
-            // Add albums from matching artists
+
             for artist in matchingArtists.prefix(10) {
                 group.enter()
                 store.listTag("album", filter: "artist", value: artist) { albums in
@@ -178,18 +173,15 @@ struct SearchView: View {
                     group.leave()
                 }
             }
-            
-            // Also search for albums whose title contains the query
+
             group.enter()
             store.listTag("album") { allAlbums in
                 let matchingAlbums = allAlbums.filter { $0.localizedCaseInsensitiveContains(query) }
-                
-                // Get artist for each matching album
+
                 for album in matchingAlbums.prefix(10) {
                     group.enter()
                     store.albumSongs(album: album) { songs in
                         if let firstSong = songs.first {
-                            // Avoid duplicates
                             if !albumArtistPairs.contains(where: { $0.album == album && $0.artist == firstSong.artist }) {
                                 albumArtistPairs.append((artist: firstSong.artist, album: album))
                             }
@@ -199,7 +191,7 @@ struct SearchView: View {
                 }
                 group.leave()
             }
-            
+
             group.notify(queue: .main) {
                 self.albums = albumArtistPairs.sorted { a, b in
                     if a.artist == b.artist {
@@ -292,12 +284,7 @@ struct AlbumArtThumb: View {
             }
         }
         .onAppear {
-            // Create a temporary song to fetch art
-            let tempSong = MPDSong()
-            var song = tempSong
-            song.artist = artist
-            song.album = album
-            store.fetchArtIfNeeded(for: song)
+            store.fetchArtIfNeeded(artist: artist, album: album)
         }
     }
 }

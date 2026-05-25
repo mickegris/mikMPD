@@ -157,6 +157,9 @@ struct NowPlayingView: View {
             }
             .buttonStyle(.plain)
             .contentShape(Rectangle())
+            Button { store.stop() } label: {
+                Image(systemName: "stop.fill").font(.system(size: 33))
+            }
             Button { store.next() } label: {
                 Image(systemName: "forward.fill").font(.title)
             }

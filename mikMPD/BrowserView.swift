@@ -8,8 +8,8 @@ struct BrowserView: View {
                 else {
                     List(store.browseItems) { item in
                         BrowserRow(item:item).contentShape(Rectangle())
-                            .onTapGesture { if item.kind == .directory { store.browse(item.path) } }
                             .onTapGesture(count:2) { doubleTap(item) }
+                            .onTapGesture { if item.kind == .directory { store.browse(item.path) } }
                             .swipeActions(edge:.trailing) {
                                 Button { addItem(item) } label: { Label("Add",systemImage:"plus") }.tint(.green)
                                 if item.kind == .file {

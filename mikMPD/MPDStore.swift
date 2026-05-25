@@ -14,6 +14,7 @@
 
 import SwiftUI
 import Combine
+import Security
 
 final class MPDStore: ObservableObject {
 
@@ -44,6 +45,8 @@ final class MPDStore: ObservableObject {
     @Published var browseItems:    [MPDBrowseItem] = []
     @Published var searchResults:  [MPDSong]       = []
     @Published var albumArtCache:  [String: UIImage] = [:]
+    private var artAccessOrder: [String] = []
+    private let artCacheLimit = 100
     @Published var isConnected     = false
     @Published var connectionError: String?        = nil
     @Published var isSearching     = false
@@ -55,7 +58,10 @@ final class MPDStore: ObservableObject {
     // MARK: - Settings
     @AppStorage("mpd_host")     var host:    String = "192.168.1.1"
     @AppStorage("mpd_port")     var portStr: String = "6600"
-    @AppStorage("mpd_password") var password: String = ""
+    var password: String {
+        get { KeychainHelper.load(key: "mpd_password") ?? "" }
+        set { KeychainHelper.save(key: "mpd_password", value: newValue) }
+    }
     @AppStorage("rememberPartitions") private var rememberPartitions: Bool = false
     @AppStorage("lastUsedPartitionName") private var lastUsedPartitionName: String?
 
@@ -77,7 +83,13 @@ final class MPDStore: ObservableObject {
     private var stateLockUntil: Date = .distantPast
 
     // MARK: - Init
-    init() { connect() }
+    init() {
+        if let legacy = UserDefaults.standard.string(forKey: "mpd_password"), !legacy.isEmpty {
+            KeychainHelper.save(key: "mpd_password", value: legacy)
+            UserDefaults.standard.removeObject(forKey: "mpd_password")
+        }
+        connect()
+    }
 
     // MARK: - Connection
 
@@ -422,8 +434,6 @@ final class MPDStore: ObservableObject {
         let cmd = path.isEmpty ? "lsinfo" : "lsinfo \"\(path.esc)\""
         Q.async { [weak self] in
             guard let self else { return }
-            let recs = (try? self.socket.command(cmd)) ?? []
- //           print("DEBUG lsinfo \(path): \(recs)")
             var items: [MPDBrowseItem] = []
             for r in (try? self.socket.command(cmd)) ?? [] {
                 if let d = r["directory"]     { items.append(MPDBrowseItem(kind: .directory, path: d)) }
@@ -585,7 +595,7 @@ final class MPDStore: ObservableObject {
         Q.async { [weak self] in
             guard let self else { return }
             do {
-                let partCmd = "partition \(targetPartition)"
+                let partCmd = "partition \"\(targetPartition.esc)\""
                 _ = try self.socket.command(partCmd)
                 Thread.sleep(forTimeInterval: 0.1)
                 
@@ -593,15 +603,15 @@ final class MPDStore: ObservableObject {
                 _ = try self.socket.command(moveCmd)
                 
                 if !originalPartition.isEmpty {
-                    _ = try? self.socket.command("partition \(originalPartition)")
+                    _ = try? self.socket.command("partition \"\(originalPartition.esc)\"")
                 }
-                
+
                 DispatchQueue.main.async {
                     self.outputNameToPartition[outputName] = targetPartition
                 }
             } catch {
                 if !originalPartition.isEmpty {
-                    _ = try? self.socket.command("partition \(originalPartition)")
+                    _ = try? self.socket.command("partition \"\(originalPartition.esc)\"")
                 }
             }
             Thread.sleep(forTimeInterval: 0.2)
@@ -619,7 +629,7 @@ final class MPDStore: ObservableObject {
         Q.async { [weak self] in
             guard let self else { return }
             do {
-                _ = try self.socket.command("partition \(name)")
+                _ = try self.socket.command("partition \"\(name.esc)\"")
                 
                 DispatchQueue.main.async { [weak self] in
                     self?.currentPartition = name
@@ -668,7 +678,7 @@ final class MPDStore: ObservableObject {
             var outputNameToPartition: [String: String] = [:]
 
             for part in allParts {
-                _ = try? self.socket.command("partition \(part)")
+                _ = try? self.socket.command("partition \"\(part.esc)\"")
                 let recs = (try? self.socket.command("outputs")) ?? []
                 for r in recs {
                     if let name = r["outputname"], !name.isEmpty {
@@ -683,7 +693,7 @@ final class MPDStore: ObservableObject {
             }
 
             if !original.isEmpty {
-                _ = try? self.socket.command("partition \(original)")
+                _ = try? self.socket.command("partition \"\(original.esc)\"")
             }
 
             DispatchQueue.main.async {
@@ -697,6 +707,13 @@ final class MPDStore: ObservableObject {
 
     func fetchArtIfNeeded(for song: MPDSong) { fetchArt(for: song) }
 
+    func fetchArtIfNeeded(artist: String, album: String) {
+        var song = MPDSong()
+        song.artist = artist
+        song.album = album
+        fetchArt(for: song)
+    }
+
     private func fetchArt(for song: MPDSong) {
         let key = song.artKey
         guard !key.isEmpty, albumArtCache[key] == nil, !artPending.contains(key) else { return }
@@ -704,7 +721,23 @@ final class MPDStore: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             let img = await Self.downloadArt(artist: song.artist, album: song.album)
-            await MainActor.run { self.artPending.remove(key); if let img { self.albumArtCache[key] = img } }
+            await MainActor.run {
+                self.artPending.remove(key)
+                if let img {
+                    self.storeArt(key: key, image: img)
+                }
+            }
+        }
+    }
+
+    @MainActor
+    private func storeArt(key: String, image: UIImage) {
+        artAccessOrder.removeAll { $0 == key }
+        artAccessOrder.append(key)
+        albumArtCache[key] = image
+        while albumArtCache.count > artCacheLimit, let oldest = artAccessOrder.first {
+            artAccessOrder.removeFirst()
+            albumArtCache.removeValue(forKey: oldest)
         }
     }
 
@@ -731,6 +764,34 @@ final class MPDStore: ObservableObject {
 }
 
 extension String {
-    var esc: String { replacingOccurrences(of: "\"", with: "\\\"") }
+    var esc: String {
+        replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+    }
+}
+
+enum KeychainHelper {
+    static func save(key: String, value: String) {
+        let data = Data(value.utf8)
+        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+                                     kSecAttrAccount as String: key]
+        SecItemDelete(query as CFDictionary)
+        if !value.isEmpty {
+            var add = query
+            add[kSecValueData as String] = data
+            SecItemAdd(add as CFDictionary, nil)
+        }
+    }
+
+    static func load(key: String) -> String? {
+        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+                                     kSecAttrAccount as String: key,
+                                     kSecReturnData as String: true,
+                                     kSecMatchLimit as String: kSecMatchLimitOne]
+        var result: AnyObject?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let data = result as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
 }
 
