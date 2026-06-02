@@ -87,7 +87,7 @@ import Testing
         #expect(song.artKey == "the beatles|abbey road")
     }
 
-    @Test func equatable() {
+    @Test @MainActor func equatable() {
         let r: MPDRecord = ["file": "a.flac", "id": "1"]
         #expect(MPDSong(r) == MPDSong(r))
     }
@@ -364,7 +364,7 @@ import Testing
         #expect(station.id == "http://example.com/stream")
     }
 
-    @Test func codableRoundtrip() throws {
+    @Test @MainActor func codableRoundtrip() throws {
         let stations = [
             SavedStation(name: "Station 1", url: "http://a.com"),
             SavedStation(name: "Station 2", url: "http://b.com"),
