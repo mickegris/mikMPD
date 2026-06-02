@@ -8,7 +8,13 @@ Open `mikMPD.xcodeproj` and build the `mikMPD` scheme. No external dependencies 
 
 Deployment target: iOS 26.2+. Swift default actor isolation is set to `MainActor` in build settings.
 
-No test targets exist.
+## Tests
+
+Unit tests use the Swift Testing framework (`mikMPDTests` target). Run via **Product → Test** (Cmd+U) in Xcode.
+
+Tests cover pure logic that doesn't need an MPD server: model init/computed properties, `formatTime`, `String.esc`, `Double.clamped`, `parseMPDRecords` (MPD protocol record parsing), and `SavedStation` Codable roundtrip.
+
+`parseMPDRecords` is an internal free function extracted from `MPDSocket` specifically for testability.
 
 ## Architecture
 

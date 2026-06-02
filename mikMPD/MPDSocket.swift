@@ -167,25 +167,26 @@ final class MPDSocket {
     private func readRecords() throws -> [MPDRecord] {
         let lines = try readUntilOK()
         if lines.first?.hasPrefix("ACK") == true { throw MPDError.ack(lines[0]) }
-        return parseRecords(lines)
+        return parseMPDRecords(lines)
     }
 
-    // These keys mark the start of a new record in multi-record responses.
-    // We do NOT flush on duplicate keys — `attribute:` repeats inside output records.
-    private let recordStarters: Set<String> = ["file", "directory", "playlist", "outputid", "partition"]
+}
 
-    private func parseRecords(_ lines: [String]) -> [MPDRecord] {
-        var out: [MPDRecord] = []
-        var cur: MPDRecord = [:]
-        func flush() { if !cur.isEmpty { out.append(cur); cur = [:] } }
-        for line in lines {
-            guard let c = line.firstIndex(of: ":") else { continue }
-            let k = String(line[..<c]).trimmingCharacters(in: .whitespaces).lowercased()
-            let v = String(line[line.index(after: c)...]).trimmingCharacters(in: .whitespaces)
-            if recordStarters.contains(k) { flush() }
-            cur[k] = v
-        }
-        flush()
-        return out
+// These keys mark the start of a new record in multi-record responses.
+// We do NOT flush on duplicate keys — `attribute:` repeats inside output records.
+private let mpdRecordStarters: Set<String> = ["file", "directory", "playlist", "outputid", "partition"]
+
+func parseMPDRecords(_ lines: [String]) -> [MPDRecord] {
+    var out: [MPDRecord] = []
+    var cur: MPDRecord = [:]
+    func flush() { if !cur.isEmpty { out.append(cur); cur = [:] } }
+    for line in lines {
+        guard let c = line.firstIndex(of: ":") else { continue }
+        let k = String(line[..<c]).trimmingCharacters(in: .whitespaces).lowercased()
+        let v = String(line[line.index(after: c)...]).trimmingCharacters(in: .whitespaces)
+        if mpdRecordStarters.contains(k) { flush() }
+        cur[k] = v
     }
+    flush()
+    return out
 }
