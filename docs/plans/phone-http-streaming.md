@@ -17,6 +17,17 @@ Roon-ARC endpoint with its own queue.
 Networking (VPN / port-forward) is explicitly **out of scope**; the user reaches the
 URL via VPN or port-forwarding on their own.
 
+## ⚠️ Manual steps in Xcode — do not skip
+
+These cannot be done from code edits alone and are easy to forget:
+
+- [ ] **Enable Background Modes → Audio** (target → Signing & Capabilities → +
+      Capability → Background Modes → check "Audio, AirPlay, and Picture in
+      Picture"). **Without this, playback stops the moment the screen locks or the
+      app backgrounds** — i.e. the feature looks broken. See section 4.
+- [ ] **Set the httpd output encoder to MP3 (LAME)** on the MPD server — `AVPlayer`
+      will not play Ogg/Opus. Server config, not app code. See "Server-side notes".
+
 ## Two features to build
 
 1. **Setting** — a text field for the httpd output URL, stored in `UserDefaults`,
