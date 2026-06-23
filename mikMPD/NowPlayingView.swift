@@ -28,33 +28,33 @@ struct NowPlayingView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(spacing: 24) {
-                    connectionStatus
-                    
-                    albumArt
-                        .frame(width: 260, height: 260)
-                        .clipShape(RoundedRectangle(cornerRadius: 16))
-                        .shadow(color: .black.opacity(0.3), radius: 14, y: 6)
-                        .padding(.top, 16)
+        VStack(spacing: 0) {
+            connectionStatus
+                .padding(.top, 8)
 
-                    songInfo
+            Text("Now Playing")
+                .font(.headline)
+                .padding(.vertical, 6)
 
-                    seekBar
+            Spacer(minLength: 0)
 
-                    transportButtons
+            albumArt
+                .aspectRatio(1, contentMode: .fit)
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .shadow(color: .black.opacity(0.3), radius: 10, y: 4)
+                .padding(.horizontal, 20)
 
-                    volumeSlider
+            Spacer(minLength: 4)
 
-                    modeButtons
-
-                    audioInfo
-                }
-                .padding(.bottom, 32)
+            VStack(spacing: 8) {
+                songInfo
+                seekBar
+                transportButtons
+                volumeSlider
+                modeButtons
+                audioInfo
             }
-            .navigationTitle("Now Playing")
-            .navigationBarTitleDisplayMode(.inline)
+            .padding(.bottom, 8)
         }
         .onReceive(store.$volume) { localVolume = Double($0 < 0 ? 80 : $0) }
     }
@@ -145,23 +145,23 @@ struct NowPlayingView: View {
     }
 
     var transportButtons: some View {
-        HStack(spacing: 44) {
+        HStack(spacing: 36) {
             Button { store.previous() } label: {
-                Image(systemName: "backward.fill").font(.title)
+                Image(systemName: "backward.fill").font(.title2)
             }
             Button { store.togglePlay() } label: {
                 Image(systemName: store.isPlaying ? "pause.circle.fill" : "play.circle.fill")
-                    .font(.system(size: 66))
+                    .font(.system(size: 54))
                     .contentTransition(.symbolEffect(.replace))
                     .animation(.default, value: store.isPlaying)
             }
             .buttonStyle(.plain)
             .contentShape(Rectangle())
             Button { store.stop() } label: {
-                Image(systemName: "stop.fill").font(.system(size: 33))
+                Image(systemName: "stop.fill").font(.title2)
             }
             Button { store.next() } label: {
-                Image(systemName: "forward.fill").font(.title)
+                Image(systemName: "forward.fill").font(.title2)
             }
         }
         .foregroundStyle(.primary)
@@ -213,7 +213,7 @@ struct ModeBtn: View {
                 Text(label).font(.caption2)
             }
             .foregroundStyle(active ? Color.accentColor : Color.secondary)
-            .frame(minWidth: 60, minHeight: 48)
+            .frame(minWidth: 60, minHeight: 40)
             .background(RoundedRectangle(cornerRadius: 10)
                 .fill(active ? Color.accentColor.opacity(0.15) : Color(.systemGray6)))
         }
