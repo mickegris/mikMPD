@@ -15,6 +15,8 @@
 import SwiftUI
 import Combine
 import Security
+import AVFoundation
+import MediaPlayer
 
 final class MPDStore: ObservableObject {
 
@@ -64,6 +66,7 @@ final class MPDStore: ObservableObject {
     }
     @AppStorage("rememberPartitions") private var rememberPartitions: Bool = false
     @AppStorage("lastUsedPartitionName") private var lastUsedPartitionName: String?
+    @AppStorage("httpStreamURL") var httpStreamURL: String = ""
 
     var port: Int { Int(portStr) ?? 6600 }
 
@@ -167,6 +170,7 @@ final class MPDStore: ObservableObject {
         guard isPlaying, Date() >= seekLockUntil else { return }
         let next = elapsed + 0.1
         elapsed = duration > 0 ? min(next, duration) : next
+        if isPhoneStreaming { updateNowPlayingInfo() }
     }
 
     // MARK: - Poll (runs on Q)
@@ -240,7 +244,10 @@ final class MPDStore: ObservableObject {
                 if Date() >= self.seekLockUntil {
                     self.elapsed = elapsed
                 }
-                if songChanged { self.fetchArt(for: song) }
+                if songChanged {
+                    self.fetchArt(for: song)
+                    if self.isPhoneStreaming { self.updateNowPlayingInfo() }
+                }
             }
         } catch {
             DispatchQueue.main.async { [weak self] in
@@ -749,6 +756,105 @@ final class MPDStore: ObservableObject {
             artAccessOrder.removeFirst()
             albumArtCache.removeValue(forKey: oldest)
         }
+    }
+
+    // MARK: - Phone Streaming
+
+    @Published var isPhoneStreaming = false
+    private var streamPlayer: AVPlayer?
+    private var remoteCommandTokens: [Any] = []
+
+    func togglePhoneStream() { isPhoneStreaming ? stopPhoneStream() : startPhoneStream() }
+
+    func startPhoneStream() {
+        guard let url = Self.parseStreamURL(httpStreamURL) else { return }
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playback, mode: .default)
+            try session.setActive(true)
+        } catch {
+            connectionError = "Audio session: \(error.localizedDescription)"
+        }
+        let player = AVPlayer(url: url)
+        player.automaticallyWaitsToMinimizeStalling = true
+        streamPlayer = player
+        player.play()
+        isPhoneStreaming = true
+        UIApplication.shared.beginReceivingRemoteControlEvents()
+        setupRemoteCommands()
+        updateNowPlayingInfo()
+    }
+
+    func stopPhoneStream() {
+        streamPlayer?.pause()
+        streamPlayer = nil
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        isPhoneStreaming = false
+        tearDownRemoteCommands()
+    }
+
+    private func setupRemoteCommands() {
+        tearDownRemoteCommands()
+        let center = MPRemoteCommandCenter.shared()
+        let q = self.Q
+        let sock = self.socket
+        remoteCommandTokens.append(center.playCommand.addTarget { _ in
+            q.async { _ = try? sock.command("pause") }
+            return .success
+        })
+        remoteCommandTokens.append(center.pauseCommand.addTarget { _ in
+            q.async { _ = try? sock.command("pause") }
+            return .success
+        })
+        remoteCommandTokens.append(center.togglePlayPauseCommand.addTarget { _ in
+            q.async { _ = try? sock.command("pause") }
+            return .success
+        })
+        remoteCommandTokens.append(center.nextTrackCommand.addTarget { _ in
+            q.async { _ = try? sock.command("next") }
+            return .success
+        })
+        remoteCommandTokens.append(center.previousTrackCommand.addTarget { _ in
+            q.async { _ = try? sock.command("previous") }
+            return .success
+        })
+        center.changePlaybackPositionCommand.isEnabled = false
+    }
+
+    private func tearDownRemoteCommands() {
+        let center = MPRemoteCommandCenter.shared()
+        for token in remoteCommandTokens {
+            center.playCommand.removeTarget(token)
+            center.pauseCommand.removeTarget(token)
+            center.togglePlayPauseCommand.removeTarget(token)
+            center.nextTrackCommand.removeTarget(token)
+            center.previousTrackCommand.removeTarget(token)
+        }
+        remoteCommandTokens.removeAll()
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+    }
+
+    func updateNowPlayingInfo() {
+        guard isPhoneStreaming else { return }
+        var info = [String: Any]()
+        info[MPMediaItemPropertyTitle] = currentSong.displayTitle
+        info[MPMediaItemPropertyArtist] = currentSong.artist
+        info[MPMediaItemPropertyAlbumTitle] = currentSong.album
+        info[MPMediaItemPropertyPlaybackDuration] = duration
+        info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = elapsed
+        info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? 1.0 : 0.0
+        if let img = albumArtCache[currentSong.artKey] {
+            info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: img.size) { _ in img }
+        }
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+    }
+
+    static func parseStreamURL(_ s: String) -> URL? {
+        let t = s.trimmingCharacters(in: .whitespaces)
+        guard !t.isEmpty, let u = URL(string: t),
+              let scheme = u.scheme?.lowercased(),
+              scheme == "http" || scheme == "https" else { return nil }
+        return u
     }
 
     private static func downloadArt(artist: String, album: String) async -> UIImage? {

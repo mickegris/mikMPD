@@ -356,6 +356,37 @@ import Testing
     }
 }
 
+// MARK: - parseStreamURL
+
+@Suite struct ParseStreamURLTests {
+    @Test func validHTTPURL() {
+        let url = MPDStore.parseStreamURL("http://klova.frillesas.se:55441/")
+        #expect(url?.absoluteString == "http://klova.frillesas.se:55441/")
+    }
+
+    @Test func validHTTPSURL() {
+        let url = MPDStore.parseStreamURL("https://example.com/stream")
+        #expect(url?.absoluteString == "https://example.com/stream")
+    }
+
+    @Test func emptyString() {
+        #expect(MPDStore.parseStreamURL("") == nil)
+    }
+
+    @Test func whitespaceOnly() {
+        #expect(MPDStore.parseStreamURL("   ") == nil)
+    }
+
+    @Test func leadingTrailingWhitespace() {
+        let url = MPDStore.parseStreamURL("  http://example.com/  ")
+        #expect(url?.absoluteString == "http://example.com/")
+    }
+
+    @Test func noScheme() {
+        #expect(MPDStore.parseStreamURL("example.com:8080/stream") == nil)
+    }
+}
+
 // MARK: - SavedStation
 
 @Suite struct SavedStationTests {
