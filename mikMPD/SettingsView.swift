@@ -19,6 +19,18 @@ struct ConnectionView: View {
                         SecureField("optional", text: $pw).multilineTextAlignment(.trailing)
                     }
                 }
+                Section("Phone Streaming") {
+                    LabeledContent("Stream URL") {
+                        TextField("http://host:port/", text: Binding(
+                            get: { store.httpStreamURL },
+                            set: { store.httpStreamURL = $0 }))
+                            .multilineTextAlignment(.trailing)
+                            .keyboardType(.URL).autocorrectionDisabled()
+                            .textInputAutocapitalization(.never)
+                    }
+                    Text("URL of an MPD httpd output. Enable \u{201C}Listen on phone\u{201D} in Now Playing to stream it to this device.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 Section {
                     Button("Connect") { store.host=host; store.portStr=port; store.password=pw; store.connect(); dismiss() }
                         .frame(maxWidth: .infinity, alignment: .center)

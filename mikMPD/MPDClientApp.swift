@@ -9,7 +9,7 @@ import SwiftUI
         .onChange(of: scenePhase) { _, phase in
             switch phase {
             case .background:
-                store.disconnect()
+                if !store.isPhoneStreaming { store.disconnect() }
             case .active:
                 if !store.isConnected {
                     store.connect()

@@ -53,6 +53,7 @@ struct NowPlayingView: View {
                 volumeSlider
                 modeButtons
                 audioInfo
+                phoneStreamToggle
             }
             .padding(.bottom, 8)
         }
@@ -196,6 +197,25 @@ struct NowPlayingView: View {
             Text(parts.joined(separator: "  ·  "))
                 .font(.caption2).foregroundStyle(.secondary)
         }
+    }
+
+    @ViewBuilder
+    var phoneStreamToggle: some View {
+        let hasURL = !store.httpStreamURL.trimmingCharacters(in: .whitespaces).isEmpty
+        Button { store.togglePhoneStream() } label: {
+            HStack(spacing: 8) {
+                Image(systemName: store.isPhoneStreaming ? "iphone.radiowaves.left.and.right" : "iphone")
+                Text(store.isPhoneStreaming ? "Streaming to phone" : "Listen on phone")
+            }
+            .font(.caption)
+            .foregroundStyle(store.isPhoneStreaming ? Color.accentColor : .secondary)
+            .padding(.horizontal, 14).padding(.vertical, 8)
+            .background(Capsule().fill(store.isPhoneStreaming
+                ? Color.accentColor.opacity(0.15) : Color(.systemGray6)))
+        }
+        .buttonStyle(.plain)
+        .disabled(!hasURL)
+        .opacity(hasURL ? 1 : 0.5)
     }
 }
 
