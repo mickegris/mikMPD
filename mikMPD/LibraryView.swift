@@ -149,7 +149,7 @@ struct ArtistDetailView: View {
     func loadAlbums(){ store.listTag("album",filter:"artist",value:artist){albums=$0;loading=false} }
     func loadWiki(){
         guard wiki==nil,!wikiLoading else{return}; wikiLoading=true
-        Task{ let t=await WikipediaService.shared.fetch(query:artist); await MainActor.run{wiki=t;wikiLoading=false} }
+        Task{ let t=await WikipediaService.shared.fetchArtist(query:artist); await MainActor.run{wiki=t;wikiLoading=false} }
     }
 }
 

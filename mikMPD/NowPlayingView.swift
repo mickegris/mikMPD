@@ -28,6 +28,7 @@ struct NowPlayingView: View {
     }
 
     var body: some View {
+        NavigationStack {
         VStack(spacing: 0) {
             connectionStatus
                 .padding(.top, 8)
@@ -58,6 +59,7 @@ struct NowPlayingView: View {
             .padding(.bottom, 8)
         }
         .onReceive(store.$volume) { localVolume = Double($0 < 0 ? 80 : $0) }
+        } // NavigationStack
     }
 
     // MARK: - Subviews
@@ -106,10 +108,22 @@ struct NowPlayingView: View {
         VStack(spacing: 4) {
             Text(song.displayTitle)
                 .font(.title2.bold()).multilineTextAlignment(.center).lineLimit(2)
-            Text(song.artist.isEmpty ? "Unknown Artist" : song.artist)
-                .font(.subheadline).foregroundStyle(.secondary)
+            if !song.artist.isEmpty {
+                NavigationLink(destination: ArtistDetailView(artist: song.artist)) {
+                    Text(song.artist)
+                        .font(.subheadline).foregroundStyle(.secondary)
+                        .underline()
+                }
+            } else {
+                Text("Unknown Artist")
+                    .font(.subheadline).foregroundStyle(.secondary)
+            }
             if !song.album.isEmpty {
-                Text(song.album).font(.caption).foregroundStyle(.secondary)
+                NavigationLink(destination: AlbumDetailView(album: song.album, artist: song.artist.isEmpty ? nil : song.artist)) {
+                    Text(song.album)
+                        .font(.caption).foregroundStyle(.secondary)
+                        .underline()
+                }
             }
         }.padding(.horizontal)
     }

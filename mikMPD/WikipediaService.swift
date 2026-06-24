@@ -8,6 +8,21 @@ actor WikipediaService {
         if let ttl = await searchTitle(query), let t = await summary(title:ttl), !t.isEmpty { cache[query]=t; return t }
         cache[query]=""; return nil
     }
+    /// Fetch with music disambiguation — tries "(band)" and "(musician)" before falling back.
+    func fetchArtist(query: String) async -> String? {
+        let key = "artist:\(query)"
+        if let c = cache[key] { return c.isEmpty ? nil : c }
+        // Try Wikipedia disambiguation titles first
+        for suffix in ["(band)", "(musician)", "(singer)", "(rapper)"] {
+            if let t = await summary(title: "\(query) \(suffix)"), !t.isEmpty { cache[key]=t; return t }
+        }
+        // Search with music context
+        if let ttl = await searchTitle("\(query) band musician music"),
+           let t = await summary(title: ttl), !t.isEmpty { cache[key]=t; return t }
+        // Fall back to plain query
+        if let t = await summary(title: query), !t.isEmpty { cache[key]=t; return t }
+        cache[key]=""; return nil
+    }
     private func summary(title: String) async -> String? {
         let enc = title.replacingOccurrences(of:" ",with:"_").addingPercentEncoding(withAllowedCharacters:.urlPathAllowed) ?? title
         guard let url=URL(string:"https://en.wikipedia.org/api/rest_v1/page/summary/\(enc)"),

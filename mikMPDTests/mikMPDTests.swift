@@ -385,6 +385,23 @@ import Testing
     @Test func noScheme() {
         #expect(MPDStore.parseStreamURL("example.com:8080/stream") == nil)
     }
+
+    @Test func schemeOnlyNoHost() {
+        #expect(MPDStore.parseStreamURL("http://") == nil)
+    }
+
+    @Test func noHostWithPath() {
+        #expect(MPDStore.parseStreamURL("http:///path") == nil)
+    }
+
+    @Test func ftpSchemeRejected() {
+        #expect(MPDStore.parseStreamURL("ftp://example.com/stream") == nil)
+    }
+
+    @Test func uppercaseScheme() {
+        let url = MPDStore.parseStreamURL("HTTP://example.com/stream")
+        #expect(url?.absoluteString == "HTTP://example.com/stream")
+    }
 }
 
 // MARK: - SavedStation

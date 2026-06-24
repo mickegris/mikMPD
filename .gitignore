@@ -1,1 +1,24 @@
 *.xcodeproj/
+
+# Build artifacts
+build/
+DerivedData/
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# macOS
+.DS_Store
+
+# Xcode
+xcuserdata/
+*.xcscmblueprint
+*.xccheckout
+
+# Swift Package Manager
+.build/
+Package.resolved
+
+# Code coverage
+*.gcno
+*.gcda
