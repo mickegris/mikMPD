@@ -106,8 +106,12 @@ final class MPDStore: ObservableObject {
             self.connectionError = nil
         }
         let h = host, p = port, pw = password
-        let restorePartition = partitionToRestore
+        // On cold start partitionToRestore is nil; fall back to persisted @AppStorage value
+        var restorePartition = partitionToRestore
         partitionToRestore = nil
+        if restorePartition == nil, rememberPartitions, let saved = lastUsedPartitionName, !saved.isEmpty {
+            restorePartition = saved
+        }
         Q.async { [weak self] in
             guard let self else { return }
             do {
@@ -766,14 +770,43 @@ final class MPDStore: ObservableObject {
         let key = song.artKey
         guard !key.isEmpty, albumArtCache[key] == nil, !artPending.contains(key) else { return }
         artPending.insert(key)
+        let file = song.file
         Task { [weak self] in
             guard let self else { return }
-            let img = await Self.downloadArt(artist: song.artist, album: song.album)
+            // Try MPD-local art first (cover.jpg/png + embedded)
+            var img: UIImage?
+            if !file.isEmpty {
+                img = await self.fetchMPDArt(file: file)
+            }
+            // Fall back to MusicBrainz/CoverArtArchive
+            if img == nil {
+                img = await Self.downloadArt(artist: song.artist, album: song.album)
+            }
             await MainActor.run {
                 self.artPending.remove(key)
                 if let img {
                     self.storeArt(key: key, image: img)
                 }
+            }
+        }
+    }
+
+    /// Fetch art from MPD via albumart (cover files) then readpicture (embedded).
+    private func fetchMPDArt(file: String) async -> UIImage? {
+        await withCheckedContinuation { cont in
+            Q.async { [weak self] in
+                guard let self else { cont.resume(returning: nil); return }
+                // albumart: directory-level cover.jpg/png + embedded (MPD 0.21+)
+                if let data = try? self.socket.albumArt(uri: file), let img = UIImage(data: data) {
+                    cont.resume(returning: img)
+                    return
+                }
+                // readpicture: embedded picture tag (MPD 0.22+)
+                if let data = try? self.socket.readPicture(uri: file), let img = UIImage(data: data) {
+                    cont.resume(returning: img)
+                    return
+                }
+                cont.resume(returning: nil)
             }
         }
     }

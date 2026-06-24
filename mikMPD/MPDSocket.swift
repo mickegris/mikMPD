@@ -170,6 +170,82 @@ final class MPDSocket {
         return parseMPDRecords(lines)
     }
 
+    // MARK: - Binary commands (album art)
+
+    /// Fetch album art via `albumart` (covers directory-level cover.jpg/png and some embedded art).
+    func albumArt(uri: String) throws -> Data? {
+        try fetchBinaryArt(command: "albumart", uri: uri)
+    }
+
+    /// Fetch embedded picture via `readpicture` (MPD 0.22+).
+    func readPicture(uri: String) throws -> Data? {
+        try fetchBinaryArt(command: "readpicture", uri: uri)
+    }
+
+    private func fetchBinaryArt(command: String, uri: String) throws -> Data? {
+        guard connected else { return nil }
+        do {
+            var result = Data()
+            var offset = 0
+            var totalSize = 0
+
+            repeat {
+                try send("\(command) \"\(uri)\" \(offset)\n")
+                let (headers, chunk) = try readBinaryResponse()
+                if chunk.isEmpty { return result.isEmpty ? nil : result }
+                if let s = headers["size"] { totalSize = Int(s) ?? 0 }
+                result.append(chunk)
+                offset = result.count
+            } while totalSize > 0 && result.count < totalSize
+
+            return result.isEmpty ? nil : result
+        } catch let error as MPDError {
+            if case .ack = error { return nil }  // no art for this song
+            disconnect(); throw error
+        }
+    }
+
+    private func readBinaryResponse() throws -> (headers: [String: String], data: Data) {
+        var headers: [String: String] = [:]
+        while true {
+            let line = try readLine()
+            if line == "OK" { return (headers, Data()) }
+            if line.hasPrefix("ACK") { throw MPDError.ack(line) }
+            guard let colon = line.firstIndex(of: ":") else { continue }
+            let key = String(line[..<colon]).trimmingCharacters(in: .whitespaces).lowercased()
+            let val = String(line[line.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
+            if key == "binary" {
+                let count = Int(val) ?? 0
+                guard count > 0 else {
+                    consumeUntilOK()
+                    return (headers, Data())
+                }
+                let data = try readExact(count)
+                consumeUntilOK()
+                return (headers, data)
+            }
+            headers[key] = val
+        }
+    }
+
+    private func readExact(_ count: Int) throws -> Data {
+        while buf.count < count {
+            var tmp = [UInt8](repeating: 0, count: max(4096, count - buf.count))
+            let n = Darwin.recv(fd, &tmp, tmp.count, 0)
+            guard n > 0 else { throw MPDError.io("recv failed") }
+            buf.append(contentsOf: tmp[..<n])
+        }
+        let result = Data(buf.prefix(count))
+        buf.removeSubrange(buf.startIndex..<buf.index(buf.startIndex, offsetBy: count))
+        return result
+    }
+
+    private func consumeUntilOK() {
+        while let line = try? readLine() {
+            if line == "OK" || line.hasPrefix("ACK") { break }
+        }
+    }
+
 }
 
 // These keys mark the start of a new record in multi-record responses.
