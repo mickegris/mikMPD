@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Build
 
-Open `mikMPD.xcodeproj` and build the `mikMPD` scheme. No external dependencies — pure SwiftUI + Foundation + Darwin.
+Open `mikMPD.xcodeproj` and build the `mikMPD` scheme. No external dependencies — pure SwiftUI + Foundation + AVFoundation + MediaPlayer + Darwin.
 
 Deployment target: iOS 26.2+. Swift default actor isolation is set to `MainActor` in build settings.
 
@@ -12,7 +12,7 @@ Deployment target: iOS 26.2+. Swift default actor isolation is set to `MainActor
 
 Unit tests use the Swift Testing framework (`mikMPDTests` target). Run via **Product → Test** (Cmd+U) in Xcode.
 
-Tests cover pure logic that doesn't need an MPD server: model init/computed properties, `formatTime`, `String.esc`, `Double.clamped`, `parseMPDRecords` (MPD protocol record parsing), and `SavedStation` Codable roundtrip.
+Tests cover pure logic that doesn't need an MPD server: model init/computed properties, `formatTime`, `String.esc`, `Double.clamped`, `parseMPDRecords` (MPD protocol record parsing), `SavedStation` Codable roundtrip, and `parseStreamURL` validation.
 
 `parseMPDRecords` is an internal free function extracted from `MPDSocket` specifically for testability.
 
@@ -45,9 +45,19 @@ This is an MPD (Music Player Daemon) client for iOS/iPadOS.
 
 MPD supports multiple partitions (independent playback zones). The store tracks `outputNameToPartition` by name (not ID, since IDs can shift). Outputs can be moved between partitions. A "remember partitions" setting restores the last-used partition on reconnect.
 
+### Phone streaming (listen on phone)
+
+`AVPlayer` plays an MPD httpd output URL on the device. The stream URL is stored in `@AppStorage("httpStreamURL")` and configured in Connection settings. A toggle in Now Playing starts/stops the stream.
+
+- **AVAudioSession**: `.playback` category enables background audio (requires `UIBackgroundModes = [audio]` in Info.plist).
+- **Lock screen metadata**: `MPNowPlayingInfoCenter` displays title, artist, album, artwork, and elapsed time. Updated every 1s poll cycle (not the 10Hz display timer) — the system extrapolates elapsed time via `playbackRate`.
+- **Lock screen controls**: `MPRemoteCommandCenter` routes play/pause/next/previous to MPD commands via the socket queue. Closures capture `Q` and `socket` (both `Sendable`) to avoid `MainActor` isolation issues.
+- **Background polling**: A `DispatchSourceTimer` on `Q` polls MPD every 2s while streaming, since `RunLoop`-based timers suspend when the app backgrounds.
+- **`parseStreamURL`**: validates http/https scheme and non-empty host. Lives on `MPDStore` as a static for testability.
+
 ### Connection lifecycle
 
-Disconnects on background, reconnects on foreground resume. Partition is restored automatically. 3-second retry on connection loss.
+Disconnects on background, reconnects on foreground resume — **unless phone streaming is active** (`isPhoneStreaming` guards the disconnect in `MPDClientApp`). Partition is restored automatically. 3-second retry on connection loss, guarded by `isReconnecting` to prevent stacking.
 
 ## Conventions
 

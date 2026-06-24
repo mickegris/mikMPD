@@ -8,7 +8,7 @@ mikMPD is today a **remote control** for MPD: it tells the server what to play o
 control client only").
 
 The MPD server has an `httpd` audio output reachable over the network (e.g.
-`http://klova.frillesas.se:55441/`). That URL is already a live, playable audio
+`http://mpd.example.com:8080/`). That URL is already a live, playable audio
 stream of whatever MPD is currently decoding. The missing piece is simply a
 **player on the phone** that "tunes in" to it. This is the coupled-listen model —
 like turning on a radio that broadcasts the home server — *not* an independent

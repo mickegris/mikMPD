@@ -1,6 +1,6 @@
 # mikMPD
 
-A lightweight iOS/iPadOS client for [Music Player Daemon](https://www.musicpd.org/) built with SwiftUI. Zero external dependencies.
+A lightweight iOS/iPadOS client for [Music Player Daemon](https://www.musicpd.org/) built with SwiftUI. Vibe coded with Claude Code.
 
 ## Features
 
@@ -19,6 +19,8 @@ A lightweight iOS/iPadOS client for [Music Player Daemon](https://www.musicpd.or
 **Queue** — View and manage the current playlist. Double-tap to jump to a song, swipe to delete, clear all, toggle consume mode.
 
 **Outputs & Partitions** — Toggle audio outputs on/off, switch between MPD partitions, move outputs between partitions via long-press context menu. Optional partition memory across reconnects.
+
+**Listen on Phone** — Stream audio from an MPD httpd output directly to the device via AVPlayer. Configure the stream URL in Connection settings, then toggle "Listen on phone" in Now Playing. Supports background playback with lock screen metadata (song title, artist, album art) and lock screen transport controls.
 
 ## Requirements
 

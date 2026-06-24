@@ -35,7 +35,7 @@ final class MPDSocket {
         guard banner.hasPrefix("OK MPD") else { disconnect(); throw MPDError.badHandshake }
         // Auth
         if !password.isEmpty {
-            try send("password \(password)\n")
+            try send("password \"\(password.esc)\"\n")
             let resp = try readUntilOK()
             if resp.first?.hasPrefix("ACK") == true { disconnect(); throw MPDError.authFailed }
         }

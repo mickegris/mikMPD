@@ -75,8 +75,10 @@ final class MPDStore: ObservableObject {
     private let Q = DispatchQueue(label: "mpd", qos: .userInteractive)
     private var pollTimer:    Timer?
     private var displayTimer: Timer?
+    private var bgPollTimer:  DispatchSourceTimer?
     private var artPending:   Set<String> = []
     private var lastSongID    = ""
+    private var isReconnecting = false
     private var isRestoringPartition = false
     private var partitionToRestore: String?
 
@@ -164,13 +166,28 @@ final class MPDStore: ObservableObject {
         displayTimer?.invalidate(); displayTimer = nil
     }
 
+    /// GCD timer on Q that keeps polling while streaming in background.
+    /// RunLoop timers are suspended when the app backgrounds; this is not.
+    private func startBgPollTimer() {
+        stopBgPollTimer()
+        let t = DispatchSource.makeTimerSource(queue: Q)
+        t.schedule(deadline: .now() + 2, repeating: 2)
+        t.setEventHandler { [weak self] in self?.poll() }
+        t.resume()
+        bgPollTimer = t
+    }
+
+    private func stopBgPollTimer() {
+        bgPollTimer?.cancel()
+        bgPollTimer = nil
+    }
+
     // Called on main thread every 0.1s
     @MainActor
     private func tickElapsed() {
         guard isPlaying, Date() >= seekLockUntil else { return }
         let next = elapsed + 0.1
         elapsed = duration > 0 ? min(next, duration) : next
-        if isPhoneStreaming { updateNowPlayingInfo() }
     }
 
     // MARK: - Poll (runs on Q)
@@ -215,19 +232,23 @@ final class MPDStore: ObservableObject {
                 
                 // Only update play/pause state if not locked
                 if Date() >= self.stateLockUntil {
-                    self.isPlaying    = (state == "play")
-                    self.isPaused     = (state == "pause")
+                    let newPlaying = (state == "play")
+                    let newPaused  = (state == "pause")
+                    if self.isPlaying != newPlaying { self.isPlaying = newPlaying }
+                    if self.isPaused  != newPaused  { self.isPaused  = newPaused }
                 }
 
-                self.duration     = dur
-                self.volume       = vol
-                self.playlistPos  = pos
-                self.currentSongID = sid
-                self.bitrate      = br
-                self.audioFmt     = af
+                // Only fire @Published setters when values actually change
+                // to avoid unnecessary SwiftUI view re-evaluations
+                if self.duration     != dur { self.duration     = dur }
+                if self.volume       != vol { self.volume       = vol }
+                if self.playlistPos  != pos { self.playlistPos  = pos }
+                if self.currentSongID != sid { self.currentSongID = sid }
+                if self.bitrate      != br  { self.bitrate      = br }
+                if self.audioFmt     != af  { self.audioFmt     = af }
 
                 let previousPartition = self.currentPartition
-                self.currentPartition = curPartition
+                if self.currentPartition != curPartition { self.currentPartition = curPartition }
                 if self.rememberPartitions, (self.lastUsedPartitionName == nil || self.lastUsedPartitionName?.isEmpty == true), !curPartition.isEmpty {
                     self.lastUsedPartitionName = curPartition
                 }
@@ -235,28 +256,38 @@ final class MPDStore: ObservableObject {
                     self.lastUsedPartitionName = curPartition
                 }
 
-                self.repeatMode   = rep
-                self.randomMode   = ran
-                self.singleMode   = sin
-                self.consumeMode  = con
-                self.currentSong  = song
+                if self.repeatMode   != rep { self.repeatMode   = rep }
+                if self.randomMode   != ran { self.randomMode   = ran }
+                if self.singleMode   != sin { self.singleMode   = sin }
+                if self.consumeMode  != con { self.consumeMode  = con }
+                if self.currentSong  != song { self.currentSong = song }
                 // Only update elapsed from poll when not seek-locked
                 if Date() >= self.seekLockUntil {
                     self.elapsed = elapsed
                 }
-                if songChanged {
-                    self.fetchArt(for: song)
-                    if self.isPhoneStreaming { self.updateNowPlayingInfo() }
-                }
+                if songChanged { self.fetchArt(for: song) }
+                if self.isPhoneStreaming { self.updateNowPlayingInfo() }
             }
         } catch {
             DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
+                guard let self, !self.isReconnecting else { return }
                 self.isConnected = false
                 self.stopTimers()
-                DispatchQueue.main.asyncAfter(deadline: .now() + 3) { self.connect() }
+                self.isReconnecting = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                    self.isReconnecting = false
+                    self.connect()
+                }
             }
         }
+    }
+
+    /// Get playlist length from status — much cheaper than fetching the full playlistinfo.
+    private func playlistLength() -> Int {
+        guard let recs = try? socket.command("status") else { return 0 }
+        var s: MPDRecord = [:]
+        for rec in recs { s.merge(rec) { _, new in new } }
+        return Int(s["playlistlength"] ?? "0") ?? 0
     }
 
     private func pollSoon() {
@@ -557,7 +588,7 @@ final class MPDStore: ObservableObject {
     func addAndPlay(uri: String) {
         Q.async { [weak self] in
             guard let self else { return }
-            let before = (try? self.socket.command("playlistinfo"))?.count ?? 0
+            let before = self.playlistLength()
             _ = try? self.socket.command("add \"\(uri.esc)\"")
             _ = try? self.socket.command("play \(before)")
             self.poll()
@@ -581,7 +612,7 @@ final class MPDStore: ObservableObject {
         Q.async { [weak self] in
             guard let self else { return }
             if replace { _ = try? self.socket.command("clear") }
-            let before = replace ? 0 : ((try? self.socket.command("playlistinfo"))?.count ?? 0)
+            let before = replace ? 0 : self.playlistLength()
             for s in songs { _ = try? self.socket.command("add \"\(s.file.esc)\"") }
             if playFirst || replace { _ = try? self.socket.command("play \(before)") }
             if playFirst || replace { self.poll() }
@@ -762,7 +793,6 @@ final class MPDStore: ObservableObject {
 
     @Published var isPhoneStreaming = false
     private var streamPlayer: AVPlayer?
-    private var remoteCommandTokens: [Any] = []
 
     func togglePhoneStream() { isPhoneStreaming ? stopPhoneStream() : startPhoneStream() }
 
@@ -774,7 +804,9 @@ final class MPDStore: ObservableObject {
             try session.setActive(true)
         } catch {
             connectionError = "Audio session: \(error.localizedDescription)"
+            return
         }
+        stopPhoneStream()
         let player = AVPlayer(url: url)
         player.automaticallyWaitsToMinimizeStalling = true
         streamPlayer = player
@@ -782,6 +814,7 @@ final class MPDStore: ObservableObject {
         isPhoneStreaming = true
         UIApplication.shared.beginReceivingRemoteControlEvents()
         setupRemoteCommands()
+        startBgPollTimer()
         updateNowPlayingInfo()
     }
 
@@ -790,6 +823,8 @@ final class MPDStore: ObservableObject {
         streamPlayer = nil
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         isPhoneStreaming = false
+        UIApplication.shared.endReceivingRemoteControlEvents()
+        stopBgPollTimer()
         tearDownRemoteCommands()
     }
 
@@ -798,39 +833,36 @@ final class MPDStore: ObservableObject {
         let center = MPRemoteCommandCenter.shared()
         let q = self.Q
         let sock = self.socket
-        remoteCommandTokens.append(center.playCommand.addTarget { _ in
+        center.playCommand.addTarget { _ in
+            q.async { _ = try? sock.command("play") }
+            return .success
+        }
+        center.pauseCommand.addTarget { _ in
+            q.async { _ = try? sock.command("pause 1") }
+            return .success
+        }
+        center.togglePlayPauseCommand.addTarget { _ in
             q.async { _ = try? sock.command("pause") }
             return .success
-        })
-        remoteCommandTokens.append(center.pauseCommand.addTarget { _ in
-            q.async { _ = try? sock.command("pause") }
-            return .success
-        })
-        remoteCommandTokens.append(center.togglePlayPauseCommand.addTarget { _ in
-            q.async { _ = try? sock.command("pause") }
-            return .success
-        })
-        remoteCommandTokens.append(center.nextTrackCommand.addTarget { _ in
+        }
+        center.nextTrackCommand.addTarget { _ in
             q.async { _ = try? sock.command("next") }
             return .success
-        })
-        remoteCommandTokens.append(center.previousTrackCommand.addTarget { _ in
+        }
+        center.previousTrackCommand.addTarget { _ in
             q.async { _ = try? sock.command("previous") }
             return .success
-        })
+        }
         center.changePlaybackPositionCommand.isEnabled = false
     }
 
     private func tearDownRemoteCommands() {
         let center = MPRemoteCommandCenter.shared()
-        for token in remoteCommandTokens {
-            center.playCommand.removeTarget(token)
-            center.pauseCommand.removeTarget(token)
-            center.togglePlayPauseCommand.removeTarget(token)
-            center.nextTrackCommand.removeTarget(token)
-            center.previousTrackCommand.removeTarget(token)
-        }
-        remoteCommandTokens.removeAll()
+        center.playCommand.removeTarget(nil)
+        center.pauseCommand.removeTarget(nil)
+        center.togglePlayPauseCommand.removeTarget(nil)
+        center.nextTrackCommand.removeTarget(nil)
+        center.previousTrackCommand.removeTarget(nil)
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
     }
 
@@ -853,7 +885,8 @@ final class MPDStore: ObservableObject {
         let t = s.trimmingCharacters(in: .whitespaces)
         guard !t.isEmpty, let u = URL(string: t),
               let scheme = u.scheme?.lowercased(),
-              scheme == "http" || scheme == "https" else { return nil }
+              scheme == "http" || scheme == "https",
+              let host = u.host, !host.isEmpty else { return nil }
         return u
     }
 
