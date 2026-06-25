@@ -77,6 +77,11 @@ final class MPDStore: ObservableObject {
     private var displayTimer: Timer?
     private var bgPollTimer:  DispatchSourceTimer?
     private var artPending:   Set<String> = []
+    private static let artDiskCacheDir: URL = {
+        let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("albumart")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }()
     private var lastSongID    = ""
     private var isReconnecting = false
     private var isRestoringPartition = false
@@ -769,6 +774,11 @@ final class MPDStore: ObservableObject {
     private func fetchArt(for song: MPDSong) {
         let key = song.artKey
         guard !key.isEmpty, albumArtCache[key] == nil, !artPending.contains(key) else { return }
+        // Check disk cache first
+        if let img = Self.loadArtFromDisk(key: key) {
+            storeArt(key: key, image: img)
+            return
+        }
         artPending.insert(key)
         let file = song.file
         Task { [weak self] in
@@ -820,6 +830,23 @@ final class MPDStore: ObservableObject {
             artAccessOrder.removeFirst()
             albumArtCache.removeValue(forKey: oldest)
         }
+        // Persist to disk cache
+        Self.saveArtToDisk(key: key, image: image)
+    }
+
+    private static func artDiskPath(key: String) -> URL {
+        let safe = key.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? key
+        return artDiskCacheDir.appendingPathComponent(safe + ".jpg")
+    }
+
+    private static func saveArtToDisk(key: String, image: UIImage) {
+        guard let data = image.jpegData(compressionQuality: 0.85) else { return }
+        try? data.write(to: artDiskPath(key: key), options: .atomic)
+    }
+
+    private static func loadArtFromDisk(key: String) -> UIImage? {
+        guard let data = try? Data(contentsOf: artDiskPath(key: key)) else { return nil }
+        return UIImage(data: data)
     }
 
     // MARK: - Phone Streaming
@@ -840,7 +867,9 @@ final class MPDStore: ObservableObject {
             return
         }
         stopPhoneStream()
-        let player = AVPlayer(url: url)
+        let item = AVPlayerItem(url: url)
+        item.preferredForwardBufferDuration = 30  // buffer 30s ahead for poor connections
+        let player = AVPlayer(playerItem: item)
         player.automaticallyWaitsToMinimizeStalling = true
         streamPlayer = player
         player.play()

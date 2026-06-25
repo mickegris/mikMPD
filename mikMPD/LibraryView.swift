@@ -85,12 +85,13 @@ struct AlbumDetailView: View {
         }
         .listStyle(.insetGrouped)
         .navigationTitle(album.isEmpty ? "(no title)" : album).navigationBarTitleDisplayMode(.inline)
-        .onAppear{ loadSongs(); loadWiki() }
+        .onAppear{ loadSongs() }
     }
-    func loadSongs(){ store.albumSongs(album:album,artist:artist){songs=$0;loading=false} }
+    func loadSongs(){ store.albumSongs(album:album,artist:artist){songs=$0;loading=false; if let s=songs.first{store.fetchArtIfNeeded(for:s)}; loadWiki()} }
     func loadWiki(){
         guard wiki==nil,!wikiLoading else{return}; wikiLoading=true
-        Task{ let t=await WikipediaService.shared.fetch(query:"\(album) album"); await MainActor.run{wiki=t;wikiLoading=false} }
+        let q = displayArtist.isEmpty ? "\(album) album" : "\(album) \(displayArtist) album"
+        Task{ let t=await WikipediaService.shared.fetch(query:q); await MainActor.run{wiki=t;wikiLoading=false} }
     }
 }
 
@@ -136,7 +137,10 @@ struct ArtistDetailView: View {
                 else {
                     ForEach(albums,id:\.self){ a in
                         NavigationLink(destination:AlbumDetailView(album:a,artist:artist)){
-                            Label(a.isEmpty ? "(no title)" : a, systemImage:"square.stack").lineLimit(2)
+                            HStack(spacing:10){
+                                ArtThumbByKey(artist:artist,album:a,size:44).cornerRadius(4)
+                                Text(a.isEmpty ? "(no title)" : a).lineLimit(2)
+                            }
                         }
                     }
                 }
@@ -368,6 +372,21 @@ struct SongRow: View {
             Spacer()
             Text(formatTime(song.duration)).font(.caption2).foregroundStyle(.secondary)
         }.padding(.vertical,2)
+    }
+}
+struct ArtThumbByKey: View {
+    @EnvironmentObject var store:MPDStore
+    let artist:String; let album:String; let size:CGFloat
+    var artKey:String{ "\(artist)|\(album)".lowercased() }
+    var body: some View {
+        Group {
+            if let img=store.albumArtCache[artKey] {
+                Image(uiImage:img).resizable().aspectRatio(contentMode:.fill).frame(width:size,height:size).clipped()
+            } else {
+                ZStack{Color(.systemGray5);Image(systemName:"square.stack").foregroundStyle(.secondary).font(.caption2)}.frame(width:size,height:size)
+            }
+        }
+        .onAppear{ store.fetchArtIfNeeded(artist:artist,album:album) }
     }
 }
 struct ArtThumb: View {
