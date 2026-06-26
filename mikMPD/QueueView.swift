@@ -47,7 +47,19 @@ struct QueueRow: View {
             }.font(.caption)
             VStack(alignment: .leading, spacing: 2) {
                 Text(song.displayTitle).font(isCurrent ? .subheadline.bold() : .subheadline).lineLimit(1)
-                if !song.artist.isEmpty { Text(song.artist).font(.caption).foregroundColor(.secondary).lineLimit(1) }
+                HStack(spacing:4){
+                    if !song.artist.isEmpty {
+                        NavigationLink(destination:ArtistDetailView(artist:song.artist)){
+                            Text(song.artist).font(.caption).foregroundColor(.secondary).lineLimit(1).underline()
+                        }.buttonStyle(.plain)
+                    }
+                    if !song.artist.isEmpty && !song.album.isEmpty { Text("·").font(.caption).foregroundColor(.secondary) }
+                    if !song.album.isEmpty {
+                        NavigationLink(destination:AlbumDetailView(album:song.album,artist:song.artist.isEmpty ? nil : song.artist)){
+                            Text(song.album).font(.caption).foregroundColor(.secondary).lineLimit(1).underline()
+                        }.buttonStyle(.plain)
+                    }
+                }
             }
             Spacer()
             Text(formatTime(song.duration)).font(.caption).foregroundColor(.secondary)

@@ -56,7 +56,11 @@ struct AlbumDetailView: View {
                         ArtThumb(song:songs.first,size:90).cornerRadius(8)
                         VStack(alignment:.leading,spacing:4){
                             Text(album.isEmpty ? "(no title)" : album).font(.headline).lineLimit(3)
-                            if !displayArtist.isEmpty { Text(displayArtist).font(.subheadline).foregroundStyle(.secondary) }
+                            if !displayArtist.isEmpty {
+                                NavigationLink(destination:ArtistDetailView(artist:displayArtist)){
+                                    Text(displayArtist).font(.subheadline).foregroundStyle(.secondary).underline()
+                                }
+                            }
                             if !loading { Text("\(songs.count) tracks · \(formatTime(songs.map(\.duration).reduce(0,+)))").font(.caption).foregroundStyle(.secondary) }
                         }
                     }
@@ -90,8 +94,8 @@ struct AlbumDetailView: View {
     func loadSongs(){ store.albumSongs(album:album,artist:artist){songs=$0;loading=false; if let s=songs.first{store.fetchArtIfNeeded(for:s)}; loadWiki()} }
     func loadWiki(){
         guard wiki==nil,!wikiLoading else{return}; wikiLoading=true
-        let q = displayArtist.isEmpty ? "\(album) album" : "\(album) \(displayArtist) album"
-        Task{ let t=await WikipediaService.shared.fetch(query:q); await MainActor.run{wiki=t;wikiLoading=false} }
+        let a = displayArtist
+        Task{ let t=await WikipediaService.shared.fetchAlbum(album:album,artist:a); await MainActor.run{wiki=t;wikiLoading=false} }
     }
 }
 
@@ -119,8 +123,24 @@ struct ArtistDetailView: View {
     let artist:String
     @State private var albums:[String]=[];@State private var loading=true
     @State private var wiki:String?=nil;@State private var wikiLoading=false;@State private var expanded=false
+    @State private var artistImage:UIImage?=nil
     var body: some View {
         List {
+            Section {
+                VStack(spacing:8){
+                    if let img=artistImage {
+                        Image(uiImage:img).resizable().aspectRatio(contentMode:.fill)
+                            .frame(width:180,height:180).clipShape(Circle())
+                    } else {
+                        ZStack{Circle().fill(Color(.systemGray5)).frame(width:180,height:180);Image(systemName:"person.fill").font(.system(size:60)).foregroundStyle(.secondary)}
+                    }
+                    Text(artist).font(.title3.bold())
+                    if !loading { Text("\(albums.count) album\(albums.count == 1 ? "" : "s")").font(.caption).foregroundStyle(.secondary) }
+                }
+                .frame(maxWidth:.infinity)
+                .padding(.vertical,8)
+                .listRowBackground(Color.clear)
+            }
             if wikiLoading { Section("About"){ HStack{Spacer();ProgressView();Spacer()} } }
             else if let w=wiki {
                 Section("About"){
@@ -148,12 +168,16 @@ struct ArtistDetailView: View {
         }
         .listStyle(.insetGrouped)
         .navigationTitle(artist.isEmpty ? "(unknown)" : artist).navigationBarTitleDisplayMode(.inline)
-        .onAppear{ loadAlbums(); loadWiki() }
+        .onAppear{ loadAlbums(); loadWiki(); loadArtistImage() }
     }
     func loadAlbums(){ store.listTag("album",filter:"artist",value:artist){albums=$0;loading=false} }
     func loadWiki(){
         guard wiki==nil,!wikiLoading else{return}; wikiLoading=true
         Task{ let t=await WikipediaService.shared.fetchArtist(query:artist); await MainActor.run{wiki=t;wikiLoading=false} }
+    }
+    func loadArtistImage(){
+        guard artistImage==nil else{return}
+        Task{ let img=await WikipediaService.shared.fetchArtistImage(query:artist); await MainActor.run{artistImage=img} }
     }
 }
 

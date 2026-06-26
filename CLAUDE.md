@@ -63,6 +63,7 @@ Disconnects on background, reconnects on foreground resume — **unless phone st
 
 - MPD command arguments are escaped via `String.esc` (backslash + quote escaping) and wrapped in quotes to prevent injection.
 - Password stored in Keychain via `KeychainHelper`; legacy migration from UserDefaults runs on init.
-- Album art keyed by `artist|album` (lowercased) with an LRU cache (100 items), fetched from MusicBrainz/CoverArtArchive.
+- Album art keyed by `artist|album` (lowercased) with an LRU cache (100 items). Fetch order: MPD-local (`albumart`/`readpicture` binary commands) → MusicBrainz/CoverArtArchive. Both in-memory and disk-cached (`Caches/albumart/`).
+- Artist/album names are clickable `NavigationLink`s across NowPlaying, Queue, Search, and Library detail views.
 - No command batching — each MPD operation is a separate `send`/`receive` cycle ("No command_list, no dual sockets").
-- `WikipediaService` is a Swift actor with its own in-memory cache.
+- `WikipediaService` is a Swift actor with in-memory and disk caches (`Caches/artistart/` for artist images). Uses music-aware disambiguation: artist lookups try Wikipedia suffix pages `(band)`, `(musician)`, etc. before falling back to exact title with music-keyword validation. Album lookups use Wikipedia naming patterns and search with artist-relevance validation. Disambiguation pages and unrelated results are rejected (blank wiki shown instead).
