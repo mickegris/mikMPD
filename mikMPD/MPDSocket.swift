@@ -190,7 +190,7 @@ final class MPDSocket {
             var totalSize = 0
 
             repeat {
-                try send("\(command) \"\(uri)\" \(offset)\n")
+                try send("\(command) \"\(uri.esc)\" \(offset)\n")
                 let (headers, chunk) = try readBinaryResponse()
                 if chunk.isEmpty { return result.isEmpty ? nil : result }
                 if let s = headers["size"] { totalSize = Int(s) ?? 0 }

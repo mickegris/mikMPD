@@ -230,14 +230,17 @@ struct SearchRow: View {
                 
                 HStack(spacing: 4) {
                     if !song.artist.isEmpty {
-                        Text(song.artist)
-                            .foregroundStyle(.secondary)
+                        NavigationLink(destination:ArtistDetailView(artist:song.artist)){
+                            Text(song.artist).foregroundStyle(.secondary).underline()
+                        }.buttonStyle(.plain)
+                    }
+                    if !song.artist.isEmpty && !song.album.isEmpty {
+                        Text("·").foregroundStyle(.secondary)
                     }
                     if !song.album.isEmpty {
-                        Text("·")
-                            .foregroundStyle(.secondary)
-                        Text(song.album)
-                            .foregroundStyle(.secondary)
+                        NavigationLink(destination:AlbumDetailView(album:song.album,artist:song.artist.isEmpty ? nil : song.artist)){
+                            Text(song.album).foregroundStyle(.secondary).underline()
+                        }.buttonStyle(.plain)
                     }
                 }
                 .font(.caption)
