@@ -201,7 +201,20 @@ final class MPDStore: ObservableObject {
 
     // MARK: - Poll (runs on Q)
     private func poll() {
-        guard socket.connected else { return }
+        guard socket.connected else {
+            // Socket was disconnected by a failed command — trigger reconnect
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.isConnected, !self.isReconnecting else { return }
+                self.isConnected = false
+                self.stopTimers()
+                self.isReconnecting = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                    self.isReconnecting = false
+                    self.connect()
+                }
+            }
+            return
+        }
         do {
             // Two separate commands — simple and correct
             let sRecs = try socket.command("status")

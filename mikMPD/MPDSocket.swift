@@ -57,6 +57,8 @@ final class MPDSocket {
             try send(cmd + "\n")
             return try readRecords()
         } catch {
+            // ACK is a protocol-level rejection — the connection is still valid
+            if case MPDError.ack = error { throw error }
             disconnect(); throw error
         }
     }
@@ -75,6 +77,7 @@ final class MPDSocket {
                 return String(line[line.index(after: c)...]).trimmingCharacters(in: .whitespaces)
             }
         } catch {
+            if case MPDError.ack = error { throw error }
             disconnect(); throw error
         }
     }
