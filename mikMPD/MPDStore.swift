@@ -696,6 +696,7 @@ final class MPDStore: ObservableObject {
             
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
+                self.loadQueue()
                 self.loadOutputs()
                 self.loadPartitions()
             }
