@@ -43,7 +43,6 @@ struct NowPlayingView: View {
                 .aspectRatio(1, contentMode: .fit)
                 .clipShape(RoundedRectangle(cornerRadius: 14))
                 .shadow(color: .black.opacity(0.3), radius: 10, y: 4)
-                .padding(.horizontal, 20)
 
             Spacer(minLength: 4)
 
@@ -58,6 +57,7 @@ struct NowPlayingView: View {
             }
             .padding(.bottom, 8)
         }
+        .padding(.horizontal, 20)
         .onReceive(store.$volume) { localVolume = Double($0 < 0 ? 80 : $0) }
         } // NavigationStack
     }
@@ -95,7 +95,9 @@ struct NowPlayingView: View {
     @ViewBuilder
     var albumArt: some View {
         if let img = store.albumArtCache[song.artKey] {
-            Image(uiImage: img).resizable().aspectRatio(contentMode: .fill)
+            Color.clear.overlay {
+                Image(uiImage: img).resizable().aspectRatio(contentMode: .fill)
+            }.clipped()
         } else {
             ZStack {
                 RoundedRectangle(cornerRadius: 16).fill(Color(.systemGray5))
@@ -125,7 +127,7 @@ struct NowPlayingView: View {
                         .underline()
                 }
             }
-        }.padding(.horizontal)
+        }
     }
 
     var seekBar: some View {
@@ -146,7 +148,6 @@ struct NowPlayingView: View {
                     }
                 }
             )
-            .padding(.horizontal)
             .tint(.primary)
 
             HStack {
@@ -155,7 +156,6 @@ struct NowPlayingView: View {
                 Text(formatTime(store.duration))
             }
             .font(.caption).monospacedDigit().foregroundStyle(.secondary)
-            .padding(.horizontal)
         }
     }
 
@@ -189,7 +189,7 @@ struct NowPlayingView: View {
                    onEditingChanged: { if !$0 { store.setVolume(localVolume) } })
                 .tint(.gray)
             Image(systemName: "speaker.wave.3.fill").font(.caption).foregroundStyle(.secondary)
-        }.padding(.horizontal)
+        }
     }
 
     var modeButtons: some View {
