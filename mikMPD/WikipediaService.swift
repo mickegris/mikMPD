@@ -31,7 +31,7 @@ actor WikipediaService {
         return Self.musicKeywords.contains { lower.contains($0) }
     }
 
-    /// Fetch album info — searches Wikipedia and validates the result mentions the artist.
+    /// Fetch album info — searches Wikipedia and validates the result is about this album.
     func fetchAlbum(album: String, artist: String) async -> String? {
         let key = "album:\(album)|\(artist)"
         if let c = cache[key] { return c.isEmpty ? nil : c }
@@ -43,14 +43,24 @@ actor WikipediaService {
                 cache[key] = r.extract; return r.extract
             }
         }
-        // Search with artist context and validate result mentions artist or album terms
-        let searchQ = artist.isEmpty ? "\(album) album" : "\(album) \(artist) album"
-        if let ttl = await searchTitle(searchQ),
-           let r = await summaryData(title: ttl), !r.extract.isEmpty {
-            let lower = r.extract.lowercased()
-            let relevant = artist.isEmpty || lower.contains(artist.lowercased())
-                || lower.contains("album") || lower.contains("studio album")
-            if relevant { cache[key] = r.extract; return r.extract }
+        // Search with progressively looser queries
+        let albumLower = album.lowercased()
+        let artistLetters = artist.lowercased().filter(\.isLetter)
+        let searches = artist.isEmpty
+            ? ["\(album) album"]
+            : ["\(album) \(artist) album", "\(album) album"]
+        for searchQ in searches {
+            if let ttl = await searchTitle(searchQ),
+               let r = await summaryData(title: ttl), !r.extract.isEmpty {
+                let lower = r.extract.lowercased()
+                let titleLower = ttl.lowercased()
+                // Result must relate to this album, not just the artist's discography
+                let aboutAlbum = titleLower.contains(albumLower) || lower.contains(albumLower)
+                let aboutArtist = artist.isEmpty
+                    || lower.contains(artist.lowercased())
+                    || lower.filter(\.isLetter).contains(artistLetters)
+                if aboutAlbum && aboutArtist { cache[key] = r.extract; return r.extract }
+            }
         }
         cache[key] = ""; return nil
     }
@@ -84,8 +94,14 @@ actor WikipediaService {
         return nil
     }
     private struct SummaryResult { let extract: String; let imageURL: String? }
+    /// Characters safe in a Wikipedia title path segment (urlPathAllowed minus "/" which would break the path).
+    private static let wikiPathAllowed: CharacterSet = {
+        var cs = CharacterSet.urlPathAllowed
+        cs.remove("/")
+        return cs
+    }()
     private func summaryData(title: String) async -> SummaryResult? {
-        let enc = title.replacingOccurrences(of:" ",with:"_").addingPercentEncoding(withAllowedCharacters:.urlPathAllowed) ?? title
+        let enc = title.replacingOccurrences(of:" ",with:"_").addingPercentEncoding(withAllowedCharacters: Self.wikiPathAllowed) ?? title
         guard let url=URL(string:"https://en.wikipedia.org/api/rest_v1/page/summary/\(enc)"),
               let (d,r)=try? await URLSession.shared.data(from:url),(r as? HTTPURLResponse)?.statusCode==200,
               let j=try? JSONSerialization.jsonObject(with:d) as? [String:Any],
