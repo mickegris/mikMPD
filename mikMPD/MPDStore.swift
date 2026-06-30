@@ -966,10 +966,35 @@ final class MPDStore: ObservableObject {
         return u
     }
 
+    /// Escape special characters for use inside a Lucene quoted string.
+    private static func luceneEscape(_ s: String) -> String {
+        s.replacingOccurrences(of: "\\", with: "\\\\")
+         .replacingOccurrences(of: "\"", with: "\\\"")
+    }
     private static func downloadArt(artist: String, album: String) async -> UIImage? {
+        // Try progressively looser MusicBrainz queries
+        let queries: [String] = [
+            // 1. Exact quoted match
+            "release:\"\(luceneEscape(album))\" AND artist:\"\(luceneEscape(artist))\"",
+            // 2. Unquoted (tokenized) — handles "AC/DC Live" matching "Live" by "AC/DC"
+            "release:\(album) AND artist:\(artist)",
+            // 3. Album only — handles misspelled artists like "ACDC" for "AC/DC"
+            "release:\"\(luceneEscape(album))\"",
+        ]
+        let strippedArtist = artist.lowercased().filter(\.isLetter)
+        for query in queries {
+            guard let mbid = await searchMusicBrainz(query: query, expectedArtist: strippedArtist) else { continue }
+            if let img = await fetchCoverArt(mbid: mbid) { return img }
+        }
+        return nil
+    }
+
+    /// Search MusicBrainz for a release. When `expectedArtist` is non-empty, validates
+    /// the result's artist shares alphanumeric characters with the expected name.
+    private static func searchMusicBrainz(query: String, expectedArtist: String) async -> String? {
         var c = URLComponents(string: "https://musicbrainz.org/ws/2/release/")!
         c.queryItems = [
-            URLQueryItem(name: "query", value: "release:\"\(album)\" AND artist:\"\(artist)\""),
+            URLQueryItem(name: "query", value: query),
             URLQueryItem(name: "fmt",   value: "json"),
             URLQueryItem(name: "limit", value: "1"),
         ]
@@ -977,14 +1002,28 @@ final class MPDStore: ObservableObject {
         var req = URLRequest(url: url)
         req.setValue("MPDClient-iOS/1.0", forHTTPHeaderField: "User-Agent")
         guard
-            let (d1, _)  = try? await URLSession.shared.data(for: req),
-            let json     = try? JSONSerialization.jsonObject(with: d1) as? [String: Any],
-            let releases = json["releases"] as? [[String: Any]],
-            let mbid     = releases.first?["id"] as? String,
-            let artURL   = URL(string: "https://coverartarchive.org/release/\(mbid)/front-250"),
-            let (d2, _)  = try? await URLSession.shared.data(from: artURL)
+            let (data, _)  = try? await URLSession.shared.data(for: req),
+            let json       = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let releases   = json["releases"] as? [[String: Any]],
+            let first      = releases.first,
+            let mbid       = first["id"] as? String
         else { return nil }
-        return UIImage(data: d2)
+        // Validate artist if we have an expected name (for loose queries)
+        if !expectedArtist.isEmpty,
+           let credits = first["artist-credit"] as? [[String: Any]],
+           let mbArtist = credits.first?["name"] as? String {
+            let strippedMB = mbArtist.lowercased().filter(\.isLetter)
+            // Accept if either contains the other (ACDC⊂ACDC, ACDC⊂AC/DC letters)
+            guard strippedMB.contains(expectedArtist) || expectedArtist.contains(strippedMB) else { return nil }
+        }
+        return mbid
+    }
+
+    private static func fetchCoverArt(mbid: String) async -> UIImage? {
+        guard let url = URL(string: "https://coverartarchive.org/release/\(mbid)/front-250"),
+              let (data, _) = try? await URLSession.shared.data(from: url)
+        else { return nil }
+        return UIImage(data: data)
     }
 }
 
