@@ -967,11 +967,19 @@ final class MPDStore: ObservableObject {
     }
 
     /// Escape special characters for use inside a Lucene quoted string.
+    /// Escape Lucene special characters for use inside quoted MusicBrainz queries.
     private static func luceneEscape(_ s: String) -> String {
-        s.replacingOccurrences(of: "\\", with: "\\\\")
-         .replacingOccurrences(of: "\"", with: "\\\"")
+        var result = ""
+        for ch in s {
+            if "\\\"+-!(){}[]^~*?:/".contains(ch) { result.append("\\") }
+            result.append(ch)
+        }
+        return result
     }
     private static func downloadArt(artist: String, album: String) async -> UIImage? {
+        // Normalize Unicode characters (e.g. … → ...) for API lookups
+        let album = album.normalizedForLookup
+        let artist = artist.normalizedForLookup
         // Try progressively looser MusicBrainz queries
         let queries: [String] = [
             // 1. Exact quoted match
@@ -1000,6 +1008,8 @@ final class MPDStore: ObservableObject {
             URLQueryItem(name: "fmt",   value: "json"),
             URLQueryItem(name: "limit", value: "5"),
         ]
+        // URLComponents doesn't encode +, but servers decode it as space
+        c.percentEncodedQuery = c.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
         guard let url = c.url else { return [] }
         var req = URLRequest(url: url)
         req.setValue("MPDClient-iOS/1.0", forHTTPHeaderField: "User-Agent")
@@ -1035,6 +1045,27 @@ extension String {
     var esc: String {
         replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
+    }
+
+    /// Normalize Unicode characters and library sorting conventions for API lookups.
+    /// Handles: Unicode → ASCII substitutions, and sort-order articles ("Name, The" → "The Name").
+    nonisolated var normalizedForLookup: String {
+        var s = replacingOccurrences(of: "\u{2026}", with: "...")  // ellipsis
+            .replacingOccurrences(of: "\u{2018}", with: "'")   // left single quote
+            .replacingOccurrences(of: "\u{2019}", with: "'")   // right single quote
+            .replacingOccurrences(of: "\u{201C}", with: "\"")  // left double quote
+            .replacingOccurrences(of: "\u{201D}", with: "\"")  // right double quote
+            .replacingOccurrences(of: "\u{2013}", with: "-")   // en dash
+            .replacingOccurrences(of: "\u{2014}", with: "-")   // em dash
+        // Move trailing sort-order articles to front: "Name, The" → "The Name"
+        for suffix in [", The", ", A", ", An"] {
+            if s.lowercased().hasSuffix(suffix.lowercased()) {
+                let article = String(s.suffix(suffix.count).dropFirst(2)) // drop ", "
+                s = article + " " + s.dropLast(suffix.count)
+                break
+            }
+        }
+        return s
     }
 }
 

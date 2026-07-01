@@ -35,6 +35,9 @@ actor WikipediaService {
     func fetchAlbum(album: String, artist: String) async -> String? {
         let key = "album:\(album)|\(artist)"
         if let c = cache[key] { return c.isEmpty ? nil : c }
+        // Normalize Unicode characters (e.g. … → ...) for Wikipedia lookups
+        let album = album.normalizedForLookup
+        let artist = artist.normalizedForLookup
         // Try direct title with common Wikipedia album naming patterns
         let queries = artist.isEmpty ? ["\(album) (album)"] :
             ["\(album) (\(artist) album)", "\(album) (album)"]
@@ -69,6 +72,7 @@ actor WikipediaService {
     func fetchArtist(query: String) async -> String? {
         let key = "artist:\(query)"
         if let c = cache[key] { return c.isEmpty ? nil : c }
+        let query = query.normalizedForLookup
         // Try disambiguation suffixes first (most precise)
         for suffix in ["(band)", "(musician)", "(singer)", "(rapper)"] {
             if let r = await summaryData(title: "\(query) \(suffix)"), !r.extract.isEmpty { cache[key]=r.extract; return r.extract }
@@ -85,6 +89,7 @@ actor WikipediaService {
         let key = "artistimg:\(query)"
         if let c = imageCache[key] { return c }
         if let disk = Self.loadImageFromDisk(key: key) { imageCache[key]=disk; return disk }
+        let query = query.normalizedForLookup
         for suffix in ["(band)", "(musician)", "(singer)", "(rapper)"] {
             if let img = await downloadSummaryImage(title: "\(query) \(suffix)") { imageCache[key]=img; Self.saveImageToDisk(key:key,image:img); return img }
         }
@@ -97,7 +102,8 @@ actor WikipediaService {
     /// Characters safe in a Wikipedia title path segment (urlPathAllowed minus "/" which would break the path).
     private static let wikiPathAllowed: CharacterSet = {
         var cs = CharacterSet.urlPathAllowed
-        cs.remove("/")
+        cs.remove("/")  // breaks path segments (e.g. AC/DC)
+        cs.remove("+")  // some servers decode as space
         return cs
     }()
     private func summaryData(title: String) async -> SummaryResult? {
