@@ -93,9 +93,13 @@ struct AlbumDetailView: View {
     }
     func loadSongs(){ store.albumSongs(album:album,artist:artist){songs=$0;loading=false; if let s=songs.first{store.fetchArtIfNeeded(for:s)}; loadWiki()} }
     func loadWiki(){
-        guard wiki==nil,!wikiLoading else{return}; wikiLoading=true
+        guard wiki==nil,!wikiLoading else{return}
+        wikiLoading=true
         let a = displayArtist
-        Task{ let t=await WikipediaService.shared.fetchAlbum(album:album,artist:a); await MainActor.run{wiki=t;wikiLoading=false} }
+        Task{
+            let t=await WikipediaService.shared.fetchAlbum(album:album,artist:a)
+            await MainActor.run{wiki=t;wikiLoading=false}
+        }
     }
 }
 
