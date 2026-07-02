@@ -75,6 +75,7 @@ struct AlbumDetailView: View {
                 Section("About"){
                     Text(w).font(.caption).foregroundStyle(.secondary).lineLimit(expanded ? nil:4).animation(.easeInOut,value:expanded)
                     Button(expanded ? "Show less":"Show more"){expanded.toggle()}.font(.caption)
+                    Text("Source: Wikipedia · CC BY-SA 4.0").font(.caption2).foregroundStyle(.quaternary)
                 }
             }
             Section("Tracks"){
@@ -150,6 +151,7 @@ struct ArtistDetailView: View {
                 Section("About"){
                     Text(w).font(.caption).foregroundStyle(.secondary).lineLimit(expanded ? nil:6).animation(.easeInOut,value:expanded)
                     Button(expanded ? "Show less":"Show more"){expanded.toggle()}.font(.caption)
+                    Text("Source: Wikipedia · CC BY-SA 4.0").font(.caption2).foregroundStyle(.quaternary)
                 }
             }
             Section{
