@@ -72,9 +72,16 @@ struct AcknowledgmentsView: View {
     var body: some View {
         List {
             Section {
-                Text("mikMPD uses the following third-party services to display album art and artist information.")
+                Text("mikMPD uses the following third-party services to display album art, artist information, and lyrics.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
+            }
+            Section("LRCLIB") {
+                Text("Song lyrics (plain and time-synced) retrieved from LRCLIB, a free and open-source, community-maintained lyrics database. LRCLIB's data is released into the public domain, and its source code is available under the MIT license.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Link("lrclib.net", destination: URL(string: "https://lrclib.net")!)
+                    .font(.caption)
             }
             Section("MusicBrainz") {
                 Text("Music metadata used to locate album artwork. MusicBrainz data is released into the public domain under CC0.")
