@@ -3,7 +3,15 @@ import SwiftUI
 struct MoreView: View {
     @EnvironmentObject var store: MPDStore
     @State private var showConnection = false
-    
+
+    /// "1.1 (15)" — marketing version plus build number.
+    private var appVersionString: String {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "1.0"
+        let build = info?["CFBundleVersion"] as? String ?? ""
+        return build.isEmpty ? version : "\(version) (\(build))"
+    }
+
     var body: some View {
         NavigationStack {
             List {
@@ -49,7 +57,7 @@ struct MoreView: View {
                     HStack {
                         Text("Version")
                         Spacer()
-                        Text(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0")
+                        Text(appVersionString)
                             .foregroundColor(.secondary)
                     }
                     NavigationLink {
