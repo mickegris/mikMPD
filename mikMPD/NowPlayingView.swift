@@ -13,6 +13,9 @@ struct NowPlayingView: View {
     // Local volume copy (synced from store, committed on release)
     @State private var localVolume  = 80.0
 
+    // Toggles the album-art region between artwork and lyrics
+    @State private var showLyrics   = false
+
     var song: MPDSong { store.currentSong }
 
     // What fraction to show in the slider
@@ -33,16 +36,29 @@ struct NowPlayingView: View {
             connectionStatus
                 .padding(.top, 8)
 
-            Text("Now Playing")
-                .font(.headline)
-                .padding(.vertical, 6)
+            ZStack {
+                Text("Now Playing")
+                    .font(.headline)
+                HStack {
+                    Spacer()
+                    lyricsToggle
+                }
+            }
+            .padding(.vertical, 6)
 
             Spacer(minLength: 0)
 
-            albumArt
-                .aspectRatio(1, contentMode: .fit)
-                .clipShape(RoundedRectangle(cornerRadius: 14))
-                .shadow(color: .black.opacity(0.3), radius: 10, y: 4)
+            Group {
+                if showLyrics {
+                    lyricsPane
+                } else {
+                    albumArt
+                }
+            }
+            .aspectRatio(1, contentMode: .fit)
+            .clipShape(RoundedRectangle(cornerRadius: 14))
+            .shadow(color: .black.opacity(0.3), radius: 10, y: 4)
+            .onTapGesture { withAnimation(.easeInOut(duration: 0.25)) { showLyrics.toggle() } }
 
             Spacer(minLength: 4)
 
@@ -102,6 +118,87 @@ struct NowPlayingView: View {
             ZStack {
                 RoundedRectangle(cornerRadius: 16).fill(Color(.systemGray5))
                 Image(systemName: "music.note").font(.system(size: 80)).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    // MARK: - Lyrics
+
+    var lyricsToggle: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.25)) { showLyrics.toggle() }
+        } label: {
+            Image(systemName: showLyrics ? "quote.bubble.fill" : "quote.bubble")
+                .font(.body)
+                .foregroundStyle(showLyrics ? Color.accentColor : Color.secondary)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(showLyrics ? "Hide lyrics" : "Show lyrics")
+    }
+
+    var lyricsPane: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 14).fill(Color(.systemGray6))
+            lyricsContent.padding(16)
+        }
+    }
+
+    @ViewBuilder
+    var lyricsContent: some View {
+        switch store.lyricsState {
+        case .loading:
+            ProgressView()
+        case .unavailable:
+            lyricsNote("text.quote", "No lyrics available")
+        case .loaded(let lyrics):
+            if lyrics.instrumental {
+                lyricsNote("music.note", "Instrumental")
+            } else if let synced = lyrics.synced, !synced.isEmpty {
+                syncedLyricsView(synced)
+            } else if let plain = lyrics.plain {
+                ScrollView {
+                    Text(plain)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 4)
+                }
+            } else {
+                lyricsNote("text.quote", "No lyrics available")
+            }
+        }
+    }
+
+    func lyricsNote(_ symbol: String, _ text: String) -> some View {
+        VStack(spacing: 10) {
+            Image(systemName: symbol).font(.title).foregroundStyle(.secondary)
+            Text(text).font(.subheadline).foregroundStyle(.secondary)
+        }
+    }
+
+    /// Scrolling synced lyrics with the active line highlighted, kept centered.
+    func syncedLyricsView(_ lines: [LyricLine]) -> some View {
+        let t = store.elapsed - LyricsService.syncOffset
+        let active = lines.lastIndex { $0.secs <= t }
+        return ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach(Array(lines.enumerated()), id: \.offset) { i, line in
+                        Text(line.text.isEmpty ? " " : line.text)
+                            .font(i == active ? .body.bold() : .callout)
+                            .foregroundStyle(i == active ? Color.accentColor : Color.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .id(i)
+                    }
+                }
+                .padding(.vertical, 8)
+            }
+            .animation(.easeInOut(duration: 0.2), value: active)
+            .onChange(of: active) { _, newValue in
+                guard let newValue else { return }
+                withAnimation(.easeInOut(duration: 0.3)) {
+                    proxy.scrollTo(newValue, anchor: .center)
+                }
             }
         }
     }

@@ -40,6 +40,7 @@ final class MPDStore: ObservableObject {
 
     // Other state
     @Published var currentSong     = MPDSong()
+    @Published var lyricsState:    LyricsState     = .unavailable
     @Published var queue:          [MPDSong]       = []
     @Published var outputs:        [MPDOutput]     = []
     @Published var outputPartitions: [String: String] = [:] // outputID -> partition (for current view)
@@ -83,6 +84,7 @@ final class MPDStore: ObservableObject {
         return dir
     }()
     private var lastSongID    = ""
+    private var lyricsToken   = UUID()   // invalidates in-flight lyric fetches on song change
     private var isReconnecting = false
     private var isRestoringPartition = false
     private var partitionToRestore: String?
@@ -287,7 +289,7 @@ final class MPDStore: ObservableObject {
                 if Date() >= self.seekLockUntil {
                     self.elapsed = elapsed
                 }
-                if songChanged { self.fetchArt(for: song) }
+                if songChanged { self.fetchArt(for: song); self.fetchLyrics(for: song) }
                 if self.isPhoneStreaming { self.updateNowPlayingInfo() }
             }
         } catch {
@@ -783,6 +785,29 @@ final class MPDStore: ObservableObject {
         song.artist = artist
         song.album = album
         fetchArt(for: song)
+    }
+
+    /// Fetch lyrics for the current song from LRCLIB. Prefetched on song change
+    /// (like album art) so the Now Playing lyrics view is ready when toggled.
+    /// A per-song token prevents a slow response from an old song overwriting a newer one.
+    private func fetchLyrics(for song: MPDSong) {
+        // Rotate the token first so a stale in-flight fetch can't land after
+        // this point, even when we bail out below.
+        let token = UUID(); lyricsToken = token
+        // No real song (stopped playback) — displayTitle would degenerate to "/".
+        guard !song.title.isEmpty || !song.file.isEmpty else {
+            lyricsState = .unavailable; return
+        }
+        let title  = song.title.isEmpty ? song.displayTitle : song.title
+        let artist = song.artist, album = song.album, dur = song.duration
+        lyricsState = .loading
+        Task { [weak self] in
+            let result = await LyricsService.shared.fetch(artist: artist, title: title, album: album, duration: dur)
+            await MainActor.run {
+                guard let self, self.lyricsToken == token else { return }
+                self.lyricsState = result.map { .loaded($0) } ?? .unavailable
+            }
+        }
     }
 
     private func fetchArt(for song: MPDSong) {
