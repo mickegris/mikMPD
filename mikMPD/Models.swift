@@ -2,6 +2,19 @@
 import Foundation
 import UIKit
 
+func artCacheKey(artist: String, album: String) -> String {
+    let trimmedArtist = artist.trimmingCharacters(in: .whitespacesAndNewlines)
+    let trimmedAlbum = album.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedArtist.isEmpty || !trimmedAlbum.isEmpty else { return "" }
+    return "\(trimmedArtist)|\(trimmedAlbum)".lowercased()
+}
+
+enum PlaybackSourceKind {
+    case library
+    case radio
+    case cd
+}
+
 struct MPDSong: Identifiable, Equatable {
     var file:     String = ""
     var title:    String = ""
@@ -15,7 +28,26 @@ struct MPDSong: Identifiable, Equatable {
     var id: String { songID.isEmpty ? "\(pos):\(file)" : songID }
     var displayTitle: String { title.isEmpty ? URL(fileURLWithPath: file).lastPathComponent : title }
     var trackNumber: Int { Int(track.components(separatedBy: "/").first ?? "") ?? 0 }
-    var artKey: String { "\(artist)|\(album)".lowercased() }
+    var artKey: String { artCacheKey(artist: artist, album: album) }
+    var sourceKind: PlaybackSourceKind {
+        let trimmedFile = file.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lowercasedFile = trimmedFile.lowercased()
+        if lowercasedFile.hasPrefix("cdda:") {
+            return .cd
+        }
+        if let scheme = URL(string: trimmedFile)?.scheme?.lowercased(),
+           ["http", "https", "icy"].contains(scheme) {
+            return .radio
+        }
+        return .library
+    }
+    var fallbackArtAssetName: String {
+        switch sourceKind {
+        case .library: "MikMPDLogo"
+        case .radio: "RadioFallbackArt"
+        case .cd: "CDFallbackArt"
+        }
+    }
 
     init() {}
     init(_ r: MPDRecord) {

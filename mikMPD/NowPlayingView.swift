@@ -117,7 +117,10 @@ struct NowPlayingView: View {
         } else {
             ZStack {
                 RoundedRectangle(cornerRadius: 16).fill(Color(.systemGray5))
-                Image(systemName: "music.note").font(.system(size: 80)).foregroundStyle(.secondary)
+                Image(song.fallbackArtAssetName)
+                    .resizable()
+                    .scaledToFit()
+                    .padding(32)
             }
         }
     }
@@ -354,4 +357,3 @@ struct ModeBtn: View {
 extension Double {
     func clamped(to r: ClosedRange<Double>) -> Double { min(max(self, r.lowerBound), r.upperBound) }
 }
-

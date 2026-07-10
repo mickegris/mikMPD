@@ -78,6 +78,9 @@ final class MPDStore: ObservableObject {
     private var displayTimer: Timer?
     private var bgPollTimer:  DispatchSourceTimer?
     private var artPending:   Set<String> = []
+    private static func fallbackArtwork(for song: MPDSong) -> UIImage? {
+        UIImage(named: song.fallbackArtAssetName)
+    }
     private static let artDiskCacheDir: URL = {
         let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("albumart")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -976,7 +979,7 @@ final class MPDStore: ObservableObject {
         info[MPMediaItemPropertyPlaybackDuration] = duration
         info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = elapsed
         info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? 1.0 : 0.0
-        if let img = albumArtCache[currentSong.artKey] {
+        if let img = albumArtCache[currentSong.artKey] ?? Self.fallbackArtwork(for: currentSong) {
             info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: img.size) { _ in img }
         }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
@@ -1118,4 +1121,3 @@ enum KeychainHelper {
         return String(data: data, encoding: .utf8)
     }
 }
-

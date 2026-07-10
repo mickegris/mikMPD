@@ -407,13 +407,13 @@ struct SongRow: View {
 struct ArtThumbByKey: View {
     @EnvironmentObject var store:MPDStore
     let artist:String; let album:String; let size:CGFloat
-    var artKey:String{ "\(artist)|\(album)".lowercased() }
+    var artKey:String{ artCacheKey(artist:artist,album:album) }
     var body: some View {
         Group {
             if let img=store.albumArtCache[artKey] {
                 Image(uiImage:img).resizable().aspectRatio(contentMode:.fill).frame(width:size,height:size).clipped()
             } else {
-                ZStack{Color(.systemGray5);Image(systemName:"square.stack").foregroundStyle(.secondary).font(.caption2)}.frame(width:size,height:size)
+                ZStack{Color(.systemGray5);Image("MikMPDLogo").resizable().scaledToFit().padding(size * 0.18)}.frame(width:size,height:size)
             }
         }
         .onAppear{ store.fetchArtIfNeeded(artist:artist,album:album) }
@@ -427,10 +427,9 @@ struct ArtThumb: View {
             if let s=song, let img=store.albumArtCache[s.artKey] {
                 Image(uiImage:img).resizable().aspectRatio(contentMode:.fill).frame(width:size,height:size).clipped()
             } else {
-                ZStack{Color(.systemGray5);Image(systemName:"square.stack").foregroundStyle(.secondary)}.frame(width:size,height:size)
+                ZStack{Color(.systemGray5);Image(song?.fallbackArtAssetName ?? "MikMPDLogo").resizable().scaledToFit().padding(size * 0.18)}.frame(width:size,height:size)
             }
         }
         .onAppear{ if let s=song { store.fetchArtIfNeeded(for:s) } }
     }
 }
-
