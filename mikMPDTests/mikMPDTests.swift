@@ -422,3 +422,49 @@ import Testing
         #expect(decoded == stations)
     }
 }
+
+// MARK: - Lyrics (LRC parsing)
+
+@Suite struct LyricsParseTests {
+    @Test func basicTimestamps() {
+        let lrc = "[00:12.34] First line\n[00:15.00] Second line\n"
+        let lines = LyricsService.parseLRC(lrc)
+        #expect(lines?.count == 2)
+        #expect(abs((lines?[0].secs ?? 0) - 12.34) < 0.01)
+        #expect(lines?[0].text == "First line")
+        #expect(abs((lines?[1].secs ?? 0) - 15.0) < 0.01)
+        #expect(lines?[1].text == "Second line")
+    }
+
+    @Test func sortsByTime() {
+        let lrc = "[00:20.00] Late line\n[00:05.00] Early line\n"
+        let lines = LyricsService.parseLRC(lrc)
+        #expect(lines?.count == 2)
+        #expect(abs((lines?[0].secs ?? 0) - 5.0) < 0.01)
+        #expect(lines?[0].text == "Early line")
+    }
+
+    @Test func skipsMalformedTimestamps() {
+        let lrc = "[bad] garbage line\n[00:10.00] Good line\n"
+        let lines = LyricsService.parseLRC(lrc)
+        #expect(lines?.count == 1)
+        #expect(lines?[0].text == "Good line")
+    }
+
+    @Test func integerSecondsWithoutFraction() {
+        let lines = LyricsService.parseLRC("[01:30] Whole seconds only\n")
+        #expect(abs((lines?[0].secs ?? 0) - 90.0) < 0.01)
+    }
+
+    @Test func emptyInputReturnsNil() {
+        #expect(LyricsService.parseLRC("") == nil)
+        #expect(LyricsService.parseLRC("   \n  ") == nil)
+    }
+
+    @Test func preservesBlankLyricLinesAsSpacers() {
+        let lrc = "[00:01.00] Verse\n[00:02.00]\n[00:03.00] Chorus\n"
+        let lines = LyricsService.parseLRC(lrc)
+        #expect(lines?.count == 3)
+        #expect(lines?[1].text == "")
+    }
+}
