@@ -17,6 +17,7 @@ struct QueueView: View {
                                     ? Color.accentColor.opacity(0.12) : Color.clear)
                         }
                         .onDelete { store.delete(at: $0) }
+                        .onMove { store.moveRow(from: $0, to: $1) }
                     }.listStyle(.plain)
                 }
             }
@@ -24,6 +25,9 @@ struct QueueView: View {
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button("Clear", role: .destructive) { store.clearQueue() }.disabled(store.queue.isEmpty)
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    EditButton().disabled(store.queue.isEmpty)
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button { store.toggleConsume() } label: {

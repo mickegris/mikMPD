@@ -631,6 +631,23 @@ final class MPDStore: ObservableObject {
         }
     }
 
+    /// Reorder one row using SwiftUI onMove semantics. The queue is reordered
+    /// locally first so the row doesn't snap back before the next poll.
+    func moveRow(from offsets: IndexSet, to destination: Int) {
+        guard let from = offsets.first else { return }
+        let to = mpdMoveTarget(from: from, to: destination)
+        guard from != to else { return }
+        queue.move(fromOffsets: offsets, toOffset: destination)
+        for i in queue.indices { queue[i].pos = i }
+        if !currentSongID.isEmpty, let cur = queue.firstIndex(where: { $0.songID == currentSongID }) {
+            playlistPos = cur
+        }
+        Q.async { [weak self] in
+            _ = try? self?.socket.command("move \(from) \(to)")
+            DispatchQueue.main.async { self?.loadQueue() }
+        }
+    }
+
     func loadPlaylist(_ name: String) {
         Q.async { [weak self] in _ = try? self?.socket.command("load \"\(name.esc)\""); DispatchQueue.main.async { self?.loadQueue() } }
     }

@@ -118,6 +118,28 @@ import Testing
     }
 }
 
+// MARK: - mpdMoveTarget
+
+@Suite struct MoveTargetTests {
+    // SwiftUI onMove reports the destination as an index into the array
+    // before the moved row is removed; MPD wants the index after removal.
+    @Test func movingDownSubtractsOne() {
+        #expect(mpdMoveTarget(from: 1, to: 4) == 3)
+        #expect(mpdMoveTarget(from: 0, to: 5) == 4)
+    }
+
+    @Test func movingUpIsUnchanged() {
+        #expect(mpdMoveTarget(from: 3, to: 1) == 1)
+        #expect(mpdMoveTarget(from: 5, to: 0) == 0)
+    }
+
+    @Test func droppingInPlaceYieldsSameIndex() {
+        #expect(mpdMoveTarget(from: 2, to: 2) == 2)
+        // Dropping directly below itself is also a no-op after adjustment
+        #expect(mpdMoveTarget(from: 2, to: 3) == 2)
+    }
+}
+
 // MARK: - PlaybackSourceKind
 
 @Suite struct SourceKindTests {

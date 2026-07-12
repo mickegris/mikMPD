@@ -91,6 +91,12 @@ struct MPDBrowseItem: Identifiable {
     }
 }
 
+/// Convert SwiftUI's onMove destination (an index into the pre-removal array)
+/// to the TO argument of MPD's `move`/`playlistmove` (an index after removal).
+func mpdMoveTarget(from: Int, to destination: Int) -> Int {
+    destination > from ? destination - 1 : destination
+}
+
 func formatTime(_ s: Double) -> String {
     guard s > 0, s.isFinite else { return "0:00" }
     let t = Int(s)
