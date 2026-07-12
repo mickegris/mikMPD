@@ -650,8 +650,17 @@ final class MPDStore: ObservableObject {
         }
     }
 
-    func loadPlaylist(_ name: String) {
-        Q.async { [weak self] in _ = try? self?.socket.command("load \"\(name.esc)\""); DispatchQueue.main.async { self?.loadQueue() } }
+    func loadPlaylist(_ name: String, replace: Bool = false, play: Bool = false) {
+        Q.async { [weak self] in
+            guard let self else { return }
+            if replace { _ = try? self.socket.command("clear") }
+            _ = try? self.socket.command("load \"\(name.esc)\"")
+            if play {
+                _ = try? self.socket.command("play 0")
+                self.poll()
+            }
+            DispatchQueue.main.async { self.loadQueue() }
+        }
     }
 
     func enqueue(songs: [MPDSong], replace: Bool = false, playFirst: Bool = false) {
@@ -662,6 +671,107 @@ final class MPDStore: ObservableObject {
             for s in songs { _ = try? self.socket.command("add \"\(s.file.esc)\"") }
             if playFirst || replace { _ = try? self.socket.command("play \(before)") }
             if playFirst || replace { self.poll() }
+            DispatchQueue.main.async { self.loadQueue() }
+        }
+    }
+
+    // MARK: - Stored playlists
+
+    @Published var playlists: [MPDPlaylist] = []
+
+    func loadPlaylists() {
+        Q.async { [weak self] in
+            guard let self else { return }
+            let recs = (try? self.socket.command("listplaylists")) ?? []
+            let lists = recs.compactMap { r -> MPDPlaylist? in
+                guard let name = r["playlist"], !name.isEmpty else { return nil }
+                return MPDPlaylist(name: name, lastModified: r["last-modified"] ?? "")
+            }.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            DispatchQueue.main.async { self.playlists = lists }
+        }
+    }
+
+    func playlistSongs(name: String, completion: @escaping ([MPDSong]) -> Void) {
+        Q.async { [weak self] in
+            guard let self else { return }
+            let recs = (try? self.socket.command("listplaylistinfo \"\(name.esc)\"")) ?? []
+            let songs = songsAssigningPositions(recs)
+            DispatchQueue.main.async { completion(songs) }
+        }
+    }
+
+    /// Append URIs to a playlist; MPD creates the playlist if it doesn't exist.
+    func addToPlaylist(name: String, uris: [String]) {
+        guard !uris.isEmpty else { return }
+        Q.async { [weak self] in
+            guard let self else { return }
+            for uri in uris { _ = try? self.socket.command("playlistadd \"\(name.esc)\" \"\(uri.esc)\"") }
+            DispatchQueue.main.async { self.loadPlaylists() }
+        }
+    }
+
+    func removeFromPlaylist(name: String, at offsets: IndexSet, completion: @escaping () -> Void) {
+        let sorted = offsets.sorted(by: >)
+        Q.async { [weak self] in
+            guard let self else { return }
+            for pos in sorted { _ = try? self.socket.command("playlistdelete \"\(name.esc)\" \(pos)") }
+            DispatchQueue.main.async { completion() }
+        }
+    }
+
+    /// Reorder one row using SwiftUI onMove semantics (see moveRow).
+    func movePlaylistSong(name: String, from offsets: IndexSet, to destination: Int, completion: @escaping () -> Void) {
+        guard let from = offsets.first else { return }
+        let to = mpdMoveTarget(from: from, to: destination)
+        guard from != to else { completion(); return }
+        Q.async { [weak self] in
+            _ = try? self?.socket.command("playlistmove \"\(name.esc)\" \(from) \(to)")
+            DispatchQueue.main.async { completion() }
+        }
+    }
+
+    func renamePlaylist(_ old: String, to new: String, completion: @escaping (String?) -> Void) {
+        Q.async { [weak self] in
+            guard let self else { return }
+            var failure: String?
+            do { _ = try self.socket.command("rename \"\(old.esc)\" \"\(new.esc)\"") }
+            catch { failure = Self.ackMessage(error.localizedDescription) }
+            DispatchQueue.main.async {
+                self.loadPlaylists()
+                completion(failure)
+            }
+        }
+    }
+
+    func deletePlaylist(name: String) {
+        Q.async { [weak self] in
+            _ = try? self?.socket.command("rm \"\(name.esc)\"")
+            DispatchQueue.main.async { self?.loadPlaylists() }
+        }
+    }
+
+    func saveQueueAsPlaylist(name: String, completion: @escaping (String?) -> Void) {
+        Q.async { [weak self] in
+            guard let self else { return }
+            var failure: String?
+            do { _ = try self.socket.command("save \"\(name.esc)\"") }
+            catch { failure = Self.ackMessage(error.localizedDescription) }
+            DispatchQueue.main.async {
+                self.loadPlaylists()
+                completion(failure)
+            }
+        }
+    }
+
+    /// Replace the queue with the playlist and start at the given index —
+    /// tapping a playlist row plays that song in its playlist context.
+    func playPlaylist(name: String, at index: Int) {
+        Q.async { [weak self] in
+            guard let self else { return }
+            _ = try? self.socket.command("clear")
+            _ = try? self.socket.command("load \"\(name.esc)\"")
+            _ = try? self.socket.command("play \(index)")
+            self.poll()
             DispatchQueue.main.async { self.loadQueue() }
         }
     }

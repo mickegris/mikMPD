@@ -1,6 +1,6 @@
 import SwiftUI
 
-enum LibTab: String, CaseIterable { case albums="Albums"; case artists="Artists"; case genres="Genres"; case radio="Radio"; case cd="CD" }
+enum LibTab: String, CaseIterable { case albums="Albums"; case artists="Artists"; case genres="Genres"; case playlists="Playlists"; case radio="Radio"; case cd="CD" }
 
 struct LibraryView: View {
     @State private var tab: LibTab = .albums
@@ -11,11 +11,12 @@ struct LibraryView: View {
                     .pickerStyle(.segmented).padding(.horizontal).padding(.vertical,8)
                 Divider()
                 switch tab {
-                case .albums:  AlbumListView()
-                case .artists: ArtistListView()
-                case .genres:  GenreListView()
-                case .radio:   RadioView()
-                case .cd:      CDView()
+                case .albums:    AlbumListView()
+                case .artists:   ArtistListView()
+                case .genres:    GenreListView()
+                case .playlists: PlaylistListView()
+                case .radio:     RadioView()
+                case .cd:        CDView()
                 }
             }
             .navigationTitle("Library").navigationBarTitleDisplayMode(.inline)
@@ -47,6 +48,7 @@ struct AlbumDetailView: View {
     let album:String; let artist:String?
     @State private var songs:[MPDSong]=[];@State private var loading=true
     @State private var wiki:String?=nil;@State private var wikiLoading=false;@State private var expanded=false
+    @State private var addRequest:AddToPlaylistRequest?=nil
     var displayArtist:String{ artist ?? songs.first?.artist ?? "" }
     var body: some View {
         List {
@@ -67,6 +69,9 @@ struct AlbumDetailView: View {
                     HStack(spacing:12){
                         Button{ store.enqueue(songs:songs,replace:true,playFirst:true) } label:{Label("Play",systemImage:"play.fill").frame(maxWidth:.infinity)}.buttonStyle(.borderedProminent).disabled(loading)
                         Button{ store.enqueue(songs:songs) } label:{Label("Add",systemImage:"plus").frame(maxWidth:.infinity)}.buttonStyle(.bordered).disabled(loading)
+                        Menu {
+                            Button{ addRequest=AddToPlaylistRequest(uris:songs.map(\.file)) } label:{Label("Add Album to Playlist…",systemImage:"music.note.list")}
+                        } label: { Image(systemName:"ellipsis.circle") }.disabled(loading||songs.isEmpty)
                     }
                 }.padding(.vertical,4)
             }
@@ -84,12 +89,14 @@ struct AlbumDetailView: View {
                     ForEach(songs){ s in
                         SongRow(song:s).contentShape(Rectangle()).onTapGesture{ store.addAndPlay(uri:s.file) }
                             .swipeActions(edge:.trailing){ Button{store.add(uri:s.file)} label:{Label("Add",systemImage:"plus")}.tint(.green) }
+                            .swipeActions(edge:.leading){ Button{addRequest=AddToPlaylistRequest(uris:[s.file])} label:{Label("Playlist",systemImage:"music.note.list")}.tint(.indigo) }
                     }
                 }
             }
         }
         .listStyle(.insetGrouped)
         .navigationTitle(album.isEmpty ? "(no title)" : album).navigationBarTitleDisplayMode(.inline)
+        .sheet(item:$addRequest){ AddToPlaylistSheet(uris:$0.uris) }
         .onAppear{ loadSongs() }
     }
     func loadSongs(){ store.albumSongs(album:album,artist:artist){songs=$0;loading=false; if let s=songs.first{store.fetchArtIfNeeded(for:s)}; loadWiki()} }

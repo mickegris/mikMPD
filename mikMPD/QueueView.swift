@@ -1,6 +1,7 @@
 import SwiftUI
 struct QueueView: View {
     @EnvironmentObject var store: MPDStore
+    @State private var addRequest: AddToPlaylistRequest?
     var body: some View {
         NavigationStack {
             Group {
@@ -15,6 +16,11 @@ struct QueueView: View {
                                 .onTapGesture(count: 2) { store.play(at: song.pos) }
                                 .listRowBackground(song.pos == store.playlistPos
                                     ? Color.accentColor.opacity(0.12) : Color.clear)
+                                .contextMenu {
+                                    Button { addRequest = AddToPlaylistRequest(uris: [song.file]) } label: {
+                                        Label("Add to Playlist…", systemImage: "music.note.list")
+                                    }
+                                }
                         }
                         .onDelete { store.delete(at: $0) }
                         .onMove { store.moveRow(from: $0, to: $1) }
@@ -22,6 +28,7 @@ struct QueueView: View {
                 }
             }
             .navigationTitle("Queue")
+            .sheet(item: $addRequest) { AddToPlaylistSheet(uris: $0.uris) }
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button("Clear", role: .destructive) { store.clearQueue() }.disabled(store.queue.isEmpty)

@@ -8,6 +8,7 @@ struct SearchView: View {
     @State private var albums: [(artist: String, album: String)] = []
     @State private var isSearching = false
     @State private var searchTask: Task<Void, Never>?
+    @State private var addRequest: AddToPlaylistRequest?
 
     var body: some View {
         NavigationStack {
@@ -31,6 +32,7 @@ struct SearchView: View {
                 }
             }
             .navigationTitle("Search")
+            .sheet(item: $addRequest) { AddToPlaylistSheet(uris: $0.uris) }
             .searchable(text: $query, prompt: "Songs, artists, albums…")
             .onChange(of: query) { _, newValue in
                 searchTask?.cancel()
@@ -127,6 +129,11 @@ struct SearchView: View {
                                     ? Color.accentColor.opacity(0.12)
                                     : Color.clear
                             )
+                            .contextMenu {
+                                Button { addRequest = AddToPlaylistRequest(uris: [song.file]) } label: {
+                                    Label("Add to Playlist…", systemImage: "music.note.list")
+                                }
+                            }
                     }
                 } header: {
                     HStack {

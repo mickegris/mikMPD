@@ -76,6 +76,32 @@ struct MPDOutput: Identifiable, Equatable {
     }
 }
 
+struct MPDPlaylist: Identifiable, Equatable {
+    var name: String
+    var lastModified: String = ""
+    var id: String { name }
+}
+
+/// MPD playlist names are file names (NAME.m3u): returns the trimmed name,
+/// or nil for empty names or names containing path separators/newlines.
+func validatePlaylistName(_ name: String) -> String? {
+    let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty,
+          !trimmed.contains("/"), !trimmed.contains("\\"),
+          !trimmed.contains("\n"), !trimmed.contains("\r") else { return nil }
+    return trimmed
+}
+
+/// Songs from `listplaylistinfo` carry no pos/id fields; assign pos from the
+/// record index so duplicate files in a playlist still get unique ids.
+func songsAssigningPositions(_ records: [MPDRecord]) -> [MPDSong] {
+    records.enumerated().map { i, r in
+        var s = MPDSong(r)
+        s.pos = i
+        return s
+    }
+}
+
 struct MPDBrowseItem: Identifiable {
     enum Kind { case directory, file, playlist }
     var kind: Kind

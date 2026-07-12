@@ -16,6 +16,9 @@ struct NowPlayingView: View {
     // Toggles the album-art region between artwork and lyrics
     @State private var showLyrics   = false
 
+    // Presents the shared "Add to Playlist" sheet for the current song
+    @State private var addRequest: AddToPlaylistRequest?
+
     var song: MPDSong { store.currentSong }
 
     // What fraction to show in the slider
@@ -40,6 +43,7 @@ struct NowPlayingView: View {
                 Text("Now Playing")
                     .font(.headline)
                 HStack {
+                    addToPlaylistButton
                     Spacer()
                     lyricsToggle
                 }
@@ -74,8 +78,20 @@ struct NowPlayingView: View {
             .padding(.bottom, 8)
         }
         .padding(.horizontal, 20)
+        .sheet(item: $addRequest) { AddToPlaylistSheet(uris: $0.uris) }
         .onReceive(store.$volume) { localVolume = Double($0 < 0 ? 80 : $0) }
         } // NavigationStack
+    }
+
+    // CD tracks can't live in stored playlists; stream URLs can.
+    @ViewBuilder
+    var addToPlaylistButton: some View {
+        if !song.file.isEmpty && song.sourceKind != .cd {
+            Button { addRequest = AddToPlaylistRequest(uris: [song.file]) } label: {
+                Image(systemName: "text.badge.plus")
+                    .font(.body)
+            }
+        }
     }
 
     // MARK: - Subviews

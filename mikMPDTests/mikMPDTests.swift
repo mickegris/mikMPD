@@ -484,6 +484,56 @@ import Testing
     }
 }
 
+// MARK: - Stored playlists
+
+@Suite struct PlaylistNameTests {
+    @Test func trimsValidName() {
+        #expect(validatePlaylistName("  My List ") == "My List")
+        #expect(validatePlaylistName("Favorites") == "Favorites")
+    }
+
+    @Test func rejectsEmpty() {
+        #expect(validatePlaylistName("") == nil)
+        #expect(validatePlaylistName("   ") == nil)
+    }
+
+    @Test func rejectsPathSeparatorsAndNewlines() {
+        #expect(validatePlaylistName("a/b") == nil)
+        #expect(validatePlaylistName("a\\b") == nil)
+        #expect(validatePlaylistName("a\nb") == nil)
+    }
+}
+
+@Suite struct PlaylistSongsTests {
+    @Test func assignsPositionsFromIndex() {
+        let records: [MPDRecord] = [
+            ["file": "a.flac", "title": "One"],
+            ["file": "b.flac", "title": "Two"],
+        ]
+        let songs = songsAssigningPositions(records)
+        #expect(songs.count == 2)
+        #expect(songs[0].pos == 0)
+        #expect(songs[1].pos == 1)
+    }
+
+    @Test func duplicateFilesGetDistinctIds() {
+        // listplaylistinfo returns no pos/id; without index assignment two
+        // copies of the same file would collide on MPDSong.id
+        let records: [MPDRecord] = [
+            ["file": "same.flac"],
+            ["file": "same.flac"],
+        ]
+        let songs = songsAssigningPositions(records)
+        #expect(songs[0].id != songs[1].id)
+    }
+}
+
+@Suite struct MPDPlaylistTests {
+    @Test func idIsName() {
+        #expect(MPDPlaylist(name: "Road Trip").id == "Road Trip")
+    }
+}
+
 // MARK: - ackMessage
 
 @Suite struct AckMessageTests {
