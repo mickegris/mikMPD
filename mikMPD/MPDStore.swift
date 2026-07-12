@@ -337,7 +337,9 @@ final class MPDStore: ObservableObject {
         Q.async { [weak self] in
             guard let self else { return }
             let recs = (try? self.socket.command("outputs")) ?? []
-            let outs = recs.map { MPDOutput($0) }
+            // MPD leaves a "dummy" placeholder in the source partition after
+            // moveoutput; hide those so moved outputs don't appear twice.
+            let outs = recs.map { MPDOutput($0) }.filter { $0.plugin != "dummy" }
             // Build a mapping from outputID to partition if present in the record
             var partsMap: [String: String] = [:]
             for r in recs {
@@ -819,6 +821,8 @@ final class MPDStore: ObservableObject {
                 _ = try? self.socket.command("partition \"\(part.esc)\"")
                 let recs = (try? self.socket.command("outputs")) ?? []
                 for r in recs {
+                    // Dummy placeholders shadow outputs owned by other partitions
+                    if r["plugin"] == "dummy" { continue }
                     if let name = r["outputname"], !name.isEmpty {
                         if let existingPart = outputNameToPartition[name], existingPart != "default" {
                             continue
