@@ -79,7 +79,7 @@ struct SearchView: View {
                         } label: {
                             HStack(spacing: 12) {
                                 // Album art thumbnail
-                                AlbumArtThumb(artist: item.artist, album: item.album, size: 50)
+                                ArtThumbByKey(artist: item.artist, album: item.album, size: 50)
                                     .cornerRadius(6)
                                 
                                 VStack(alignment: .leading, spacing: 2) {
@@ -254,41 +254,6 @@ struct SearchRow: View {
                 .foregroundStyle(.secondary)
         }
         .padding(.vertical, 2)
-    }
-}
-
-// Album art thumbnail for search results
-struct AlbumArtThumb: View {
-    @EnvironmentObject var store: MPDStore
-    let artist: String
-    let album: String
-    let size: CGFloat
-    
-    var artKey: String {
-        "\(artist)|\(album)".lowercased()
-    }
-    
-    var body: some View {
-        Group {
-            if let img = store.albumArtCache[artKey] {
-                Image(uiImage: img)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-                    .frame(width: size, height: size)
-                    .clipped()
-            } else {
-                ZStack {
-                    Color(.systemGray5)
-                    Image(systemName: "square.stack")
-                        .foregroundStyle(.secondary)
-                        .font(.system(size: size * 0.4))
-                }
-                .frame(width: size, height: size)
-            }
-        }
-        .onAppear {
-            store.fetchArtIfNeeded(artist: artist, album: album)
-        }
     }
 }
 

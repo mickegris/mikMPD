@@ -93,6 +93,64 @@ import Testing
     }
 }
 
+// MARK: - artCacheKey
+
+@Suite struct ArtCacheKeyTests {
+    @Test func trimsWhitespace() {
+        #expect(artCacheKey(artist: " The Beatles ", album: "\tAbbey Road\n") == "the beatles|abbey road")
+    }
+
+    @Test func bothEmptyReturnsEmptyKey() {
+        #expect(artCacheKey(artist: "", album: "") == "")
+        #expect(artCacheKey(artist: "  ", album: "\n") == "")
+    }
+
+    @Test func oneEmptyKeepsSeparator() {
+        #expect(artCacheKey(artist: "Artist", album: "") == "artist|")
+        #expect(artCacheKey(artist: "", album: "Album") == "|album")
+    }
+
+    @Test func matchesSongArtKey() {
+        var song = MPDSong()
+        song.artist = " Some Artist "
+        song.album = "Some Album"
+        #expect(song.artKey == artCacheKey(artist: " Some Artist ", album: "Some Album"))
+    }
+}
+
+// MARK: - PlaybackSourceKind
+
+@Suite struct SourceKindTests {
+    private func song(file: String) -> MPDSong {
+        var s = MPDSong()
+        s.file = file
+        return s
+    }
+
+    @Test func cdTrack() {
+        #expect(song(file: "cdda://1").sourceKind == .cd)
+        #expect(song(file: "CDDA://2").sourceKind == .cd)
+    }
+
+    @Test func radioStreams() {
+        #expect(song(file: "http://stream.example.com:8080/radio").sourceKind == .radio)
+        #expect(song(file: "https://live1.sr.se/p2-flac").sourceKind == .radio)
+    }
+
+    @Test func libraryPaths() {
+        #expect(song(file: "Music/Artist/Album/01 Song.flac").sourceKind == .library)
+        #expect(song(file: "").sourceKind == .library)
+        // A colon in a path component must not be mistaken for a URL scheme
+        #expect(song(file: "Genesis: Live/track.flac").sourceKind == .library)
+    }
+
+    @Test func fallbackAssetPerKind() {
+        #expect(song(file: "Music/a.flac").fallbackArtAssetName == "MikMPDLogo")
+        #expect(song(file: "http://x/r").fallbackArtAssetName == "RadioFallbackArt")
+        #expect(song(file: "cdda://1").fallbackArtAssetName == "CDFallbackArt")
+    }
+}
+
 // MARK: - MPDOutput
 
 @Suite struct MPDOutputTests {
