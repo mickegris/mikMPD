@@ -9,7 +9,7 @@ func artCacheKey(artist: String, album: String) -> String {
     return "\(trimmedArtist)|\(trimmedAlbum)".lowercased()
 }
 
-enum PlaybackSourceKind {
+nonisolated enum PlaybackSourceKind {
     case library
     case radio
     case cd
