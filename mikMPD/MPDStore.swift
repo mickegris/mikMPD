@@ -713,6 +713,51 @@ final class MPDStore: ObservableObject {
         }
     }
 
+    /// Human-readable text from an MPD ACK line, e.g.
+    /// `ACK [50@0] {delpartition} it's not empty` → "it's not empty".
+    static func ackMessage(_ line: String) -> String {
+        guard line.hasPrefix("ACK"), let brace = line.range(of: "} ") else { return line }
+        return String(line[brace.upperBound...])
+    }
+
+    /// Create a partition. Calls completion on main with nil on success or an error message.
+    func createPartition(_ name: String, completion: @escaping (String?) -> Void) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { completion("Name must not be empty"); return }
+        guard !partitions.contains(trimmed) else { completion("A partition named “\(trimmed)” already exists"); return }
+        Q.async { [weak self] in
+            guard let self else { return }
+            var failure: String?
+            do { _ = try self.socket.command("newpartition \"\(trimmed.esc)\"") }
+            catch { failure = Self.ackMessage(error.localizedDescription) }
+            DispatchQueue.main.async {
+                self.loadPartitions()
+                completion(failure)
+            }
+        }
+    }
+
+    /// Delete a partition. MPD requires it to be empty: no outputs and no
+    /// connected clients. Calls completion on main with nil on success.
+    func deletePartition(_ name: String, completion: @escaping (String?) -> Void) {
+        guard name != "default" else { completion("The default partition cannot be deleted"); return }
+        guard name != currentPartition else { completion("Switch away from “\(name)” before deleting it"); return }
+        Q.async { [weak self] in
+            guard let self else { return }
+            var failure: String?
+            do { _ = try self.socket.command("delpartition \"\(name.esc)\"") }
+            catch { failure = Self.ackMessage(error.localizedDescription) }
+            DispatchQueue.main.async {
+                if failure == nil, self.lastUsedPartitionName == name {
+                    self.lastUsedPartitionName = "default"
+                }
+                self.loadPartitions()
+                self.loadOutputs()
+                completion(failure)
+            }
+        }
+    }
+
     func switchPartition(_ name: String) {
         if rememberPartitions {
             lastUsedPartitionName = name

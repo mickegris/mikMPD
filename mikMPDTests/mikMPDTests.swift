@@ -484,6 +484,28 @@ import Testing
     }
 }
 
+// MARK: - ackMessage
+
+@Suite struct AckMessageTests {
+    @Test func stripsAckPrefix() {
+        #expect(MPDStore.ackMessage("ACK [50@0] {delpartition} it's not empty") == "it's not empty")
+        #expect(MPDStore.ackMessage("ACK [56@0] {newpartition} name already exists") == "name already exists")
+    }
+
+    @Test func nonAckPassesThrough() {
+        #expect(MPDStore.ackMessage("Not connected") == "Not connected")
+        #expect(MPDStore.ackMessage("") == "")
+    }
+
+    @Test func malformedAckPassesThrough() {
+        #expect(MPDStore.ackMessage("ACK weird format") == "ACK weird format")
+    }
+
+    @Test func messageMayContainBraces() {
+        #expect(MPDStore.ackMessage("ACK [5@0] {load} No such playlist: {x}") == "No such playlist: {x}")
+    }
+}
+
 // MARK: - SavedStation
 
 @Suite struct SavedStationTests {
