@@ -30,28 +30,33 @@ final class MPDDiscoveryService: ObservableObject {
         isBrowsing = true
         let browser = NWBrowser(for: .bonjour(type: "_mpd._tcp", domain: nil), using: .tcp)
         browser.stateUpdateHandler = { [weak self] state in
-            guard let self else { return }
-            switch state {
-            case .waiting(let error):
-                // Typically the local-network permission prompt was denied
-                if case .dns = error { self.permissionDenied = true }
-                self.stop()
-            case .failed:
-                self.stop()
-            default:
-                break
+            // Handlers run on the main queue (start(queue: .main) below)
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                switch state {
+                case .waiting(let error):
+                    // Typically the local-network permission prompt was denied
+                    if case .dns = error { self.permissionDenied = true }
+                    self.stop()
+                case .failed:
+                    self.stop()
+                default:
+                    break
+                }
             }
         }
         browser.browseResultsChangedHandler = { [weak self] results, _ in
-            guard let self else { return }
-            var currentNames = Set<String>()
-            for result in results {
-                if case .service(let name, _, _, _) = result.endpoint {
-                    currentNames.insert(name)
-                    self.resolve(endpoint: result.endpoint, name: name)
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                var currentNames = Set<String>()
+                for result in results {
+                    if case .service(let name, _, _, _) = result.endpoint {
+                        currentNames.insert(name)
+                        self.resolve(endpoint: result.endpoint, name: name)
+                    }
                 }
+                self.servers.removeAll { !currentNames.contains($0.name) }
             }
-            self.servers.removeAll { !currentNames.contains($0.name) }
         }
         // Main queue so the handlers can touch @Published state directly
         browser.start(queue: .main)
@@ -76,22 +81,24 @@ final class MPDDiscoveryService: ObservableObject {
         guard !servers.contains(where: { $0.name == name }) else { return }
         let conn = NWConnection(to: endpoint, using: .tcp)
         conn.stateUpdateHandler = { [weak self, weak conn] state in
-            guard let self, let conn else { return }
-            switch state {
-            case .ready:
-                if let remote = conn.currentPath?.remoteEndpoint,
-                   case .hostPort(let host, let port) = remote,
-                   !self.servers.contains(where: { $0.name == name }) {
-                    self.servers.append(DiscoveredServer(name: name,
-                                                         host: Self.displayHost(host),
-                                                         port: Int(port.rawValue)))
-                    self.servers.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            MainActor.assumeIsolated {
+                guard let self, let conn else { return }
+                switch state {
+                case .ready:
+                    if let remote = conn.currentPath?.remoteEndpoint,
+                       case .hostPort(let host, let port) = remote,
+                       !self.servers.contains(where: { $0.name == name }) {
+                        self.servers.append(DiscoveredServer(name: name,
+                                                             host: Self.displayHost(host),
+                                                             port: Int(port.rawValue)))
+                        self.servers.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+                    }
+                    conn.cancel()
+                case .failed, .cancelled:
+                    self.resolvers.removeAll { $0 === conn }
+                default:
+                    break
                 }
-                conn.cancel()
-            case .failed, .cancelled:
-                self.resolvers.removeAll { $0 === conn }
-            default:
-                break
             }
         }
         resolvers.append(conn)

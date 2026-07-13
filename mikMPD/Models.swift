@@ -2,7 +2,7 @@
 import Foundation
 import UIKit
 
-func artCacheKey(artist: String, album: String) -> String {
+nonisolated func artCacheKey(artist: String, album: String) -> String {
     let trimmedArtist = artist.trimmingCharacters(in: .whitespacesAndNewlines)
     let trimmedAlbum = album.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedArtist.isEmpty || !trimmedAlbum.isEmpty else { return "" }
@@ -15,7 +15,7 @@ nonisolated enum PlaybackSourceKind {
     case cd
 }
 
-struct MPDSong: Identifiable, Equatable {
+nonisolated struct MPDSong: Identifiable, Equatable {
     var file:     String = ""
     var title:    String = ""
     var artist:   String = ""
@@ -62,7 +62,7 @@ struct MPDSong: Identifiable, Equatable {
     }
 }
 
-struct MPDOutput: Identifiable, Equatable {
+nonisolated struct MPDOutput: Identifiable, Equatable {
     var outputID: String
     var name:     String
     var enabled:  Bool
@@ -76,7 +76,7 @@ struct MPDOutput: Identifiable, Equatable {
     }
 }
 
-struct MPDPlaylist: Identifiable, Equatable {
+nonisolated struct MPDPlaylist: Identifiable, Equatable {
     var name: String
     var lastModified: String = ""
     var id: String { name }
@@ -85,7 +85,7 @@ struct MPDPlaylist: Identifiable, Equatable {
 /// A saved MPD server. The password is not part of the profile — it lives in
 /// the Keychain under "mpd_password_<id>" since this struct is stored as JSON
 /// in UserDefaults.
-struct MPDServerProfile: Codable, Identifiable, Equatable {
+nonisolated struct MPDServerProfile: Codable, Identifiable, Equatable {
     var id: UUID = UUID()
     var name: String
     var host: String
@@ -95,14 +95,14 @@ struct MPDServerProfile: Codable, Identifiable, Equatable {
 }
 
 /// Build the initial profile from pre-multi-server settings (one-time migration).
-func migratedLegacyProfile(host: String, portStr: String, streamURL: String, lastPartition: String?) -> MPDServerProfile {
+nonisolated func migratedLegacyProfile(host: String, portStr: String, streamURL: String, lastPartition: String?) -> MPDServerProfile {
     MPDServerProfile(name: host, host: host, port: Int(portStr) ?? 6600,
                      streamURL: streamURL, lastPartition: lastPartition ?? "")
 }
 
 /// MPD playlist names are file names (NAME.m3u): returns the trimmed name,
 /// or nil for empty names or names containing path separators/newlines.
-func validatePlaylistName(_ name: String) -> String? {
+nonisolated func validatePlaylistName(_ name: String) -> String? {
     let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty,
           !trimmed.contains("/"), !trimmed.contains("\\"),
@@ -112,7 +112,7 @@ func validatePlaylistName(_ name: String) -> String? {
 
 /// Songs from `listplaylistinfo` carry no pos/id fields; assign pos from the
 /// record index so duplicate files in a playlist still get unique ids.
-func songsAssigningPositions(_ records: [MPDRecord]) -> [MPDSong] {
+nonisolated func songsAssigningPositions(_ records: [MPDRecord]) -> [MPDSong] {
     records.enumerated().map { i, r in
         var s = MPDSong(r)
         s.pos = i
@@ -120,7 +120,7 @@ func songsAssigningPositions(_ records: [MPDRecord]) -> [MPDSong] {
     }
 }
 
-struct MPDBrowseItem: Identifiable {
+nonisolated struct MPDBrowseItem: Identifiable {
     enum Kind { case directory, file, playlist }
     var kind: Kind
     var path: String
@@ -137,7 +137,7 @@ struct MPDBrowseItem: Identifiable {
 
 /// Convert SwiftUI's onMove destination (an index into the pre-removal array)
 /// to the TO argument of MPD's `move`/`playlistmove` (an index after removal).
-func mpdMoveTarget(from: Int, to destination: Int) -> Int {
+nonisolated func mpdMoveTarget(from: Int, to destination: Int) -> Int {
     destination > from ? destination - 1 : destination
 }
 

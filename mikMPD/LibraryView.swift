@@ -234,7 +234,7 @@ struct GenreDetailView: View {
 }
 
 // MARK: - Radio
-struct SavedStation: Codable, Identifiable, Equatable {
+nonisolated struct SavedStation: Codable, Identifiable, Equatable {
     let name: String
     let url: String
     var id: String { url }

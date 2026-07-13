@@ -67,7 +67,7 @@ final class MPDStore: ObservableObject {
         get { KeychainHelper.load(key: Self.passwordKey(forServerID: activeServerID)) ?? "" }
         set { KeychainHelper.save(key: Self.passwordKey(forServerID: activeServerID), value: newValue) }
     }
-    static func passwordKey(forServerID id: String) -> String {
+    nonisolated static func passwordKey(forServerID id: String) -> String {
         id.isEmpty ? "mpd_password" : "mpd_password_\(id)"
     }
 
@@ -99,7 +99,7 @@ final class MPDStore: ObservableObject {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }()
-    private var lastSongID    = ""
+    nonisolated(unsafe) private var lastSongID = ""  // only meaningfully touched on Q (poll)
     private var lyricsToken   = UUID()   // invalidates in-flight lyric fetches on song change
     private var isReconnecting = false
     private var isRestoringPartition = false
@@ -152,11 +152,12 @@ final class MPDStore: ObservableObject {
         }
         let h = host, p = port, pw = password
         // On cold start partitionToRestore is nil; fall back to persisted @AppStorage value
-        var restorePartition = partitionToRestore
+        var pendingRestore = partitionToRestore
         partitionToRestore = nil
-        if restorePartition == nil, rememberPartitions, let saved = lastUsedPartitionName, !saved.isEmpty {
-            restorePartition = saved
+        if pendingRestore == nil, rememberPartitions, let saved = lastUsedPartitionName, !saved.isEmpty {
+            pendingRestore = saved
         }
+        let restorePartition = pendingRestore
         Q.async { [weak self] in
             guard let self else { return }
             do {
@@ -282,7 +283,8 @@ final class MPDStore: ObservableObject {
 
         // Poll: every 1s, fetches ground truth from MPD
         let p = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
-            self?.Q.async { self?.poll() }
+            guard let self else { return }
+            self.Q.async { self.poll() }
         }
         RunLoop.main.add(p, forMode: .common)
         pollTimer = p
@@ -328,7 +330,7 @@ final class MPDStore: ObservableObject {
     }
 
     // MARK: - Poll (runs on Q)
-    private func poll() {
+    nonisolated private func poll() {
         guard socket.connected else {
             // Socket was disconnected by a failed command — trigger reconnect
             DispatchQueue.main.async { [weak self] in
@@ -433,7 +435,7 @@ final class MPDStore: ObservableObject {
     }
 
     /// Get playlist length from status — much cheaper than fetching the full playlistinfo.
-    private func playlistLength() -> Int {
+    nonisolated private func playlistLength() -> Int {
         guard let recs = try? socket.command("status") else { return 0 }
         var s: MPDRecord = [:]
         for rec in recs { s.merge(rec) { _, new in new } }
@@ -536,7 +538,7 @@ final class MPDStore: ObservableObject {
 
     // MARK: - Library
 
-    func listTag(_ tag: String, filter: String? = nil, value: String? = nil, completion: @escaping ([String]) -> Void) {
+    func listTag(_ tag: String, filter: String? = nil, value: String? = nil, completion: @escaping @MainActor ([String]) -> Void) {
         Q.async { [weak self] in
             guard let self else { return }
             var cmd = "list \(tag)"
@@ -547,7 +549,7 @@ final class MPDStore: ObservableObject {
         }
     }
 
-    func findSongs(tag: String, value: String, album: String? = nil, completion: @escaping ([MPDSong]) -> Void) {
+    func findSongs(tag: String, value: String, album: String? = nil, completion: @escaping @MainActor ([MPDSong]) -> Void) {
         Q.async { [weak self] in
             guard let self else { return }
             var cmd = "find \(tag) \"\(value.esc)\""
@@ -560,7 +562,7 @@ final class MPDStore: ObservableObject {
         }
     }
 
-    func albumSongs(album: String, artist: String? = nil, completion: @escaping ([MPDSong]) -> Void) {
+    func albumSongs(album: String, artist: String? = nil, completion: @escaping @MainActor ([MPDSong]) -> Void) {
         Q.async { [weak self] in
             guard let self else { return }
             var cmd = "find album \"\(album.esc)\""
@@ -630,7 +632,7 @@ final class MPDStore: ObservableObject {
     }
     
     // Non-mutating browse that just returns items via completion
-    func browse(_ path: String, completion: @escaping ([MPDBrowseItem]) -> Void) {
+    func browse(_ path: String, completion: @escaping @MainActor ([MPDBrowseItem]) -> Void) {
         let cmd = path.isEmpty ? "lsinfo" : "lsinfo \"\(path.esc)\""
         Q.async { [weak self] in
             guard let self else { return }
@@ -644,7 +646,7 @@ final class MPDStore: ObservableObject {
         }
     }
 
-    func probeCDTracks(completion: @escaping ([MPDBrowseItem]) -> Void) {
+    func probeCDTracks(completion: @escaping @MainActor ([MPDBrowseItem]) -> Void) {
         Q.async { [weak self] in
             guard let self else { return }
             var items: [MPDBrowseItem] = []
@@ -814,7 +816,7 @@ final class MPDStore: ObservableObject {
         }
     }
 
-    func playlistSongs(name: String, completion: @escaping ([MPDSong]) -> Void) {
+    func playlistSongs(name: String, completion: @escaping @MainActor ([MPDSong]) -> Void) {
         Q.async { [weak self] in
             guard let self else { return }
             let recs = (try? self.socket.command("listplaylistinfo \"\(name.esc)\"")) ?? []
@@ -833,7 +835,7 @@ final class MPDStore: ObservableObject {
         }
     }
 
-    func removeFromPlaylist(name: String, at offsets: IndexSet, completion: @escaping () -> Void) {
+    func removeFromPlaylist(name: String, at offsets: IndexSet, completion: @escaping @MainActor () -> Void) {
         let sorted = offsets.sorted(by: >)
         Q.async { [weak self] in
             guard let self else { return }
@@ -843,7 +845,7 @@ final class MPDStore: ObservableObject {
     }
 
     /// Reorder one row using SwiftUI onMove semantics (see moveRow).
-    func movePlaylistSong(name: String, from offsets: IndexSet, to destination: Int, completion: @escaping () -> Void) {
+    func movePlaylistSong(name: String, from offsets: IndexSet, to destination: Int, completion: @escaping @MainActor () -> Void) {
         guard let from = offsets.first else { return }
         let to = mpdMoveTarget(from: from, to: destination)
         guard from != to else { completion(); return }
@@ -853,7 +855,7 @@ final class MPDStore: ObservableObject {
         }
     }
 
-    func renamePlaylist(_ old: String, to new: String, completion: @escaping (String?) -> Void) {
+    func renamePlaylist(_ old: String, to new: String, completion: @escaping @MainActor (String?) -> Void) {
         Q.async { [weak self] in
             guard let self else { return }
             var failure: String?
@@ -873,7 +875,7 @@ final class MPDStore: ObservableObject {
         }
     }
 
-    func saveQueueAsPlaylist(name: String, completion: @escaping (String?) -> Void) {
+    func saveQueueAsPlaylist(name: String, completion: @escaping @MainActor (String?) -> Void) {
         Q.async { [weak self] in
             guard let self else { return }
             var failure: String?
@@ -950,13 +952,13 @@ final class MPDStore: ObservableObject {
 
     /// Human-readable text from an MPD ACK line, e.g.
     /// `ACK [50@0] {delpartition} it's not empty` → "it's not empty".
-    static func ackMessage(_ line: String) -> String {
+    nonisolated static func ackMessage(_ line: String) -> String {
         guard line.hasPrefix("ACK"), let brace = line.range(of: "} ") else { return line }
         return String(line[brace.upperBound...])
     }
 
     /// Create a partition. Calls completion on main with nil on success or an error message.
-    func createPartition(_ name: String, completion: @escaping (String?) -> Void) {
+    func createPartition(_ name: String, completion: @escaping @MainActor (String?) -> Void) {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { completion("Name must not be empty"); return }
         guard !partitions.contains(trimmed) else { completion("A partition named “\(trimmed)” already exists"); return }
@@ -974,7 +976,7 @@ final class MPDStore: ObservableObject {
 
     /// Delete a partition. MPD requires it to be empty: no outputs and no
     /// connected clients. Calls completion on main with nil on success.
-    func deletePartition(_ name: String, completion: @escaping (String?) -> Void) {
+    func deletePartition(_ name: String, completion: @escaping @MainActor (String?) -> Void) {
         guard name != "default" else { completion("The default partition cannot be deleted"); return }
         guard name != currentPartition else { completion("Switch away from “\(name)” before deleting it"); return }
         Q.async { [weak self] in
@@ -1284,7 +1286,7 @@ final class MPDStore: ObservableObject {
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     }
 
-    static func parseStreamURL(_ s: String) -> URL? {
+    nonisolated static func parseStreamURL(_ s: String) -> URL? {
         let t = s.trimmingCharacters(in: .whitespaces)
         guard !t.isEmpty, let u = URL(string: t),
               let scheme = u.scheme?.lowercased(),
@@ -1369,7 +1371,7 @@ final class MPDStore: ObservableObject {
 }
 
 extension String {
-    var esc: String {
+    nonisolated var esc: String {
         replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
     }
