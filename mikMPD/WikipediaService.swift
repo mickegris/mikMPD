@@ -47,25 +47,32 @@ actor WikipediaService {
             }
         }
         // Search with progressively looser queries
-        let albumLower = album.lowercased()
-        let artistLetters = artist.lowercased().filter(\.isLetter)
         let searches = artist.isEmpty
             ? ["\(album) album"]
             : ["\(album) \(artist) album", "\(album) album"]
         for searchQ in searches {
             if let ttl = await searchTitle(searchQ),
-               let r = await summaryData(title: ttl), !r.extract.isEmpty {
-                let lower = r.extract.lowercased()
-                let titleLower = ttl.lowercased()
-                // Result must relate to this album, not just the artist's discography
-                let aboutAlbum = titleLower.contains(albumLower) || lower.contains(albumLower)
-                let aboutArtist = artist.isEmpty
-                    || lower.contains(artist.lowercased())
-                    || lower.filter(\.isLetter).contains(artistLetters)
-                if aboutAlbum && aboutArtist { cache[key] = r.extract; return r.extract }
+               let r = await summaryData(title: ttl), !r.extract.isEmpty,
+               Self.albumResultMatches(title: ttl, extract: r.extract, album: album, artist: artist) {
+                cache[key] = r.extract; return r.extract
             }
         }
         cache[key] = ""; return nil
+    }
+
+    /// A search hit must relate to this album, not just the artist's
+    /// discography. Both sides are dash/quote-normalized: Wikipedia titles
+    /// use en dashes ("1967–1970") where tags usually have hyphens.
+    nonisolated static func albumResultMatches(title: String, extract: String, album: String, artist: String) -> Bool {
+        let albumLower = album.normalizedForLookup.lowercased()
+        let titleLower = title.normalizedForLookup.lowercased()
+        let extractLower = extract.normalizedForLookup.lowercased()
+        let aboutAlbum = titleLower.contains(albumLower) || extractLower.contains(albumLower)
+        let artistLower = artist.normalizedForLookup.lowercased()
+        let aboutArtist = artist.isEmpty
+            || extractLower.contains(artistLower)
+            || extractLower.filter(\.isLetter).contains(artistLower.filter(\.isLetter))
+        return aboutAlbum && aboutArtist
     }
 
     /// Fetch artist info with music disambiguation.

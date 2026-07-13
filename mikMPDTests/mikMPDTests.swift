@@ -484,6 +484,43 @@ import Testing
     }
 }
 
+// MARK: - Wikipedia album matching
+
+@Suite struct WikipediaAlbumMatchTests {
+    @Test func enDashTitleMatchesHyphenTag() {
+        // Wikipedia titles ranges with en dashes; tags usually carry hyphens
+        #expect(WikipediaService.albumResultMatches(
+            title: "1967\u{2013}1970",
+            extract: "1967\u{2013}1970 is a compilation album of songs by the English rock band the Beatles.",
+            album: "1967-1970",
+            artist: "The Beatles"))
+    }
+
+    @Test func plainTitleStillMatches() {
+        #expect(WikipediaService.albumResultMatches(
+            title: "Abbey Road",
+            extract: "Abbey Road is the eleventh studio album by the English rock band the Beatles.",
+            album: "Abbey Road",
+            artist: "The Beatles"))
+    }
+
+    @Test func unrelatedAlbumRejected() {
+        #expect(!WikipediaService.albumResultMatches(
+            title: "The Beatles discography",
+            extract: "The English rock band the Beatles have released 12 studio albums.",
+            album: "1967-1970",
+            artist: "The Beatles"))
+    }
+
+    @Test func wrongArtistRejected() {
+        #expect(!WikipediaService.albumResultMatches(
+            title: "Greatest Hits",
+            extract: "Greatest Hits is a compilation album by the American rock band Journey.",
+            album: "Greatest Hits",
+            artist: "Queen"))
+    }
+}
+
 // MARK: - Stored playlists
 
 @Suite struct PlaylistNameTests {
