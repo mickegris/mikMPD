@@ -59,11 +59,24 @@ final class MPDStore: ObservableObject {
     private var outputNameToPartition: [String: String] = [:]
 
     // MARK: - Settings
+    // host/portStr/password/httpStreamURL are the *live* connection values;
+    // they are loaded from the active MPDServerProfile on switch.
     @AppStorage("mpd_host")     var host:    String = "192.168.1.1"
     @AppStorage("mpd_port")     var portStr: String = "6600"
     var password: String {
-        get { KeychainHelper.load(key: "mpd_password") ?? "" }
-        set { KeychainHelper.save(key: "mpd_password", value: newValue) }
+        get { KeychainHelper.load(key: Self.passwordKey(forServerID: activeServerID)) ?? "" }
+        set { KeychainHelper.save(key: Self.passwordKey(forServerID: activeServerID), value: newValue) }
+    }
+    static func passwordKey(forServerID id: String) -> String {
+        id.isEmpty ? "mpd_password" : "mpd_password_\(id)"
+    }
+
+    // Saved server profiles (passwords live in the Keychain, not in this JSON)
+    @Published var servers: [MPDServerProfile] = [] {
+        didSet { UserDefaults.standard.set((try? JSONEncoder().encode(servers)) ?? Data(), forKey: "mpdServers") }
+    }
+    @Published var activeServerID: String = UserDefaults.standard.string(forKey: "activeServerID") ?? "" {
+        didSet { UserDefaults.standard.set(activeServerID, forKey: "activeServerID") }
     }
     @AppStorage("rememberPartitions") private var rememberPartitions: Bool = false
     @AppStorage("lastUsedPartitionName") private var lastUsedPartitionName: String?
@@ -104,7 +117,29 @@ final class MPDStore: ObservableObject {
             KeychainHelper.save(key: "mpd_password", value: legacy)
             UserDefaults.standard.removeObject(forKey: "mpd_password")
         }
+        loadServersMigratingIfNeeded()
         connect()
+    }
+
+    /// Decode saved server profiles; on first run after the multi-server
+    /// update, create one profile from the legacy single-server settings.
+    private func loadServersMigratingIfNeeded() {
+        if let data = UserDefaults.standard.data(forKey: "mpdServers"),
+           let decoded = try? JSONDecoder().decode([MPDServerProfile].self, from: data) {
+            servers = decoded
+        }
+        if servers.isEmpty {
+            let profile = migratedLegacyProfile(host: host, portStr: portStr,
+                                                streamURL: httpStreamURL,
+                                                lastPartition: lastUsedPartitionName)
+            if let legacyPW = KeychainHelper.load(key: "mpd_password"), !legacyPW.isEmpty {
+                KeychainHelper.save(key: "mpd_password_\(profile.id.uuidString)", value: legacyPW)
+            }
+            servers = [profile]
+            activeServerID = profile.id.uuidString
+        } else if activeServerID.isEmpty, let first = servers.first {
+            activeServerID = first.id.uuidString
+        }
     }
 
     // MARK: - Connection
@@ -150,6 +185,81 @@ final class MPDStore: ObservableObject {
         }
         Q.async { self.socket.disconnect() }
         DispatchQueue.main.async { self.isConnected = false }
+    }
+
+    // MARK: - Saved servers
+
+    func password(forServer id: UUID) -> String {
+        KeychainHelper.load(key: "mpd_password_\(id.uuidString)") ?? ""
+    }
+
+    func setPassword(_ pw: String, forServer id: UUID) {
+        KeychainHelper.save(key: "mpd_password_\(id.uuidString)", value: pw)
+    }
+
+    func addServer(_ profile: MPDServerProfile, password: String) {
+        servers.append(profile)
+        setPassword(password, forServer: profile.id)
+        if servers.count == 1 { switchToServer(profile, force: true) }
+    }
+
+    func updateServer(_ profile: MPDServerProfile) {
+        guard let idx = servers.firstIndex(where: { $0.id == profile.id }) else { return }
+        servers[idx] = profile
+        if profile.id.uuidString == activeServerID {
+            host = profile.host
+            portStr = String(profile.port)
+            httpStreamURL = profile.streamURL
+            if isPhoneStreaming { stopPhoneStream() }
+            disconnect()
+            partitionToRestore = nil
+            connect()
+        }
+    }
+
+    func deleteServer(_ profile: MPDServerProfile) {
+        servers.removeAll { $0.id == profile.id }
+        KeychainHelper.save(key: "mpd_password_\(profile.id.uuidString)", value: "")  // removes the entry
+        if profile.id.uuidString == activeServerID {
+            if let next = servers.first {
+                switchToServer(next, force: true)
+            } else {
+                activeServerID = ""
+                disconnect()
+            }
+        }
+    }
+
+    /// Make a profile the active server and reconnect. `force` reconnects
+    /// even if it is already active (used as an explicit reconnect).
+    func switchToServer(_ profile: MPDServerProfile, force: Bool = false) {
+        guard force || profile.id.uuidString != activeServerID else { return }
+        // Remember which partition the outgoing profile was on
+        if let idx = servers.firstIndex(where: { $0.id.uuidString == activeServerID }),
+           !currentPartition.isEmpty {
+            servers[idx].lastPartition = currentPartition
+        }
+        if isPhoneStreaming { stopPhoneStream() }  // stream URL belongs to the old server
+        disconnect()
+        partitionToRestore = nil  // don't carry the old server's partition across
+        activeServerID = profile.id.uuidString
+        host = profile.host
+        portStr = String(profile.port)
+        httpStreamURL = profile.streamURL
+        lastUsedPartitionName = profile.lastPartition.isEmpty ? nil : profile.lastPartition
+        resetServerState()
+        connect()
+    }
+
+    /// Clear server-specific published state so stale data from the previous
+    /// server doesn't flash while the new connection loads.
+    private func resetServerState() {
+        queue = []; currentSong = MPDSong(); currentSongID = ""; lastSongID = ""
+        outputs = []; outputPartitions = [:]; outputNameToPartition = [:]; partitions = []
+        searchResults = []; browseItems = []; playlists = []
+        elapsed = 0; duration = 0; isPlaying = false; isPaused = false
+        playlistPos = -1; bitrate = ""; audioFmt = ""; currentPartition = ""
+        lyricsState = .unavailable
     }
 
     // MARK: - Timers

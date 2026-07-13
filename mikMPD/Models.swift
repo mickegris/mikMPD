@@ -82,6 +82,24 @@ struct MPDPlaylist: Identifiable, Equatable {
     var id: String { name }
 }
 
+/// A saved MPD server. The password is not part of the profile — it lives in
+/// the Keychain under "mpd_password_<id>" since this struct is stored as JSON
+/// in UserDefaults.
+struct MPDServerProfile: Codable, Identifiable, Equatable {
+    var id: UUID = UUID()
+    var name: String
+    var host: String
+    var port: Int = 6600
+    var streamURL: String = ""      // per-server httpd output URL
+    var lastPartition: String = ""  // per-server "remember partitions" value
+}
+
+/// Build the initial profile from pre-multi-server settings (one-time migration).
+func migratedLegacyProfile(host: String, portStr: String, streamURL: String, lastPartition: String?) -> MPDServerProfile {
+    MPDServerProfile(name: host, host: host, port: Int(portStr) ?? 6600,
+                     streamURL: streamURL, lastPartition: lastPartition ?? "")
+}
+
 /// MPD playlist names are file names (NAME.m3u): returns the trimmed name,
 /// or nil for empty names or names containing path separators/newlines.
 func validatePlaylistName(_ name: String) -> String? {

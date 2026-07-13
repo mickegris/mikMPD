@@ -484,6 +484,41 @@ import Testing
     }
 }
 
+// MARK: - MPDServerProfile
+
+@Suite struct ServerProfileTests {
+    @Test @MainActor func codableRoundtrip() throws {
+        let servers = [
+            MPDServerProfile(name: "Living room", host: "10.0.0.5", port: 6601,
+                             streamURL: "http://10.0.0.5:8000/", lastPartition: "zone2"),
+            MPDServerProfile(name: "Office", host: "office.local"),
+        ]
+        let data = try JSONEncoder().encode(servers)
+        let decoded = try JSONDecoder().decode([MPDServerProfile].self, from: data)
+        #expect(decoded == servers)
+    }
+
+    @Test func migrationUsesHostAsName() {
+        let profile = migratedLegacyProfile(host: "mpd.local", portStr: "6600",
+                                            streamURL: "http://mpd.local:8000/", lastPartition: nil)
+        #expect(profile.name == "mpd.local")
+        #expect(profile.host == "mpd.local")
+        #expect(profile.port == 6600)
+        #expect(profile.streamURL == "http://mpd.local:8000/")
+        #expect(profile.lastPartition == "")
+    }
+
+    @Test func migrationFallsBackOnBadPort() {
+        #expect(migratedLegacyProfile(host: "h", portStr: "abc", streamURL: "", lastPartition: "p").port == 6600)
+        #expect(migratedLegacyProfile(host: "h", portStr: "6601", streamURL: "", lastPartition: "p").lastPartition == "p")
+    }
+
+    @Test func passwordKeyFallsBackToLegacy() {
+        #expect(MPDStore.passwordKey(forServerID: "") == "mpd_password")
+        #expect(MPDStore.passwordKey(forServerID: "ABC") == "mpd_password_ABC")
+    }
+}
+
 // MARK: - Wikipedia album matching
 
 @Suite struct WikipediaAlbumMatchTests {
