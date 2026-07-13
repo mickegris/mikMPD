@@ -485,6 +485,21 @@ import Testing
     }
 }
 
+// MARK: - Phone streaming (regression: isolation trap on bg poll timer)
+
+@Suite struct PhoneStreamTests {
+    @Test @MainActor func startingStreamDoesNotTrapIsolationChecks() async throws {
+        let store = MPDStore()
+        store.httpStreamURL = "http://127.0.0.1:9/stream"
+        store.startPhoneStream()
+        // The background poll timer fires on Q after 2s; give it time to
+        // trip dispatch_assert_queue if any handler is MainActor-inferred.
+        try await Task.sleep(for: .seconds(5))
+        store.stopPhoneStream()
+        #expect(!store.isPhoneStreaming)
+    }
+}
+
 // MARK: - Server discovery
 
 @Suite struct DiscoveryHostTests {

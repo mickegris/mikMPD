@@ -1281,7 +1281,9 @@ final class MPDStore: ObservableObject {
         info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = elapsed
         info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? 1.0 : 0.0
         if let img = albumArtCache[currentSong.artKey] ?? Self.fallbackArtwork(for: currentSong) {
-            info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: img.size) { _ in img }
+            // MediaPlayer invokes the request handler on its own queue —
+            // it must be @Sendable or the MainActor inference traps there.
+            info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: img.size) { @Sendable _ in img }
         }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     }
