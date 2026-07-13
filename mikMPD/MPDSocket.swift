@@ -2,7 +2,7 @@
 import Foundation
 import Darwin
 
-enum MPDError: LocalizedError {
+nonisolated enum MPDError: LocalizedError {
     case notConnected, connectionFailed(String), badHandshake, authFailed, io(String), ack(String)
     var errorDescription: String? {
         switch self {
@@ -19,7 +19,9 @@ enum MPDError: LocalizedError {
 /// One key/value pair from MPD. Records are lists of these.
 typealias MPDRecord = [String: String]
 
-final class MPDSocket {
+// @unchecked Sendable: not thread-safe by itself — the invariant is that all
+// access after init happens on MPDStore's serial queue Q (see CLAUDE.md).
+nonisolated final class MPDSocket: @unchecked Sendable {
     private(set) var connected = false
     private var fd: Int32 = -1
     private var buf = Data()
@@ -253,9 +255,9 @@ final class MPDSocket {
 
 // These keys mark the start of a new record in multi-record responses.
 // We do NOT flush on duplicate keys — `attribute:` repeats inside output records.
-private let mpdRecordStarters: Set<String> = ["file", "directory", "playlist", "outputid", "partition"]
+private nonisolated let mpdRecordStarters: Set<String> = ["file", "directory", "playlist", "outputid", "partition"]
 
-func parseMPDRecords(_ lines: [String]) -> [MPDRecord] {
+nonisolated func parseMPDRecords(_ lines: [String]) -> [MPDRecord] {
     var out: [MPDRecord] = []
     var cur: MPDRecord = [:]
     func flush() { if !cur.isEmpty { out.append(cur); cur = [:] } }

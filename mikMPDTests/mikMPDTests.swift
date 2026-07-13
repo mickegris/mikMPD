@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import Testing
 @testable import mikMPD
 
@@ -90,6 +91,86 @@ import Testing
     @Test @MainActor func equatable() {
         let r: MPDRecord = ["file": "a.flac", "id": "1"]
         #expect(MPDSong(r) == MPDSong(r))
+    }
+}
+
+// MARK: - artCacheKey
+
+@Suite struct ArtCacheKeyTests {
+    @Test func trimsWhitespace() {
+        #expect(artCacheKey(artist: " The Beatles ", album: "\tAbbey Road\n") == "the beatles|abbey road")
+    }
+
+    @Test func bothEmptyReturnsEmptyKey() {
+        #expect(artCacheKey(artist: "", album: "") == "")
+        #expect(artCacheKey(artist: "  ", album: "\n") == "")
+    }
+
+    @Test func oneEmptyKeepsSeparator() {
+        #expect(artCacheKey(artist: "Artist", album: "") == "artist|")
+        #expect(artCacheKey(artist: "", album: "Album") == "|album")
+    }
+
+    @Test func matchesSongArtKey() {
+        var song = MPDSong()
+        song.artist = " Some Artist "
+        song.album = "Some Album"
+        #expect(song.artKey == artCacheKey(artist: " Some Artist ", album: "Some Album"))
+    }
+}
+
+// MARK: - mpdMoveTarget
+
+@Suite struct MoveTargetTests {
+    // SwiftUI onMove reports the destination as an index into the array
+    // before the moved row is removed; MPD wants the index after removal.
+    @Test func movingDownSubtractsOne() {
+        #expect(mpdMoveTarget(from: 1, to: 4) == 3)
+        #expect(mpdMoveTarget(from: 0, to: 5) == 4)
+    }
+
+    @Test func movingUpIsUnchanged() {
+        #expect(mpdMoveTarget(from: 3, to: 1) == 1)
+        #expect(mpdMoveTarget(from: 5, to: 0) == 0)
+    }
+
+    @Test func droppingInPlaceYieldsSameIndex() {
+        #expect(mpdMoveTarget(from: 2, to: 2) == 2)
+        // Dropping directly below itself is also a no-op after adjustment
+        #expect(mpdMoveTarget(from: 2, to: 3) == 2)
+    }
+}
+
+// MARK: - PlaybackSourceKind
+
+@Suite struct SourceKindTests {
+    private func song(file: String) -> MPDSong {
+        var s = MPDSong()
+        s.file = file
+        return s
+    }
+
+    @Test func cdTrack() {
+        #expect(song(file: "cdda://1").sourceKind == .cd)
+        #expect(song(file: "CDDA://2").sourceKind == .cd)
+    }
+
+    @Test func radioStreams() {
+        #expect(song(file: "http://stream.example.com:8080/radio").sourceKind == .radio)
+        #expect(song(file: "https://live1.sr.se/p2-flac").sourceKind == .radio)
+    }
+
+    @Test func libraryPaths() {
+        #expect(song(file: "Music/Artist/Album/01 Song.flac").sourceKind == .library)
+        #expect(song(file: "").sourceKind == .library)
+        // A colon in a path component must not be mistaken for a URL scheme
+        #expect(song(file: "Genesis: Live/track.flac").sourceKind == .library)
+    }
+
+    @Test func fallbackAssetPerKind() {
+        #expect(song(file: "Music/a.flac").fallbackArtAssetName == "MikMPDLogo")
+        #expect(song(file: "http://x/r").fallbackArtAssetName == "RadioFallbackArt")
+        #expect(song(file: "cdda://1").fallbackArtAssetName == "CDFallbackArt")
     }
 }
 
@@ -404,6 +485,183 @@ import Testing
     }
 }
 
+// MARK: - Phone streaming (regression: isolation trap on bg poll timer)
+
+@Suite struct PhoneStreamTests {
+    @Test @MainActor func startingStreamDoesNotTrapIsolationChecks() async throws {
+        let store = MPDStore()
+        store.httpStreamURL = "http://127.0.0.1:9/stream"
+        store.startPhoneStream()
+        // The background poll timer fires on Q after 2s; give it time to
+        // trip dispatch_assert_queue if any handler is MainActor-inferred.
+        try await Task.sleep(for: .seconds(5))
+        store.stopPhoneStream()
+        #expect(!store.isPhoneStreaming)
+    }
+}
+
+// MARK: - Server discovery
+
+@Suite struct DiscoveryHostTests {
+    @Test func hostnamePassesThrough() {
+        #expect(MPDDiscoveryService.displayHost(.name("klova.local", nil)) == "klova.local")
+    }
+
+    @Test func ipv4Renders() {
+        #expect(MPDDiscoveryService.displayHost(.ipv4(IPv4Address("192.168.1.5")!)) == "192.168.1.5")
+    }
+
+    @Test func ipv6ScopeSuffixStripped() {
+        let host = MPDDiscoveryService.displayHost(.ipv6(IPv6Address("fe80::1%en0")!))
+        #expect(!host.contains("%"))
+        #expect(host.hasPrefix("fe80::1"))
+    }
+}
+
+// MARK: - MPDServerProfile
+
+@Suite struct ServerProfileTests {
+    @Test @MainActor func codableRoundtrip() throws {
+        let servers = [
+            MPDServerProfile(name: "Living room", host: "10.0.0.5", port: 6601,
+                             streamURL: "http://10.0.0.5:8000/", lastPartition: "zone2"),
+            MPDServerProfile(name: "Office", host: "office.local"),
+        ]
+        let data = try JSONEncoder().encode(servers)
+        let decoded = try JSONDecoder().decode([MPDServerProfile].self, from: data)
+        #expect(decoded == servers)
+    }
+
+    @Test func migrationUsesHostAsName() {
+        let profile = migratedLegacyProfile(host: "mpd.local", portStr: "6600",
+                                            streamURL: "http://mpd.local:8000/", lastPartition: nil)
+        #expect(profile.name == "mpd.local")
+        #expect(profile.host == "mpd.local")
+        #expect(profile.port == 6600)
+        #expect(profile.streamURL == "http://mpd.local:8000/")
+        #expect(profile.lastPartition == "")
+    }
+
+    @Test func migrationFallsBackOnBadPort() {
+        #expect(migratedLegacyProfile(host: "h", portStr: "abc", streamURL: "", lastPartition: "p").port == 6600)
+        #expect(migratedLegacyProfile(host: "h", portStr: "6601", streamURL: "", lastPartition: "p").lastPartition == "p")
+    }
+
+    @Test func passwordKeyFallsBackToLegacy() {
+        #expect(MPDStore.passwordKey(forServerID: "") == "mpd_password")
+        #expect(MPDStore.passwordKey(forServerID: "ABC") == "mpd_password_ABC")
+    }
+}
+
+// MARK: - Wikipedia album matching
+
+@Suite struct WikipediaAlbumMatchTests {
+    @Test func enDashTitleMatchesHyphenTag() {
+        // Wikipedia titles ranges with en dashes; tags usually carry hyphens
+        #expect(WikipediaService.albumResultMatches(
+            title: "1967\u{2013}1970",
+            extract: "1967\u{2013}1970 is a compilation album of songs by the English rock band the Beatles.",
+            album: "1967-1970",
+            artist: "The Beatles"))
+    }
+
+    @Test func plainTitleStillMatches() {
+        #expect(WikipediaService.albumResultMatches(
+            title: "Abbey Road",
+            extract: "Abbey Road is the eleventh studio album by the English rock band the Beatles.",
+            album: "Abbey Road",
+            artist: "The Beatles"))
+    }
+
+    @Test func unrelatedAlbumRejected() {
+        #expect(!WikipediaService.albumResultMatches(
+            title: "The Beatles discography",
+            extract: "The English rock band the Beatles have released 12 studio albums.",
+            album: "1967-1970",
+            artist: "The Beatles"))
+    }
+
+    @Test func wrongArtistRejected() {
+        #expect(!WikipediaService.albumResultMatches(
+            title: "Greatest Hits",
+            extract: "Greatest Hits is a compilation album by the American rock band Journey.",
+            album: "Greatest Hits",
+            artist: "Queen"))
+    }
+}
+
+// MARK: - Stored playlists
+
+@Suite struct PlaylistNameTests {
+    @Test func trimsValidName() {
+        #expect(validatePlaylistName("  My List ") == "My List")
+        #expect(validatePlaylistName("Favorites") == "Favorites")
+    }
+
+    @Test func rejectsEmpty() {
+        #expect(validatePlaylistName("") == nil)
+        #expect(validatePlaylistName("   ") == nil)
+    }
+
+    @Test func rejectsPathSeparatorsAndNewlines() {
+        #expect(validatePlaylistName("a/b") == nil)
+        #expect(validatePlaylistName("a\\b") == nil)
+        #expect(validatePlaylistName("a\nb") == nil)
+    }
+}
+
+@Suite struct PlaylistSongsTests {
+    @Test func assignsPositionsFromIndex() {
+        let records: [MPDRecord] = [
+            ["file": "a.flac", "title": "One"],
+            ["file": "b.flac", "title": "Two"],
+        ]
+        let songs = songsAssigningPositions(records)
+        #expect(songs.count == 2)
+        #expect(songs[0].pos == 0)
+        #expect(songs[1].pos == 1)
+    }
+
+    @Test func duplicateFilesGetDistinctIds() {
+        // listplaylistinfo returns no pos/id; without index assignment two
+        // copies of the same file would collide on MPDSong.id
+        let records: [MPDRecord] = [
+            ["file": "same.flac"],
+            ["file": "same.flac"],
+        ]
+        let songs = songsAssigningPositions(records)
+        #expect(songs[0].id != songs[1].id)
+    }
+}
+
+@Suite struct MPDPlaylistTests {
+    @Test func idIsName() {
+        #expect(MPDPlaylist(name: "Road Trip").id == "Road Trip")
+    }
+}
+
+// MARK: - ackMessage
+
+@Suite struct AckMessageTests {
+    @Test func stripsAckPrefix() {
+        #expect(MPDStore.ackMessage("ACK [50@0] {delpartition} it's not empty") == "it's not empty")
+        #expect(MPDStore.ackMessage("ACK [56@0] {newpartition} name already exists") == "name already exists")
+    }
+
+    @Test func nonAckPassesThrough() {
+        #expect(MPDStore.ackMessage("Not connected") == "Not connected")
+        #expect(MPDStore.ackMessage("") == "")
+    }
+
+    @Test func malformedAckPassesThrough() {
+        #expect(MPDStore.ackMessage("ACK weird format") == "ACK weird format")
+    }
+
+    @Test func messageMayContainBraces() {
+        #expect(MPDStore.ackMessage("ACK [5@0] {load} No such playlist: {x}") == "No such playlist: {x}")
+    }
+}
+
 // MARK: - SavedStation
 
 @Suite struct SavedStationTests {
@@ -420,5 +678,51 @@ import Testing
         let data = try JSONEncoder().encode(stations)
         let decoded = try JSONDecoder().decode([SavedStation].self, from: data)
         #expect(decoded == stations)
+    }
+}
+
+// MARK: - Lyrics (LRC parsing)
+
+@Suite struct LyricsParseTests {
+    @Test func basicTimestamps() {
+        let lrc = "[00:12.34] First line\n[00:15.00] Second line\n"
+        let lines = LyricsService.parseLRC(lrc)
+        #expect(lines?.count == 2)
+        #expect(abs((lines?[0].secs ?? 0) - 12.34) < 0.01)
+        #expect(lines?[0].text == "First line")
+        #expect(abs((lines?[1].secs ?? 0) - 15.0) < 0.01)
+        #expect(lines?[1].text == "Second line")
+    }
+
+    @Test func sortsByTime() {
+        let lrc = "[00:20.00] Late line\n[00:05.00] Early line\n"
+        let lines = LyricsService.parseLRC(lrc)
+        #expect(lines?.count == 2)
+        #expect(abs((lines?[0].secs ?? 0) - 5.0) < 0.01)
+        #expect(lines?[0].text == "Early line")
+    }
+
+    @Test func skipsMalformedTimestamps() {
+        let lrc = "[bad] garbage line\n[00:10.00] Good line\n"
+        let lines = LyricsService.parseLRC(lrc)
+        #expect(lines?.count == 1)
+        #expect(lines?[0].text == "Good line")
+    }
+
+    @Test func integerSecondsWithoutFraction() {
+        let lines = LyricsService.parseLRC("[01:30] Whole seconds only\n")
+        #expect(abs((lines?[0].secs ?? 0) - 90.0) < 0.01)
+    }
+
+    @Test func emptyInputReturnsNil() {
+        #expect(LyricsService.parseLRC("") == nil)
+        #expect(LyricsService.parseLRC("   \n  ") == nil)
+    }
+
+    @Test func preservesBlankLyricLinesAsSpacers() {
+        let lrc = "[00:01.00] Verse\n[00:02.00]\n[00:03.00] Chorus\n"
+        let lines = LyricsService.parseLRC(lrc)
+        #expect(lines?.count == 3)
+        #expect(lines?[1].text == "")
     }
 }

@@ -6,13 +6,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Open `mikMPD.xcodeproj` and build the `mikMPD` scheme. No external dependencies — pure SwiftUI + Foundation + AVFoundation + MediaPlayer + Darwin.
 
-Deployment target: iOS 26.2+. Swift default actor isolation is set to `MainActor` in build settings.
+Deployment target: iOS 26.2+. Swift 6 language mode with default actor isolation set to `MainActor` in build settings — data-race violations are compile errors. `MPDSocket` is `nonisolated` and `@unchecked Sendable` under the invariant that all access after init happens on the store's serial queue `Q`; pure value types and helpers are `nonisolated`; completion callbacks that cross the socket queue are `@MainActor`.
 
 ## Tests
 
 Unit tests use the Swift Testing framework (`mikMPDTests` target). Run via **Product → Test** (Cmd+U) in Xcode.
 
-Tests cover pure logic that doesn't need an MPD server: model init/computed properties, `formatTime`, `String.esc`, `Double.clamped`, `parseMPDRecords` (MPD protocol record parsing), `SavedStation` Codable roundtrip, and `parseStreamURL` validation.
+Tests cover pure logic that doesn't need an MPD server: model init/computed properties, `formatTime`, `String.esc`, `Double.clamped`, `parseMPDRecords` (MPD protocol record parsing), `SavedStation`/`MPDServerProfile` Codable roundtrips, `parseStreamURL` validation, `artCacheKey`, `sourceKind` detection, `mpdMoveTarget` (onMove index conversion), `ackMessage` (ACK prefix stripping), playlist name validation and position assignment, discovery host formatting, and Wikipedia album-match validation. One integration-style regression test (`PhoneStreamTests`) starts a phone stream and pumps the run loop to catch actor-isolation traps in SDK callbacks.
 
 `parseMPDRecords` is an internal free function extracted from `MPDSocket` specifically for testability.
 
@@ -28,7 +28,9 @@ This is an MPD (Music Player Daemon) client for iOS/iPadOS.
 
 **Views** — SwiftUI views consume `MPDStore` via `@EnvironmentObject`. They are purely reactive — no view-local state for MPD data, only for transient UI concerns (drag state, search text).
 
-**Models** — Lightweight value types (`MPDSong`, `MPDOutput`, `MPDBrowseItem`) initialized from parsed MPD records.
+**Models** — Lightweight value types (`MPDSong`, `MPDOutput`, `MPDBrowseItem`, `MPDPlaylist`, `MPDServerProfile`) initialized from parsed MPD records or persisted as JSON.
+
+**MPDDiscoveryService** — Bonjour browser (`NWBrowser`, `_mpd._tcp`) that resolves advertised MPD servers to host:port via throwaway `NWConnection`s. Scans stop after a 10 s timeout; the Connection screen offers rescan. Requires `NSBonjourServices` + `NSLocalNetworkUsageDescription` in Info.plist.
 
 ### Dual-timer design
 
@@ -43,11 +45,19 @@ This is an MPD (Music Player Daemon) client for iOS/iPadOS.
 
 ### Partition & output model
 
-MPD supports multiple partitions (independent playback zones). The store tracks `outputNameToPartition` by name (not ID, since IDs can shift). Outputs can be moved between partitions. A "remember partitions" setting restores the last-used partition on reconnect.
+MPD supports multiple partitions (independent playback zones). The store tracks `outputNameToPartition` by name (not ID, since IDs can shift). Outputs can be moved between partitions; partitions can be created and deleted from OutputsView (delete requires the partition to be empty — MPD's ACK error is surfaced in an alert, cleaned via `ackMessage`). MPD leaves a `plugin=dummy` placeholder in the source partition after `moveoutput`; these are filtered out of the outputs list and the partition-probing map. A "remember partitions" setting restores the last-used partition on reconnect (per server profile).
+
+### Saved servers
+
+Multiple server profiles (`MPDServerProfile`: name, host, port, stream URL, last partition) are stored as JSON in UserDefaults (`mpdServers` + `activeServerID`, both `@Published` with didSet persistence). Passwords are **not** in the JSON — each profile's password lives in the Keychain under `mpd_password_<uuid>`. `host`/`portStr`/`password`/`httpStreamURL` on the store remain the *live* values, loaded from the active profile on `switchToServer`, which also saves the outgoing profile's partition, stops phone streaming, and resets all server-specific published state. A one-time migration in init converts pre-multi-server settings into the first profile. After connecting, a `status` probe detects password-required servers (MPD accepts unauthenticated connections and ACKs every command with a permission error, which would otherwise cause a reconnect loop).
+
+### Stored playlists
+
+`PlaylistListView`/`PlaylistDetailView` live in the Library tab (PlaylistsView.swift). Tapping a track plays it in playlist context (`clear` + `load` + `play <index>`). Reorder uses `playlistmove` with the same optimistic local reorder as the queue's `moveRow`. The shared `AddToPlaylistSheet` is reachable from Now Playing, album detail, queue rows, search rows, and playlist detail rows.
 
 ### Phone streaming (listen on phone)
 
-`AVPlayer` plays an MPD httpd output URL on the device. The stream URL is stored in `@AppStorage("httpStreamURL")` and configured in Connection settings. A toggle in Now Playing starts/stops the stream.
+`AVPlayer` plays an MPD httpd output URL on the device. The stream URL is per server profile (edited in the server form) and mirrored into the live `@AppStorage("httpStreamURL")` on switch. A toggle in Now Playing starts/stops the stream.
 
 - **AVAudioSession**: `.playback` category enables background audio (requires `UIBackgroundModes = [audio]` in Info.plist).
 - **Lock screen metadata**: `MPNowPlayingInfoCenter` displays title, artist, album, artwork, and elapsed time. Updated every 1s poll cycle (not the 10Hz display timer) — the system extrapolates elapsed time via `playbackRate`.
@@ -66,4 +76,6 @@ Disconnects on background, reconnects on foreground resume — **unless phone st
 - Album art keyed by `artist|album` (lowercased) with an LRU cache (100 items). Fetch order: MPD-local (`albumart`/`readpicture` binary commands) → MusicBrainz/CoverArtArchive. Both in-memory and disk-cached (`Caches/albumart/`).
 - Artist/album names are clickable `NavigationLink`s across NowPlaying, Queue, Search, and Library detail views.
 - No command batching — each MPD operation is a separate `send`/`receive` cycle ("No command_list, no dual sockets").
+- **SDK callbacks that run off-main must be explicitly `@Sendable`.** With default MainActor isolation, closure literals passed to non-`@Sendable` SDK parameters are inferred `@MainActor` and trap at runtime (`dispatch_assert_queue`) if the framework invokes them on another queue. Known cases handled: `MPMediaItemArtwork(boundsSize:requestHandler:)` (MediaPlayer calls it on its internal queue), `DispatchSourceTimer.setEventHandler`, and `MPRemoteCommand.addTarget`. `DispatchQueue.async` is already `@Sendable` in the SDK, so `Q.async` closures are unaffected. The `PhoneStreamTests` regression test guards this class of bug.
+- Stored playlists: `listplaylistinfo` returns no pos/id, so positions are assigned from the record index (`songsAssigningPositions`) to keep duplicate files uniquely identifiable. Names are validated via `validatePlaylistName` (no slashes/newlines). Only pre-0.24 command syntax is used (no `playlistadd` POSITION arg, no `save` modes). The shared `AddToPlaylistSheet` (PlaylistsView.swift) is presented via `.sheet(item:)` with an `AddToPlaylistRequest`.
 - `WikipediaService` is a Swift actor with in-memory and disk caches (`Caches/artistart/` for artist images). Uses music-aware disambiguation: artist lookups try Wikipedia suffix pages `(band)`, `(musician)`, etc. before falling back to exact title with music-keyword validation. Album lookups use Wikipedia naming patterns and search with artist-relevance validation. Disambiguation pages and unrelated results are rejected (blank wiki shown instead).

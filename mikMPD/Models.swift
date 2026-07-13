@@ -2,7 +2,20 @@
 import Foundation
 import UIKit
 
-struct MPDSong: Identifiable, Equatable {
+nonisolated func artCacheKey(artist: String, album: String) -> String {
+    let trimmedArtist = artist.trimmingCharacters(in: .whitespacesAndNewlines)
+    let trimmedAlbum = album.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedArtist.isEmpty || !trimmedAlbum.isEmpty else { return "" }
+    return "\(trimmedArtist)|\(trimmedAlbum)".lowercased()
+}
+
+nonisolated enum PlaybackSourceKind {
+    case library
+    case radio
+    case cd
+}
+
+nonisolated struct MPDSong: Identifiable, Equatable {
     var file:     String = ""
     var title:    String = ""
     var artist:   String = ""
@@ -15,7 +28,26 @@ struct MPDSong: Identifiable, Equatable {
     var id: String { songID.isEmpty ? "\(pos):\(file)" : songID }
     var displayTitle: String { title.isEmpty ? URL(fileURLWithPath: file).lastPathComponent : title }
     var trackNumber: Int { Int(track.components(separatedBy: "/").first ?? "") ?? 0 }
-    var artKey: String { "\(artist)|\(album)".lowercased() }
+    var artKey: String { artCacheKey(artist: artist, album: album) }
+    var sourceKind: PlaybackSourceKind {
+        let trimmedFile = file.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lowercasedFile = trimmedFile.lowercased()
+        if lowercasedFile.hasPrefix("cdda:") {
+            return .cd
+        }
+        if let scheme = URL(string: trimmedFile)?.scheme?.lowercased(),
+           ["http", "https", "icy"].contains(scheme) {
+            return .radio
+        }
+        return .library
+    }
+    var fallbackArtAssetName: String {
+        switch sourceKind {
+        case .library: "MikMPDLogo"
+        case .radio: "RadioFallbackArt"
+        case .cd: "CDFallbackArt"
+        }
+    }
 
     init() {}
     init(_ r: MPDRecord) {
@@ -30,7 +62,7 @@ struct MPDSong: Identifiable, Equatable {
     }
 }
 
-struct MPDOutput: Identifiable, Equatable {
+nonisolated struct MPDOutput: Identifiable, Equatable {
     var outputID: String
     var name:     String
     var enabled:  Bool
@@ -44,7 +76,51 @@ struct MPDOutput: Identifiable, Equatable {
     }
 }
 
-struct MPDBrowseItem: Identifiable {
+nonisolated struct MPDPlaylist: Identifiable, Equatable {
+    var name: String
+    var lastModified: String = ""
+    var id: String { name }
+}
+
+/// A saved MPD server. The password is not part of the profile — it lives in
+/// the Keychain under "mpd_password_<id>" since this struct is stored as JSON
+/// in UserDefaults.
+nonisolated struct MPDServerProfile: Codable, Identifiable, Equatable {
+    var id: UUID = UUID()
+    var name: String
+    var host: String
+    var port: Int = 6600
+    var streamURL: String = ""      // per-server httpd output URL
+    var lastPartition: String = ""  // per-server "remember partitions" value
+}
+
+/// Build the initial profile from pre-multi-server settings (one-time migration).
+nonisolated func migratedLegacyProfile(host: String, portStr: String, streamURL: String, lastPartition: String?) -> MPDServerProfile {
+    MPDServerProfile(name: host, host: host, port: Int(portStr) ?? 6600,
+                     streamURL: streamURL, lastPartition: lastPartition ?? "")
+}
+
+/// MPD playlist names are file names (NAME.m3u): returns the trimmed name,
+/// or nil for empty names or names containing path separators/newlines.
+nonisolated func validatePlaylistName(_ name: String) -> String? {
+    let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty,
+          !trimmed.contains("/"), !trimmed.contains("\\"),
+          !trimmed.contains("\n"), !trimmed.contains("\r") else { return nil }
+    return trimmed
+}
+
+/// Songs from `listplaylistinfo` carry no pos/id fields; assign pos from the
+/// record index so duplicate files in a playlist still get unique ids.
+nonisolated func songsAssigningPositions(_ records: [MPDRecord]) -> [MPDSong] {
+    records.enumerated().map { i, r in
+        var s = MPDSong(r)
+        s.pos = i
+        return s
+    }
+}
+
+nonisolated struct MPDBrowseItem: Identifiable {
     enum Kind { case directory, file, playlist }
     var kind: Kind
     var path: String
@@ -57,6 +133,12 @@ struct MPDBrowseItem: Identifiable {
         case .playlist:  "list.bullet.rectangle"
         }
     }
+}
+
+/// Convert SwiftUI's onMove destination (an index into the pre-removal array)
+/// to the TO argument of MPD's `move`/`playlistmove` (an index after removal).
+nonisolated func mpdMoveTarget(from: Int, to destination: Int) -> Int {
+    destination > from ? destination - 1 : destination
 }
 
 func formatTime(_ s: Double) -> String {

@@ -8,6 +8,7 @@ struct SearchView: View {
     @State private var albums: [(artist: String, album: String)] = []
     @State private var isSearching = false
     @State private var searchTask: Task<Void, Never>?
+    @State private var addRequest: AddToPlaylistRequest?
 
     var body: some View {
         NavigationStack {
@@ -31,6 +32,7 @@ struct SearchView: View {
                 }
             }
             .navigationTitle("Search")
+            .sheet(item: $addRequest) { AddToPlaylistSheet(uris: $0.uris) }
             .searchable(text: $query, prompt: "Songs, artists, albums…")
             .onChange(of: query) { _, newValue in
                 searchTask?.cancel()
@@ -79,7 +81,7 @@ struct SearchView: View {
                         } label: {
                             HStack(spacing: 12) {
                                 // Album art thumbnail
-                                AlbumArtThumb(artist: item.artist, album: item.album, size: 50)
+                                ArtThumbByKey(artist: item.artist, album: item.album, size: 50)
                                     .cornerRadius(6)
                                 
                                 VStack(alignment: .leading, spacing: 2) {
@@ -127,6 +129,11 @@ struct SearchView: View {
                                     ? Color.accentColor.opacity(0.12)
                                     : Color.clear
                             )
+                            .contextMenu {
+                                Button { addRequest = AddToPlaylistRequest(uris: [song.file]) } label: {
+                                    Label("Add to Playlist…", systemImage: "music.note.list")
+                                }
+                            }
                     }
                 } header: {
                     HStack {
@@ -254,41 +261,6 @@ struct SearchRow: View {
                 .foregroundStyle(.secondary)
         }
         .padding(.vertical, 2)
-    }
-}
-
-// Album art thumbnail for search results
-struct AlbumArtThumb: View {
-    @EnvironmentObject var store: MPDStore
-    let artist: String
-    let album: String
-    let size: CGFloat
-    
-    var artKey: String {
-        "\(artist)|\(album)".lowercased()
-    }
-    
-    var body: some View {
-        Group {
-            if let img = store.albumArtCache[artKey] {
-                Image(uiImage: img)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-                    .frame(width: size, height: size)
-                    .clipped()
-            } else {
-                ZStack {
-                    Color(.systemGray5)
-                    Image(systemName: "square.stack")
-                        .foregroundStyle(.secondary)
-                        .font(.system(size: size * 0.4))
-                }
-                .frame(width: size, height: size)
-            }
-        }
-        .onAppear {
-            store.fetchArtIfNeeded(artist: artist, album: album)
-        }
     }
 }
 

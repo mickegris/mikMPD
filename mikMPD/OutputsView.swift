@@ -2,6 +2,10 @@ import SwiftUI
 struct OutputsView: View {
     @EnvironmentObject var store: MPDStore
     @AppStorage("rememberPartitions") private var rememberPartitions = false
+    @State private var showNewPartition = false
+    @State private var newPartitionName = ""
+    @State private var partitionToDelete: String?
+    @State private var partitionError: String?
     var body: some View {
         NavigationStack {
             List {
@@ -71,11 +75,55 @@ struct OutputsView: View {
                                     Image(systemName: "arrow.right.circle").foregroundColor(.secondary)
                                 }
                             }
+                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                if name != "default" && name != store.currentPartition {
+                                    Button(role: .destructive) { partitionToDelete = name } label: {
+                                        Label("Delete", systemImage: "trash")
+                                    }
+                                }
+                            }
+                        }
+                        Button {
+                            newPartitionName = ""
+                            showNewPartition = true
+                        } label: {
+                            Label("New Partition…", systemImage: "plus")
                         }
                     }
                 }
             }
             .listStyle(.insetGrouped).navigationTitle("Outputs")
+            .alert("New Partition", isPresented: $showNewPartition) {
+                TextField("Name", text: $newPartitionName)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                Button("Create") {
+                    store.createPartition(newPartitionName) { partitionError = $0 }
+                }
+                Button("Cancel", role: .cancel) {}
+            }
+            .alert("Delete Partition?", isPresented: Binding(
+                get: { partitionToDelete != nil },
+                set: { if !$0 { partitionToDelete = nil } }
+            )) {
+                Button("Delete", role: .destructive) {
+                    if let name = partitionToDelete {
+                        store.deletePartition(name) { partitionError = $0 }
+                    }
+                    partitionToDelete = nil
+                }
+                Button("Cancel", role: .cancel) { partitionToDelete = nil }
+            } message: {
+                Text("“\(partitionToDelete ?? "")” must be empty — move its outputs out and disconnect other clients first.")
+            }
+            .alert("Partition Error", isPresented: Binding(
+                get: { partitionError != nil },
+                set: { if !$0 { partitionError = nil } }
+            )) {
+                Button("OK", role: .cancel) { partitionError = nil }
+            } message: {
+                Text(partitionError ?? "")
+            }
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button { store.loadOutputs(); store.loadPartitions() } label: { Image(systemName: "arrow.clockwise") }
