@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Open `mikMPD.xcodeproj` and build the `mikMPD` scheme. No external dependencies — pure SwiftUI + Foundation + AVFoundation + MediaPlayer + Darwin.
 
-Deployment target: iOS 26.2+. Swift default actor isolation is set to `MainActor` in build settings.
+Deployment target: iOS 26.2+. Swift 6 language mode with default actor isolation set to `MainActor` in build settings — data-race violations are compile errors. `MPDSocket` is `nonisolated` and `@unchecked Sendable` under the invariant that all access after init happens on the store's serial queue `Q`; pure value types and helpers are `nonisolated`; completion callbacks that cross the socket queue are `@MainActor`.
 
 ## Tests
 
