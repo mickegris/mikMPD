@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import Testing
 @testable import mikMPD
 
@@ -481,6 +482,24 @@ import Testing
     @Test func uppercaseScheme() {
         let url = MPDStore.parseStreamURL("HTTP://example.com/stream")
         #expect(url?.absoluteString == "HTTP://example.com/stream")
+    }
+}
+
+// MARK: - Server discovery
+
+@Suite struct DiscoveryHostTests {
+    @Test func hostnamePassesThrough() {
+        #expect(MPDDiscoveryService.displayHost(.name("klova.local", nil)) == "klova.local")
+    }
+
+    @Test func ipv4Renders() {
+        #expect(MPDDiscoveryService.displayHost(.ipv4(IPv4Address("192.168.1.5")!)) == "192.168.1.5")
+    }
+
+    @Test func ipv6ScopeSuffixStripped() {
+        let host = MPDDiscoveryService.displayHost(.ipv6(IPv6Address("fe80::1%en0")!))
+        #expect(!host.contains("%"))
+        #expect(host.hasPrefix("fe80::1"))
     }
 }
 
