@@ -161,6 +161,19 @@ final class MPDStore: ObservableObject {
             guard let self else { return }
             do {
                 try self.socket.connect(host: h, port: p, password: pw)
+                // MPD accepts connections without auth even when a password is
+                // required — commands then all ACK with a permission error.
+                // Probe here so we fail with a clear message instead of
+                // entering the poll/reconnect loop with an unusable socket.
+                do {
+                    _ = try self.socket.command("status")
+                } catch MPDError.ack(let line) where line.hasPrefix("ACK [4@") {
+                    self.socket.disconnect()
+                    DispatchQueue.main.async {
+                        self.connectionError = "This server requires a password"
+                    }
+                    return
+                }
                 if let part = restorePartition, !part.isEmpty {
                     _ = try? self.socket.command("partition \"\(part.esc)\"")
                 }
