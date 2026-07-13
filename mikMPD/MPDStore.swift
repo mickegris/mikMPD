@@ -311,7 +311,7 @@ final class MPDStore: ObservableObject {
         stopBgPollTimer()
         let t = DispatchSource.makeTimerSource(queue: Q)
         t.schedule(deadline: .now() + 2, repeating: 2)
-        t.setEventHandler { [weak self] in self?.poll() }
+        t.setEventHandler { @Sendable [weak self] in self?.poll() }
         t.resume()
         bgPollTimer = t
     }
@@ -1238,23 +1238,23 @@ final class MPDStore: ObservableObject {
         let center = MPRemoteCommandCenter.shared()
         let q = self.Q
         let sock = self.socket
-        center.playCommand.addTarget { _ in
+        center.playCommand.addTarget { @Sendable _ in
             q.async { _ = try? sock.command("play") }
             return .success
         }
-        center.pauseCommand.addTarget { _ in
+        center.pauseCommand.addTarget { @Sendable _ in
             q.async { _ = try? sock.command("pause 1") }
             return .success
         }
-        center.togglePlayPauseCommand.addTarget { _ in
+        center.togglePlayPauseCommand.addTarget { @Sendable _ in
             q.async { _ = try? sock.command("pause") }
             return .success
         }
-        center.nextTrackCommand.addTarget { _ in
+        center.nextTrackCommand.addTarget { @Sendable _ in
             q.async { _ = try? sock.command("next") }
             return .success
         }
-        center.previousTrackCommand.addTarget { _ in
+        center.previousTrackCommand.addTarget { @Sendable _ in
             q.async { _ = try? sock.command("previous") }
             return .success
         }
