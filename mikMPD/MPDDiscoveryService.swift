@@ -20,23 +20,24 @@ final class MPDDiscoveryService: ObservableObject {
 
     private var browser: NWBrowser?
     private var resolvers: [NWConnection] = []
+    private var timeoutWork: DispatchWorkItem?
+    private static let scanTimeout: TimeInterval = 10
 
     func start() {
         stop()
         servers = []
         permissionDenied = false
+        isBrowsing = true
         let browser = NWBrowser(for: .bonjour(type: "_mpd._tcp", domain: nil), using: .tcp)
         browser.stateUpdateHandler = { [weak self] state in
             guard let self else { return }
             switch state {
-            case .ready:
-                self.isBrowsing = true
             case .waiting(let error):
                 // Typically the local-network permission prompt was denied
-                self.isBrowsing = false
                 if case .dns = error { self.permissionDenied = true }
-            case .failed, .cancelled:
-                self.isBrowsing = false
+                self.stop()
+            case .failed:
+                self.stop()
             default:
                 break
             }
@@ -55,9 +56,15 @@ final class MPDDiscoveryService: ObservableObject {
         // Main queue so the handlers can touch @Published state directly
         browser.start(queue: .main)
         self.browser = browser
+        // Bonjour browsing never completes on its own; stop after a fixed
+        // window so the UI can settle into "no servers found" + rescan.
+        let work = DispatchWorkItem { [weak self] in self?.stop() }
+        timeoutWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.scanTimeout, execute: work)
     }
 
     func stop() {
+        timeoutWork?.cancel(); timeoutWork = nil
         browser?.cancel(); browser = nil
         resolvers.forEach { $0.cancel() }; resolvers = []
         isBrowsing = false

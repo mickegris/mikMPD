@@ -52,11 +52,6 @@ struct ConnectionView: View {
                     if discovery.permissionDenied {
                         Text("Local network access denied. Allow it for mikMPD in Settings › Privacy & Security › Local Network.")
                             .font(.caption).foregroundStyle(.secondary)
-                    } else if discovery.servers.isEmpty {
-                        HStack(spacing: 10) {
-                            ProgressView()
-                            Text("Searching…").font(.subheadline).foregroundStyle(.secondary)
-                        }
                     } else {
                         ForEach(discovery.servers) { found in
                             Button { formMode = .discovered(found) } label: {
@@ -71,6 +66,19 @@ struct ConnectionView: View {
                                     Image(systemName: "plus.circle").foregroundStyle(.secondary)
                                 }
                             }
+                        }
+                        if discovery.isBrowsing {
+                            HStack(spacing: 10) {
+                                ProgressView()
+                                Text("Searching…").font(.subheadline).foregroundStyle(.secondary)
+                            }
+                        } else if discovery.servers.isEmpty {
+                            Text("No servers found.").font(.subheadline).foregroundStyle(.secondary)
+                        }
+                    }
+                    if !discovery.isBrowsing {
+                        Button { discovery.start() } label: {
+                            Label("Scan Again", systemImage: "arrow.clockwise")
                         }
                     }
                 } header: {
