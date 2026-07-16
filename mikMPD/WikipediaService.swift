@@ -32,11 +32,13 @@ actor WikipediaService {
     }
 
     /// Fetch album info — searches Wikipedia and validates the result is about this album.
-    func fetchAlbum(album: String, artist: String) async -> String? {
+    func fetchAlbum(album rawAlbum: String, artist: String) async -> String? {
+        // Wikipedia only knows the set, not per-disc tags like "X [Disc 2]";
+        // stripping before the cache key also shares one entry across discs.
+        // Normalize Unicode characters (e.g. … → ...) for Wikipedia lookups
+        let album = albumBaseAndDisc(rawAlbum).base.normalizedForLookup
         let key = "album:\(album)|\(artist)"
         if let c = cache[key] { return c.isEmpty ? nil : c }
-        // Normalize Unicode characters (e.g. … → ...) for Wikipedia lookups
-        let album = album.normalizedForLookup
         let artist = artist.normalizedForLookup
         // Try direct title with common Wikipedia album naming patterns
         let queries = artist.isEmpty ? ["\(album) (album)"] :

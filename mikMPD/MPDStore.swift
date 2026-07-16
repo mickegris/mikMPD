@@ -567,7 +567,7 @@ final class MPDStore: ObservableObject {
             guard let self else { return }
             var cmd = "find album \"\(album.esc)\""
             if let a = artist, !a.isEmpty { cmd += " artist \"\(a.esc)\"" }
-            let songs = (try? self.socket.command(cmd))?.map { MPDSong($0) }.sorted { $0.trackNumber < $1.trackNumber } ?? []
+            let songs = sortedByDiscAndTrack((try? self.socket.command(cmd))?.map { MPDSong($0) } ?? [])
             DispatchQueue.main.async { completion(songs) }
         }
     }
@@ -1308,8 +1308,9 @@ final class MPDStore: ObservableObject {
         return result
     }
     private static func downloadArt(artist: String, album: String) async -> UIImage? {
-        // Normalize Unicode characters (e.g. … → ...) for API lookups
-        let album = album.normalizedForLookup
+        // MusicBrainz stores multi-disc sets as one release, so "X [Disc 2]" only
+        // matches with the marker stripped. Then normalize Unicode (e.g. … → ...).
+        let album = albumBaseAndDisc(album).base.normalizedForLookup
         let artist = artist.normalizedForLookup
         // Try progressively looser MusicBrainz queries
         let queries: [String] = [

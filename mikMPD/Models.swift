@@ -4,9 +4,51 @@ import UIKit
 
 nonisolated func artCacheKey(artist: String, album: String) -> String {
     let trimmedArtist = artist.trimmingCharacters(in: .whitespacesAndNewlines)
-    let trimmedAlbum = album.trimmingCharacters(in: .whitespacesAndNewlines)
+    // Disc variants ("X [Disc 1]", "X (CD 2)") share one cover
+    let trimmedAlbum = albumBaseAndDisc(album).base.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedArtist.isEmpty || !trimmedAlbum.isEmpty else { return "" }
     return "\(trimmedArtist)|\(trimmedAlbum)".lowercased()
+}
+
+/// Trailing disc markers on album tags. A delimiter (whitespace, dash/colon/comma,
+/// or an opening bracket) must precede the keyword so titles like "ABCD2" survive.
+/// Spelled-out numbers ("Disc One") and bracketed subtitles ("[Disc 1: Live]") are
+/// deliberately not matched — those tags pass through unchanged.
+nonisolated private enum DiscMarker {
+    static let regex = try! NSRegularExpression(
+        pattern: #"(?:[\s\-–—:,]+|\s*[(\[])\s*(?:disc|disk|cd)[\s.\-]*([0-9]{1,3})\s*[)\]]?\s*$"#,
+        options: [.caseInsensitive])
+}
+
+/// Splits a disc marker off an album tag: "Blast from the Past [Disc 1]" →
+/// ("Blast from the Past", 1). Tags without a marker — or that are nothing
+/// but a marker — come back unchanged with a nil disc.
+nonisolated func albumBaseAndDisc(_ album: String) -> (base: String, disc: Int?) {
+    let ns = album as NSString
+    guard let m = DiscMarker.regex.firstMatch(in: album, range: NSRange(location: 0, length: ns.length)),
+          let discRange = Range(m.range(at: 1), in: album),
+          let disc = Int(album[discRange]) else { return (album, nil) }
+    let base = ns.substring(to: m.range.location).trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !base.isEmpty else { return (album, nil) }
+    return (base, disc)
+}
+
+/// Collapse disc variants of the same album into one entry, preserving the
+/// order of first appearance: ["X [Disc 1]", "X [Disc 2]", "Y"] → [("X", 2 variants), ("Y", 1)].
+nonisolated func groupAlbumVariants(_ albums: [String]) -> [(base: String, variants: [String])] {
+    var order: [String] = []
+    var groups: [String: [String]] = [:]
+    for album in albums {
+        let base = albumBaseAndDisc(album).base
+        if groups[base] == nil { order.append(base) }
+        groups[base, default: []].append(album)
+    }
+    return order.map { ($0, groups[$0]!) }
+}
+
+/// Album track order: disc first (tag or album-suffix derived), then track number.
+nonisolated func sortedByDiscAndTrack(_ songs: [MPDSong]) -> [MPDSong] {
+    songs.sorted { ($0.effectiveDisc, $0.trackNumber) < ($1.effectiveDisc, $1.trackNumber) }
 }
 
 nonisolated enum PlaybackSourceKind {
@@ -21,6 +63,7 @@ nonisolated struct MPDSong: Identifiable, Equatable {
     var artist:   String = ""
     var album:    String = ""
     var track:    String = ""
+    var disc:     String = ""
     var duration: Double = 0
     var pos:      Int    = 0
     var songID:   String = ""
@@ -28,6 +71,10 @@ nonisolated struct MPDSong: Identifiable, Equatable {
     var id: String { songID.isEmpty ? "\(pos):\(file)" : songID }
     var displayTitle: String { title.isEmpty ? URL(fileURLWithPath: file).lastPathComponent : title }
     var trackNumber: Int { Int(track.components(separatedBy: "/").first ?? "") ?? 0 }
+    var discNumber: Int { Int(disc.components(separatedBy: "/").first ?? "") ?? 0 }
+    /// Disc for grouping/sorting: the disc tag when present, else one parsed
+    /// from an album-tag suffix like "… [Disc 2]"; 0 when unknown.
+    var effectiveDisc: Int { discNumber > 0 ? discNumber : (albumBaseAndDisc(album).disc ?? 0) }
     var artKey: String { artCacheKey(artist: artist, album: album) }
     var sourceKind: PlaybackSourceKind {
         let trimmedFile = file.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -56,6 +103,7 @@ nonisolated struct MPDSong: Identifiable, Equatable {
         artist   = r["artist"]   ?? ""
         album    = r["album"]    ?? ""
         track    = r["track"]    ?? ""
+        disc     = r["disc"]     ?? ""
         duration = Double(r["duration"] ?? "0") ?? 0
         pos      = Int(r["pos"]  ?? "0") ?? 0
         songID   = r["id"]       ?? ""

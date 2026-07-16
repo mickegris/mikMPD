@@ -726,3 +726,194 @@ import Testing
         #expect(lines?[1].text == "")
     }
 }
+
+// MARK: - Multi-disc album markers
+
+@Suite struct AlbumDiscTests {
+    @Test func bracketDisc() {
+        let r = albumBaseAndDisc("Blast from the Past [Disc 1]")
+        #expect(r.base == "Blast from the Past")
+        #expect(r.disc == 1)
+    }
+
+    @Test func parenDisc() {
+        let r = albumBaseAndDisc("Album (Disc 2)")
+        #expect(r.base == "Album")
+        #expect(r.disc == 2)
+    }
+
+    @Test func diskSpelling() {
+        let r = albumBaseAndDisc("Album [Disk 3]")
+        #expect(r.base == "Album")
+        #expect(r.disc == 3)
+    }
+
+    @Test func cdInParens() {
+        let r = albumBaseAndDisc("Album (CD 1)")
+        #expect(r.base == "Album")
+        #expect(r.disc == 1)
+    }
+
+    @Test func bareCDWithoutSpace() {
+        let r = albumBaseAndDisc("Album CD2")
+        #expect(r.base == "Album")
+        #expect(r.disc == 2)
+    }
+
+    @Test func dashSeparator() {
+        let r = albumBaseAndDisc("Album - Disc 1")
+        #expect(r.base == "Album")
+        #expect(r.disc == 1)
+    }
+
+    @Test func colonSeparatorAndTwoDigits() {
+        let r = albumBaseAndDisc("Album: disc 12")
+        #expect(r.base == "Album")
+        #expect(r.disc == 12)
+    }
+
+    @Test func commaSeparator() {
+        let r = albumBaseAndDisc("Album, Disc 2")
+        #expect(r.base == "Album")
+        #expect(r.disc == 2)
+    }
+
+    @Test func caseInsensitive() {
+        let r = albumBaseAndDisc("ALBUM [DISC 2]")
+        #expect(r.base == "ALBUM")
+        #expect(r.disc == 2)
+    }
+
+    @Test func noMarkerPassesThrough() {
+        let r = albumBaseAndDisc("Powerslave")
+        #expect(r.base == "Powerslave")
+        #expect(r.disc == nil)
+    }
+
+    @Test func markerOnlyPassesThrough() {
+        let r = albumBaseAndDisc("Disc 1")
+        #expect(r.base == "Disc 1")
+        #expect(r.disc == nil)
+    }
+
+    @Test func leadingSpaceMarkerOnlyPassesThrough() {
+        let r = albumBaseAndDisc(" [Disc 1]")
+        #expect(r.base == " [Disc 1]")
+        #expect(r.disc == nil)
+    }
+
+    @Test func noDigitsPassesThrough() {
+        let r = albumBaseAndDisc("Live CD")
+        #expect(r.base == "Live CD")
+        #expect(r.disc == nil)
+    }
+
+    @Test func embeddedLettersAreNotAMarker() {
+        let r = albumBaseAndDisc("ABCD2")
+        #expect(r.base == "ABCD2")
+        #expect(r.disc == nil)
+    }
+
+    @Test func subtitleAfterMarkerLeftAlone() {
+        let r = albumBaseAndDisc("Album [Disc 1] (Bonus)")
+        #expect(r.base == "Album [Disc 1] (Bonus)")
+        #expect(r.disc == nil)
+    }
+
+    @Test func discVariantsShareArtCacheKey() {
+        let a = artCacheKey(artist: "Gamma Ray", album: "Blast from the Past [Disc 1]")
+        let b = artCacheKey(artist: "Gamma Ray", album: "Blast from the Past (Disc 2)")
+        #expect(a == b)
+        #expect(a == "gamma ray|blast from the past")
+    }
+
+    @Test func strippedAlbumMatchesWikipediaTitle() {
+        let base = albumBaseAndDisc("Blast from the Past [Disc 1]").base
+        let ok = WikipediaService.albumResultMatches(
+            title: "Blast from the Past (Gamma Ray album)",
+            extract: "Blast from the Past is a compilation album by Gamma Ray.",
+            album: base, artist: "Gamma Ray")
+        #expect(ok)
+    }
+}
+
+// MARK: - Album variant grouping
+
+@Suite struct GroupAlbumVariantsTests {
+    @Test func groupsDiscVariants() {
+        let g = groupAlbumVariants(["X [Disc 1]", "X [Disc 2]", "Y"])
+        #expect(g.count == 2)
+        #expect(g[0].base == "X")
+        #expect(g[0].variants == ["X [Disc 1]", "X [Disc 2]"])
+        #expect(g[1].base == "Y")
+        #expect(g[1].variants == ["Y"])
+    }
+
+    @Test func preservesFirstAppearanceOrder() {
+        let g = groupAlbumVariants(["B", "A [CD 2]", "A [CD 1]"])
+        #expect(g.map(\.base) == ["B", "A"])
+        #expect(g[1].variants == ["A [CD 2]", "A [CD 1]"])
+    }
+
+    @Test func prefixesDoNotMerge() {
+        let g = groupAlbumVariants(["Foo", "Foobar"])
+        #expect(g.count == 2)
+    }
+
+    @Test func plainAlbumsPassThrough() {
+        let g = groupAlbumVariants(["One", "Two"])
+        #expect(g.count == 2)
+        #expect(g[0].variants == ["One"])
+    }
+}
+
+// MARK: - Disc-aware sorting
+
+@Suite struct DiscSortTests {
+    private func song(album: String = "A", disc: String = "", track: String) -> MPDSong {
+        var s = MPDSong()
+        s.album = album; s.disc = disc; s.track = track
+        s.file = "\(album)-\(disc)-\(track)"
+        return s
+    }
+
+    @Test func discTagOrdersBeforeTrack() {
+        let sorted = sortedByDiscAndTrack([
+            song(disc: "2", track: "1"),
+            song(disc: "1", track: "2"),
+            song(disc: "1", track: "1"),
+        ])
+        #expect(sorted.map(\.track) == ["1", "2", "1"])
+        #expect(sorted.map(\.discNumber) == [1, 1, 2])
+    }
+
+    @Test func discNumberParsesSlashFormat() {
+        var s = MPDSong()
+        s.disc = "1/2"
+        #expect(s.discNumber == 1)
+        s.disc = ""
+        #expect(s.discNumber == 0)
+    }
+
+    @Test func effectiveDiscFallsBackToAlbumSuffix() {
+        let sorted = sortedByDiscAndTrack([
+            song(album: "X [Disc 2]", track: "1"),
+            song(album: "X [Disc 1]", track: "1"),
+        ])
+        #expect(sorted.map(\.album) == ["X [Disc 1]", "X [Disc 2]"])
+        #expect(sorted.map(\.effectiveDisc) == [1, 2])
+    }
+
+    @Test func discTagWinsOverSuffix() {
+        var s = MPDSong()
+        s.album = "X [Disc 2]"
+        s.disc = "3"
+        #expect(s.effectiveDisc == 3)
+    }
+
+    @Test func discParsedFromRecord() {
+        let s = MPDSong(["file": "f", "disc": "2"])
+        #expect(s.disc == "2")
+        #expect(s.discNumber == 2)
+    }
+}

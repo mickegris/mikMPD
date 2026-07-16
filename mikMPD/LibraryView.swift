@@ -70,9 +70,15 @@ struct AlbumListView: View {
         Group {
             if loading { ProgressView().frame(maxWidth:.infinity,maxHeight:.infinity) }
             else {
-                List(shown,id:\.self){ a in
-                    NavigationLink(destination:AlbumDetailView(album:a,artist:nil)){
-                        Label(a.isEmpty ? "(no title)" : a, systemImage:"square.stack").lineLimit(2)
+                List(groupAlbumVariants(shown),id:\.base){ g in
+                    NavigationLink(destination:AlbumDetailView(album:g.variants[0],artist:nil)){
+                        HStack {
+                            Label(g.base.isEmpty ? "(no title)" : g.base, systemImage:"square.stack").lineLimit(2)
+                            if g.variants.count > 1 {
+                                Spacer()
+                                Text("\(g.variants.count) discs").font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
                     }
                 }.listStyle(.plain).searchable(text:$filter,prompt:"Filter albums…")
             }
@@ -86,7 +92,15 @@ struct AlbumDetailView: View {
     @State private var songs:[MPDSong]=[];@State private var loading=true
     @State private var wiki:String?=nil;@State private var wikiLoading=false;@State private var expanded=false
     @State private var addRequest:AddToPlaylistRequest?=nil
+    @State private var mergedTags:[String]=[]  // >1 when sibling disc variants were merged
     var displayArtist:String{ artist ?? songs.first?.artist ?? "" }
+    // Show the stripped base title only when variants really merged, so an album
+    // legitimately named like a disc marker keeps its raw name.
+    var displayAlbum:String{ mergedTags.count > 1 ? albumBaseAndDisc(album).base : album }
+    var songsByDisc:[(disc:Int,songs:[MPDSong])]{
+        let g = Dictionary(grouping:songs){ $0.effectiveDisc }
+        return g.keys.sorted().map{ ($0, g[$0]!) }
+    }
     var body: some View {
         List {
             Section {
@@ -94,13 +108,16 @@ struct AlbumDetailView: View {
                     HStack(alignment:.top,spacing:14){
                         ArtThumb(song:songs.first,size:90).cornerRadius(8)
                         VStack(alignment:.leading,spacing:4){
-                            Text(album.isEmpty ? "(no title)" : album).font(.headline).lineLimit(3)
+                            Text(displayAlbum.isEmpty ? "(no title)" : displayAlbum).font(.headline).lineLimit(3)
                             if !displayArtist.isEmpty {
                                 NavigationLink(destination:ArtistDetailView(artist:displayArtist)){
                                     Text(displayArtist).font(.subheadline).foregroundStyle(.secondary).underline()
                                 }
                             }
-                            if !loading { Text("\(songs.count) tracks · \(formatTime(songs.map(\.duration).reduce(0,+)))").font(.caption).foregroundStyle(.secondary) }
+                            if !loading {
+                                let discPrefix = songsByDisc.count > 1 ? "\(songsByDisc.count) discs · " : ""
+                                Text(discPrefix + "\(songs.count) tracks · \(formatTime(songs.map(\.duration).reduce(0,+)))").font(.caption).foregroundStyle(.secondary)
+                            }
                         }
                     }
                     HStack(spacing:12){
@@ -120,23 +137,55 @@ struct AlbumDetailView: View {
                     Text("Source: Wikipedia · CC BY-SA 4.0").font(.caption2).foregroundStyle(.quaternary)
                 }
             }
-            Section("Tracks"){
-                if loading { HStack{Spacer();ProgressView();Spacer()} }
-                else {
-                    ForEach(songs){ s in
-                        SongRow(song:s).contentShape(Rectangle()).onTapGesture{ store.addAndPlay(uri:s.file) }
-                            .swipeActions(edge:.trailing){ Button{store.add(uri:s.file)} label:{Label("Add",systemImage:"plus")}.tint(.green) }
-                            .swipeActions(edge:.leading){ Button{addRequest=AddToPlaylistRequest(uris:[s.file])} label:{Label("Playlist",systemImage:"music.note.list")}.tint(.indigo) }
-                    }
+            if loading {
+                Section("Tracks"){ HStack{Spacer();ProgressView();Spacer()} }
+            } else if songsByDisc.count > 1 {
+                ForEach(songsByDisc,id:\.disc){ g in
+                    Section(g.disc > 0 ? "Disc \(g.disc)" : "Tracks"){ trackRows(g.songs) }
                 }
+            } else {
+                Section("Tracks"){ trackRows(songs) }
             }
         }
         .listStyle(.insetGrouped)
-        .navigationTitle(album.isEmpty ? "(no title)" : album).navigationBarTitleDisplayMode(.inline)
+        .navigationTitle(displayAlbum.isEmpty ? "(no title)" : displayAlbum).navigationBarTitleDisplayMode(.inline)
         .sheet(item:$addRequest){ AddToPlaylistSheet(uris:$0.uris) }
         .onAppear{ loadSongs() }
     }
-    func loadSongs(){ store.albumSongs(album:album,artist:artist){songs=$0;loading=false; if let s=songs.first{store.fetchArtIfNeeded(for:s)}; loadWiki()} }
+    @ViewBuilder
+    func trackRows(_ list:[MPDSong]) -> some View {
+        ForEach(list){ s in
+            SongRow(song:s).contentShape(Rectangle()).onTapGesture{ store.addAndPlay(uri:s.file) }
+                .swipeActions(edge:.trailing){ Button{store.add(uri:s.file)} label:{Label("Add",systemImage:"plus")}.tint(.green) }
+                .swipeActions(edge:.leading){ Button{addRequest=AddToPlaylistRequest(uris:[s.file])} label:{Label("Playlist",systemImage:"music.note.list")}.tint(.indigo) }
+        }
+    }
+    // Merge sibling disc variants ("X [Disc 1]" + "X [Disc 2]") into one page,
+    // whichever variant this view was opened with.
+    func loadSongs(){
+        let base = albumBaseAndDisc(album).base
+        store.listTag("album", filter: artist==nil ? nil : "artist", value: artist){ all in
+            let sibs = all.filter{ albumBaseAndDisc($0).base == base }
+            let tags = sibs.count > 1 ? sibs : [album]
+            mergedTags = tags
+            loadSongs(tags: tags)
+        }
+    }
+    func loadSongs(tags:[String]){
+        var remaining = tags
+        var acc:[MPDSong] = []
+        func next(){
+            guard let t = remaining.first else {
+                songs = sortedByDiscAndTrack(acc); loading = false
+                if let s = songs.first { store.fetchArtIfNeeded(for:s) }
+                loadWiki()
+                return
+            }
+            remaining.removeFirst()
+            store.albumSongs(album:t,artist:artist){ acc.append(contentsOf:$0); next() }
+        }
+        next()
+    }
     func loadWiki(){
         guard wiki==nil,!wikiLoading else{return}
         wikiLoading=true
@@ -173,6 +222,7 @@ struct ArtistDetailView: View {
     @State private var albums:[String]=[];@State private var loading=true
     @State private var wiki:String?=nil;@State private var wikiLoading=false;@State private var expanded=false
     @State private var artistImage:UIImage?=nil
+    var albumGroups:[(base:String,variants:[String])]{ groupAlbumVariants(albums) }
     var body: some View {
         List {
             Section {
@@ -184,7 +234,7 @@ struct ArtistDetailView: View {
                         ZStack{Circle().fill(Color(.systemGray5)).frame(width:180,height:180);Image(systemName:"person.fill").font(.system(size:60)).foregroundStyle(.secondary)}
                     }
                     Text(artist).font(.title3.bold())
-                    if !loading { Text("\(albums.count) album\(albums.count == 1 ? "" : "s")").font(.caption).foregroundStyle(.secondary) }
+                    if !loading { Text("\(albumGroups.count) album\(albumGroups.count == 1 ? "" : "s")").font(.caption).foregroundStyle(.secondary) }
                 }
                 .frame(maxWidth:.infinity)
                 .padding(.vertical,8)
@@ -205,11 +255,15 @@ struct ArtistDetailView: View {
             Section("Albums"){
                 if loading { HStack{Spacer();ProgressView();Spacer()} }
                 else {
-                    ForEach(albums,id:\.self){ a in
-                        NavigationLink(destination:AlbumDetailView(album:a,artist:artist)){
+                    ForEach(albumGroups,id:\.base){ g in
+                        NavigationLink(destination:AlbumDetailView(album:g.variants[0],artist:artist)){
                             HStack(spacing:10){
-                                ArtThumbByKey(artist:artist,album:a,size:44).cornerRadius(4)
-                                Text(a.isEmpty ? "(no title)" : a).lineLimit(2)
+                                ArtThumbByKey(artist:artist,album:g.variants[0],size:44).cornerRadius(4)
+                                Text(g.base.isEmpty ? "(no title)" : g.base).lineLimit(2)
+                                if g.variants.count > 1 {
+                                    Spacer()
+                                    Text("\(g.variants.count) discs").font(.caption).foregroundStyle(.secondary)
+                                }
                             }
                         }
                     }
@@ -261,7 +315,19 @@ struct GenreDetailView: View {
             }
             Section("Albums"){
                 if loading { HStack{Spacer();ProgressView();Spacer()} }
-                else { ForEach(albums,id:\.self){ a in NavigationLink(destination:AlbumDetailView(album:a,artist:nil)){Label(a.isEmpty ? "(no title)":a,systemImage:"square.stack").lineLimit(2)} } }
+                else {
+                    ForEach(groupAlbumVariants(albums),id:\.base){ g in
+                        NavigationLink(destination:AlbumDetailView(album:g.variants[0],artist:nil)){
+                            HStack {
+                                Label(g.base.isEmpty ? "(no title)":g.base,systemImage:"square.stack").lineLimit(2)
+                                if g.variants.count > 1 {
+                                    Spacer()
+                                    Text("\(g.variants.count) discs").font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
         .listStyle(.insetGrouped)
