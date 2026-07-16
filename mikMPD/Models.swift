@@ -12,25 +12,72 @@ nonisolated func artCacheKey(artist: String, album: String) -> String {
 
 /// Trailing disc markers on album tags. A delimiter (whitespace, dash/colon/comma,
 /// or an opening bracket) must precede the keyword so titles like "ABCD2" survive.
-/// Spelled-out numbers ("Disc One") and bracketed subtitles ("[Disc 1: Live]") are
-/// deliberately not matched — those tags pass through unchanged.
+/// Disc letters ("101 [Disc A]") are accepted only in bracketed form — a bare
+/// "… CD A" is too ambiguous. Spelled-out numbers ("Disc One") and bracketed
+/// subtitles ("[Disc 1: Live]") are deliberately not matched — those pass through.
 nonisolated private enum DiscMarker {
-    static let regex = try! NSRegularExpression(
+    static let numbered = try! NSRegularExpression(
         pattern: #"(?:[\s\-–—:,]+|\s*[(\[])\s*(?:disc|disk|cd)[\s.\-]*([0-9]{1,3})\s*[)\]]?\s*$"#,
+        options: [.caseInsensitive])
+    static let lettered = try! NSRegularExpression(
+        pattern: #"\s*[(\[]\s*(?:disc|disk|cd)[\s.\-]*([a-z])\s*[)\]]\s*$"#,
         options: [.caseInsensitive])
 }
 
 /// Splits a disc marker off an album tag: "Blast from the Past [Disc 1]" →
-/// ("Blast from the Past", 1). Tags without a marker — or that are nothing
-/// but a marker — come back unchanged with a nil disc.
+/// ("Blast from the Past", 1); "101 [Disc B]" → ("101", 2). Tags without a
+/// marker — or that are nothing but a marker — come back unchanged with a nil disc.
 nonisolated func albumBaseAndDisc(_ album: String) -> (base: String, disc: Int?) {
     let ns = album as NSString
-    guard let m = DiscMarker.regex.firstMatch(in: album, range: NSRange(location: 0, length: ns.length)),
-          let discRange = Range(m.range(at: 1), in: album),
-          let disc = Int(album[discRange]) else { return (album, nil) }
-    let base = ns.substring(to: m.range.location).trimmingCharacters(in: .whitespacesAndNewlines)
+    let range = NSRange(location: 0, length: ns.length)
+    let disc: Int
+    let markerStart: Int
+    if let m = DiscMarker.numbered.firstMatch(in: album, range: range),
+       let discRange = Range(m.range(at: 1), in: album),
+       let d = Int(album[discRange]) {
+        disc = d; markerStart = m.range.location
+    } else if let m = DiscMarker.lettered.firstMatch(in: album, range: range),
+              let discRange = Range(m.range(at: 1), in: album),
+              let scalar = album[discRange].lowercased().unicodeScalars.first {
+        disc = Int(scalar.value) - Int(UnicodeScalar("a").value) + 1  // A→1, B→2, …
+        markerStart = m.range.location
+    } else {
+        return (album, nil)
+    }
+    let base = ns.substring(to: markerStart).trimmingCharacters(in: .whitespacesAndNewlines)
     guard !base.isEmpty else { return (album, nil) }
     return (base, disc)
+}
+
+/// Extra cleaning for *external lookups only* (Wikipedia/MusicBrainz), never for
+/// grouping or art keys — a remaster is a distinct library album but the same
+/// Wikipedia article. After disc markers, iteratively strips trailing bracketed
+/// edition qualifiers: "[24-bit remaster]", "(2005 Remaster)", "[Deluxe Edition]",
+/// "(Live)". Brackets without a qualifier keyword or year are kept
+/// ("(What's the Story) Morning Glory?" is untouched — its bracket isn't trailing).
+nonisolated private enum EditionQualifier {
+    static let trailingBracket = try! NSRegularExpression(
+        pattern: #"[(\[]([^)\]]*)[)\]]\s*$"#, options: [])
+    static let keywords = try! NSRegularExpression(
+        pattern: #"(?i)\b(remaster(ed)?|deluxe|edition|expanded|anniversary|bonus|reissue|mono|stereo|live|explicit|hi-?res|sacd)\b|\b(19|20)[0-9]{2}\b|\b[0-9]+\s*-?\s*(bit|khz)\b"#,
+        options: [])
+}
+
+nonisolated func albumLookupTitle(_ album: String) -> String {
+    var s = albumBaseAndDisc(album).base
+    while true {
+        let ns = s as NSString
+        guard let m = EditionQualifier.trailingBracket.firstMatch(in: s, range: NSRange(location: 0, length: ns.length)),
+              m.range.location > 0
+        else { break }
+        let content = ns.substring(with: m.range(at: 1))
+        let contentRange = NSRange(location: 0, length: (content as NSString).length)
+        guard EditionQualifier.keywords.firstMatch(in: content, range: contentRange) != nil else { break }
+        let stripped = ns.substring(to: m.range.location).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !stripped.isEmpty else { break }
+        s = albumBaseAndDisc(stripped).base
+    }
+    return s
 }
 
 /// Collapse disc variants of the same album into one entry, preserving the

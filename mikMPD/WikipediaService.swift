@@ -33,10 +33,11 @@ actor WikipediaService {
 
     /// Fetch album info — searches Wikipedia and validates the result is about this album.
     func fetchAlbum(album rawAlbum: String, artist: String) async -> String? {
-        // Wikipedia only knows the set, not per-disc tags like "X [Disc 2]";
-        // stripping before the cache key also shares one entry across discs.
-        // Normalize Unicode characters (e.g. … → ...) for Wikipedia lookups
-        let album = albumBaseAndDisc(rawAlbum).base.normalizedForLookup
+        // Wikipedia only knows the base title — strip disc markers ("[Disc 2]")
+        // and edition qualifiers ("[24-bit remaster]"); stripping before the
+        // cache key also shares one entry across the variants. Then normalize
+        // Unicode characters (e.g. … → ...) for Wikipedia lookups.
+        let album = albumLookupTitle(rawAlbum).normalizedForLookup
         let key = "album:\(album)|\(artist)"
         if let c = cache[key] { return c.isEmpty ? nil : c }
         let artist = artist.normalizedForLookup
@@ -53,10 +54,11 @@ actor WikipediaService {
             ? ["\(album) album"]
             : ["\(album) \(artist) album", "\(album) album"]
         for searchQ in searches {
-            if let ttl = await searchTitle(searchQ),
-               let r = await summaryData(title: ttl), !r.extract.isEmpty,
-               Self.albumResultMatches(title: ttl, extract: r.extract, album: album, artist: artist) {
-                cache[key] = r.extract; return r.extract
+            for ttl in await searchTitles(searchQ) {
+                if let r = await summaryData(title: ttl), !r.extract.isEmpty,
+                   Self.albumResultMatches(title: ttl, extract: r.extract, album: album, artist: artist) {
+                    cache[key] = r.extract; return r.extract
+                }
             }
         }
         cache[key] = ""; return nil
@@ -70,11 +72,23 @@ actor WikipediaService {
         let titleLower = title.normalizedForLookup.lowercased()
         let extractLower = extract.normalizedForLookup.lowercased()
         let aboutAlbum = titleLower.contains(albumLower) || extractLower.contains(albumLower)
+            || Self.tokensMostlyPresent(albumLower, in: titleLower + " " + extractLower)
         let artistLower = artist.normalizedForLookup.lowercased()
         let aboutArtist = artist.isEmpty
             || extractLower.contains(artistLower)
             || extractLower.filter(\.isLetter).contains(artistLower.filter(\.isLetter))
         return aboutAlbum && aboutArtist
+    }
+
+    /// Fallback for decorated tags ("Beacon Theatre. Live from...") whose exact
+    /// string never appears in the article: at least two-thirds of the album's
+    /// words (3+ chars) must appear in the result. The artist check still guards
+    /// against unrelated hits.
+    nonisolated private static func tokensMostlyPresent(_ needle: String, in haystack: String) -> Bool {
+        let tokens = needle.split { !$0.isLetter && !$0.isNumber }.map(String.init).filter { $0.count >= 3 }
+        guard !tokens.isEmpty else { return false }
+        let hits = tokens.filter { haystack.contains($0) }.count
+        return hits * 3 >= tokens.count * 2
     }
 
     /// Fetch artist info with music disambiguation.
@@ -132,14 +146,16 @@ actor WikipediaService {
         else { return nil }
         return UIImage(data: data)
     }
-    private func searchTitle(_ q: String) async -> String? {
+    /// Top search hits (a few, not one — the best match for decorated album tags
+    /// is often ranked below a discography or artist page that validation rejects).
+    private func searchTitles(_ q: String) async -> [String] {
         var c = URLComponents(string: "https://en.wikipedia.org/w/api.php")!
         c.queryItems = [.init(name:"action",value:"query"),.init(name:"list",value:"search"),
-                        .init(name:"srsearch",value:q),.init(name:"format",value:"json"),.init(name:"srlimit",value:"1")]
+                        .init(name:"srsearch",value:q),.init(name:"format",value:"json"),.init(name:"srlimit",value:"3")]
         guard let url = c.url, let (d, _) = try? await URLSession.shared.data(from: url),
               let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
-              let qr = j["query"] as? [String: Any], let sr = qr["search"] as? [[String: Any]],
-              let t = sr.first?["title"] as? String else { return nil }
-        return t
+              let qr = j["query"] as? [String: Any], let sr = qr["search"] as? [[String: Any]]
+        else { return [] }
+        return sr.compactMap { $0["title"] as? String }
     }
 }

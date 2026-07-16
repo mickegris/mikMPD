@@ -1308,9 +1308,10 @@ final class MPDStore: ObservableObject {
         return result
     }
     private static func downloadArt(artist: String, album: String) async -> UIImage? {
-        // MusicBrainz stores multi-disc sets as one release, so "X [Disc 2]" only
-        // matches with the marker stripped. Then normalize Unicode (e.g. … → ...).
-        let album = albumBaseAndDisc(album).base.normalizedForLookup
+        // MusicBrainz stores multi-disc sets as one release, so "X [Disc 2]" or
+        // "X [2005 Remaster]" only match with the marker/qualifier stripped.
+        // Then normalize Unicode (e.g. … → ...).
+        let album = albumLookupTitle(album).normalizedForLookup
         let artist = artist.normalizedForLookup
         // Try progressively looser MusicBrainz queries
         let queries: [String] = [
