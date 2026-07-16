@@ -2,13 +2,25 @@ import SwiftUI
 
 enum LibTab: String, CaseIterable { case albums="Albums"; case artists="Artists"; case genres="Genres"; case playlists="Playlists"; case radio="Radio"; case cd="CD" }
 
+extension LibTab {
+    var sfSymbol: String {
+        switch self {
+        case .albums:    "square.stack"
+        case .artists:   "person"
+        case .genres:    "tag"
+        case .playlists: "music.note.list"
+        case .radio:     "antenna.radiowaves.left.and.right"
+        case .cd:        "opticaldisc"
+        }
+    }
+}
+
 struct LibraryView: View {
     @State private var tab: LibTab = .albums
     var body: some View {
         NavigationStack {
             VStack(spacing:0) {
-                Picker("",selection:$tab) { ForEach(LibTab.allCases,id:\.self){Text($0.rawValue)} }
-                    .pickerStyle(.segmented).padding(.horizontal).padding(.vertical,8)
+                tabBar
                 Divider()
                 switch tab {
                 case .albums:    AlbumListView()
@@ -21,6 +33,31 @@ struct LibraryView: View {
             }
             .navigationTitle("Library").navigationBarTitleDisplayMode(.inline)
         }
+    }
+
+    // Six categories don't fit a segmented picker on small iPhones — a
+    // horizontally scrolling chip bar degrades by scrolling, not truncating.
+    var tabBar: some View {
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators:false) {
+                HStack(spacing:8) {
+                    ForEach(LibTab.allCases,id:\.self){ t in tabChip(t).id(t) }
+                }
+                .padding(.horizontal)
+            }
+            .padding(.vertical,8)
+            .onChange(of:tab){ _, newTab in withAnimation { proxy.scrollTo(newTab) } }
+            .onAppear{ proxy.scrollTo(tab) }
+        }
+    }
+
+    @ViewBuilder
+    func tabChip(_ t: LibTab) -> some View {
+        let button = Button { tab = t } label: {
+            Label(t.rawValue, systemImage:t.sfSymbol).font(.subheadline)
+        }
+        if t == tab { button.buttonStyle(.glassProminent) }
+        else        { button.buttonStyle(.glass) }
     }
 }
 
