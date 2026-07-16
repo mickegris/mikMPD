@@ -820,6 +820,28 @@ import Testing
         #expect(r.disc == nil)
     }
 
+    @Test func bracketedDiscLetters() {
+        let a = albumBaseAndDisc("101 [Disc A]")
+        #expect(a.base == "101")
+        #expect(a.disc == 1)
+        let b = albumBaseAndDisc("101 [Disc B]")
+        #expect(b.base == "101")
+        #expect(b.disc == 2)
+    }
+
+    @Test func bareDiscLetterNotMatched() {
+        let r = albumBaseAndDisc("Album CD A")
+        #expect(r.base == "Album CD A")
+        #expect(r.disc == nil)
+    }
+
+    @Test func discLetterVariantsGroup() {
+        let g = groupAlbumVariants(["101 [Disc A]", "101 [Disc B]"])
+        #expect(g.count == 1)
+        #expect(g[0].base == "101")
+        #expect(g[0].variants.count == 2)
+    }
+
     @Test func discVariantsShareArtCacheKey() {
         let a = artCacheKey(artist: "Gamma Ray", album: "Blast from the Past [Disc 1]")
         let b = artCacheKey(artist: "Gamma Ray", album: "Blast from the Past (Disc 2)")
@@ -834,6 +856,83 @@ import Testing
             extract: "Blast from the Past is a compilation album by Gamma Ray.",
             album: base, artist: "Gamma Ray")
         #expect(ok)
+    }
+}
+
+// MARK: - Edition qualifiers (external lookups only)
+
+@Suite struct AlbumLookupTitleTests {
+    @Test func bitRemaster() {
+        #expect(albumLookupTitle("Clutching at Straws [24-bit remaster]") == "Clutching at Straws")
+    }
+
+    @Test func yearRemaster() {
+        #expect(albumLookupTitle("Crest of a Knave [2005 Remaster]") == "Crest of a Knave")
+    }
+
+    @Test func deluxeEditionParens() {
+        #expect(albumLookupTitle("The Wall (Deluxe Edition)") == "The Wall")
+    }
+
+    @Test func liveQualifier() {
+        #expect(albumLookupTitle("Made in Japan (Live)") == "Made in Japan")
+    }
+
+    @Test func discMarkerPlusQualifier() {
+        #expect(albumLookupTitle("X [Deluxe Edition] [Disc 1]") == "X")
+        #expect(albumLookupTitle("X [Disc 1]") == "X")
+    }
+
+    @Test func discLetterStripped() {
+        #expect(albumLookupTitle("101 [Disc A]") == "101")
+    }
+
+    @Test func nonQualifierBracketsKept() {
+        #expect(albumLookupTitle("S&M (Symphony & Metallica)") == "S&M (Symphony & Metallica)")
+    }
+
+    @Test func leadingBracketUntouched() {
+        #expect(albumLookupTitle("(What's the Story) Morning Glory?") == "(What's the Story) Morning Glory?")
+    }
+
+    @Test func remixesNotStripped() {
+        #expect(albumLookupTitle("Reload [Remixes]") == "Reload [Remixes]")
+    }
+
+    @Test func plainTitleUntouched() {
+        #expect(albumLookupTitle("Powerslave") == "Powerslave")
+    }
+
+    @Test func qualifierOnlyTitleKept() {
+        #expect(albumLookupTitle("(Live)") == "(Live)")
+    }
+}
+
+// MARK: - Token-overlap album matching
+
+@Suite struct AlbumTokenMatchTests {
+    @Test func decoratedTitleMatchesByTokens() {
+        let ok = WikipediaService.albumResultMatches(
+            title: "Live from the Beacon Theatre",
+            extract: "Live from the Beacon Theatre is a live album recorded by Joe Bonamassa.",
+            album: "Beacon Theatre. Live from...", artist: "Joe Bonamassa")
+        #expect(ok)
+    }
+
+    @Test func unrelatedAlbumStillRejected() {
+        let ok = WikipediaService.albumResultMatches(
+            title: "Completely Different Record",
+            extract: "An unrelated article about something else entirely by Joe Bonamassa.",
+            album: "Beacon Theatre. Live from...", artist: "Joe Bonamassa")
+        #expect(!ok)
+    }
+
+    @Test func wrongArtistStillRejected() {
+        let ok = WikipediaService.albumResultMatches(
+            title: "Live from the Beacon Theatre",
+            extract: "Live from the Beacon Theatre is a live album by someone unrelated.",
+            album: "Beacon Theatre. Live from...", artist: "Joe Bonamassa")
+        #expect(!ok)
     }
 }
 
