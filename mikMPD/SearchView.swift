@@ -5,7 +5,7 @@ struct SearchView: View {
     @State private var query = ""
     @State private var selectedSongs: Set<String> = []
     @State private var artists: [String] = []
-    @State private var albums: [(artist: String, album: String)] = []
+    @State private var albums: [(artist: String, album: String, discCount: Int)] = []
     @State private var isSearching = false
     @State private var searchTask: Task<Void, Never>?
     @State private var addRequest: AddToPlaylistRequest?
@@ -85,7 +85,7 @@ struct SearchView: View {
                                     .cornerRadius(6)
                                 
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(item.album)
+                                    Text(item.discCount > 1 ? albumBaseAndDisc(item.album).base : item.album)
                                         .font(.subheadline)
                                         .lineLimit(2)
                                     if !item.artist.isEmpty {
@@ -93,6 +93,11 @@ struct SearchView: View {
                                             .font(.caption)
                                             .foregroundStyle(.secondary)
                                             .lineLimit(1)
+                                    }
+                                    if item.discCount > 1 {
+                                        Text("\(item.discCount) discs")
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
                                     }
                                 }
                             }
@@ -200,12 +205,26 @@ struct SearchView: View {
             }
 
             group.notify(queue: .main) {
-                self.albums = albumArtistPairs.sorted { a, b in
+                let sorted = albumArtistPairs.sorted { a, b in
                     if a.artist == b.artist {
                         return a.album < b.album
                     }
                     return a.artist < b.artist
                 }
+                // Collapse disc variants of the same album (per artist) into one
+                // row; AlbumDetailView re-expands to all discs when opened.
+                var seen: [String: Int] = [:]
+                var grouped: [(artist: String, album: String, discCount: Int)] = []
+                for p in sorted {
+                    let key = "\(p.artist)|\(albumBaseAndDisc(p.album).base)"
+                    if let i = seen[key] {
+                        grouped[i].discCount += 1
+                    } else {
+                        seen[key] = grouped.count
+                        grouped.append((p.artist, p.album, 1))
+                    }
+                }
+                self.albums = grouped
                 self.isSearching = false
             }
         }
