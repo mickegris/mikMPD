@@ -13,8 +13,9 @@ struct NowPlayingView: View {
     // Local volume copy (synced from store, committed on release)
     @State private var localVolume  = 80.0
 
-    // Toggles the album-art region between artwork and lyrics
-    @State private var showLyrics   = false
+    // What fills the square region: artwork, lyrics, or the queue
+    enum Pane { case art, lyrics, queue }
+    @State private var pane: Pane = .art
 
     // Presents the shared "Add to Playlist" sheet for the current song
     @State private var addRequest: AddToPlaylistRequest?
@@ -48,6 +49,7 @@ struct NowPlayingView: View {
                 HStack {
                     addToPlaylistButton
                     Spacer()
+                    queueToggle
                     lyricsToggle
                 }
             }
@@ -55,17 +57,18 @@ struct NowPlayingView: View {
 
             Spacer(minLength: 0)
 
+            // Tap-to-toggle lives on the art/lyrics panes, not the container —
+            // a container gesture would swallow the queue list's row taps.
             Group {
-                if showLyrics {
-                    lyricsPane
-                } else {
-                    albumArt
+                switch pane {
+                case .art:    albumArt.onTapGesture { togglePane(.lyrics) }
+                case .lyrics: lyricsPane.onTapGesture { togglePane(.lyrics) }
+                case .queue:  queuePane
                 }
             }
             .aspectRatio(1, contentMode: .fit)
             .clipShape(RoundedRectangle(cornerRadius: 14))
             .shadow(color: .black.opacity(0.3), radius: 10, y: 4)
-            .onTapGesture { withAnimation(.easeInOut(duration: 0.25)) { showLyrics.toggle() } }
 
             Spacer(minLength: 4)
 
@@ -166,16 +169,72 @@ struct NowPlayingView: View {
 
     // MARK: - Lyrics
 
+    /// Switch to the given pane, or back to the artwork when it's already showing.
+    func togglePane(_ p: Pane) {
+        withAnimation(.easeInOut(duration: 0.25)) { pane = (pane == p) ? .art : p }
+        if pane == .queue { store.loadQueue() }
+    }
+
     var lyricsToggle: some View {
         Button {
-            withAnimation(.easeInOut(duration: 0.25)) { showLyrics.toggle() }
+            togglePane(.lyrics)
         } label: {
-            Image(systemName: showLyrics ? "quote.bubble.fill" : "quote.bubble")
+            Image(systemName: pane == .lyrics ? "quote.bubble.fill" : "quote.bubble")
                 .font(.body)
-                .foregroundStyle(showLyrics ? Color.accentColor : Color.secondary)
+                .foregroundStyle(pane == .lyrics ? Color.accentColor : Color.secondary)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(showLyrics ? "Hide lyrics" : "Show lyrics")
+        .accessibilityLabel(pane == .lyrics ? "Hide lyrics" : "Show lyrics")
+    }
+
+    // MARK: - Queue pane
+
+    var queueToggle: some View {
+        Button {
+            togglePane(.queue)
+        } label: {
+            Image(systemName: pane == .queue ? "list.bullet.circle.fill" : "list.bullet")
+                .font(.body)
+                .foregroundStyle(pane == .queue ? Color.accentColor : Color.secondary)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(pane == .queue ? "Hide queue" : "Show queue")
+    }
+
+    var queuePane: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 14).fill(Color(.systemGray6))
+            if store.queue.isEmpty {
+                ContentUnavailableView("Queue is Empty", systemImage: "list.bullet")
+            } else {
+                ScrollViewReader { proxy in
+                    List {
+                        ForEach(store.queue) { qSong in
+                            QueueRow(song: qSong, isCurrent: qSong.pos == store.playlistPos)
+                                .contentShape(Rectangle())
+                                .onTapGesture { store.play(at: qSong.pos) }
+                                .listRowBackground(qSong.pos == store.playlistPos
+                                    ? Color.accentColor.opacity(0.12) : Color.clear)
+                                .id(qSong.pos)
+                        }
+                        .onDelete { store.delete(at: $0) }
+                    }
+                    .listStyle(.plain)
+                    .scrollContentBackground(.hidden)
+                    .onAppear { scrollToCurrent(proxy, animated: false) }
+                    .onChange(of: store.playlistPos) { _, _ in scrollToCurrent(proxy, animated: true) }
+                }
+            }
+        }
+    }
+
+    private func scrollToCurrent(_ proxy: ScrollViewProxy, animated: Bool) {
+        guard store.playlistPos >= 0 else { return }
+        if animated {
+            withAnimation(.easeInOut(duration: 0.3)) { proxy.scrollTo(store.playlistPos, anchor: .center) }
+        } else {
+            proxy.scrollTo(store.playlistPos, anchor: .center)
+        }
     }
 
     var lyricsPane: some View {
