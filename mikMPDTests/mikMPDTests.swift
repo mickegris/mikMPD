@@ -934,6 +934,27 @@ import Testing
             album: "Beacon Theatre. Live from...", artist: "Joe Bonamassa")
         #expect(!ok)
     }
+
+    // A sequel's article cites the album by name in its extract, so the loose
+    // check passes — fetchAlbum must therefore prefer hits whose *title* names
+    // the album. titleMatchesAlbum is that discriminator.
+    @Test func sequelTitleIsNotATitleMatch() {
+        #expect(!WikipediaService.titleMatchesAlbum(
+            title: "Live at Carnegie Hall: An Acoustic Evening",
+            album: "An Acoustic Evening at the Vienna Opera House"))
+    }
+
+    @Test func ownArticleIsATitleMatch() {
+        #expect(WikipediaService.titleMatchesAlbum(
+            title: "An Acoustic Evening at the Vienna Opera House",
+            album: "An Acoustic Evening at the Vienna Opera House"))
+    }
+
+    @Test func decoratedTagStillTitleMatchesByTokens() {
+        #expect(WikipediaService.titleMatchesAlbum(
+            title: "Live from the Beacon Theatre",
+            album: "Beacon Theatre. Live from..."))
+    }
 }
 
 // MARK: - Album variant grouping

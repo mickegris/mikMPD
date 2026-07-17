@@ -238,9 +238,7 @@ struct NowPlayingView: View {
             }
             if !song.album.isEmpty {
                 NavigationLink(destination: AlbumDetailView(album: song.album, artist: song.artist.isEmpty ? nil : song.artist)) {
-                    Text(song.album)
-                        .font(.caption).foregroundStyle(.secondary)
-                        .underline()
+                    MarqueeText(text: song.album, font: .caption, color: .secondary, underlined: true)
                 }
             }
         }
@@ -366,6 +364,65 @@ struct ModeBtn: View {
             .frame(minWidth: 60, minHeight: 40)
             .background(RoundedRectangle(cornerRadius: 10)
                 .fill(active ? Color.accentColor.opacity(0.15) : Color(.systemGray6)))
+        }
+    }
+}
+
+/// Single-line text that renders normally when it fits and auto-scrolls
+/// (marquee) when it doesn't, so long album titles are readable in full.
+/// State is reset via .id(text) whenever the text changes.
+struct MarqueeText: View {
+    let text: String
+    var font: Font = .body
+    var color: Color = .primary
+    var underlined = false
+
+    @State private var textWidth: CGFloat = 0
+    @State private var boxWidth: CGFloat = 0
+    @State private var scrolling = false
+
+    private let gap: CGFloat = 48
+    private let pointsPerSecond: CGFloat = 30
+
+    private var overflows: Bool { textWidth > boxWidth + 1 }
+
+    var body: some View {
+        // The (possibly truncated) base label defines height and available
+        // width; a hidden fixed-size copy measures the full text width; the
+        // scrolling pair overlays the base only when the text overflows.
+        label
+            .lineLimit(1)
+            .opacity(overflows ? 0 : 1)
+            .background(
+                label.fixedSize().hidden().background(GeometryReader { g in
+                    Color.clear.onAppear { textWidth = g.size.width }
+                })
+            )
+            .background(GeometryReader { g in
+                Color.clear
+                    .onAppear { boxWidth = g.size.width }
+                    .onChange(of: g.size.width) { _, w in boxWidth = w }
+            })
+            .overlay(marquee)
+            .id(text)
+    }
+
+    private var label: some View {
+        Text(text).font(font).foregroundStyle(color).underline(underlined)
+    }
+
+    @ViewBuilder private var marquee: some View {
+        if overflows {
+            HStack(spacing: gap) {
+                label.fixedSize()
+                label.fixedSize()
+            }
+            .offset(x: scrolling ? -(textWidth + gap) : 0)
+            .frame(width: boxWidth, alignment: .leading)
+            .clipped()
+            .animation(.linear(duration: Double((textWidth + gap) / pointsPerSecond))
+                .repeatForever(autoreverses: false), value: scrolling)
+            .onAppear { scrolling = true }
         }
     }
 }
