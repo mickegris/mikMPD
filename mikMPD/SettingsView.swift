@@ -88,11 +88,14 @@ struct ConnectionView: View {
                 }
                 Section("Status") {
                     HStack(spacing: 8) {
-                        Circle().fill(store.isConnected ? .green : .red).frame(width: 10, height: 10)
+                        Circle().fill(store.isConnected ? Color.green : (store.isConfigured ? Color.red : Color.gray))
+                            .frame(width: 10, height: 10)
                         Text(store.isConnected
                             ? "Connected to \(store.host):\(store.portStr)"
-                            : (store.connectionError ?? "Not connected"))
-                            .font(.subheadline).foregroundColor(store.isConnected ? .green : .red)
+                            : (store.isConfigured ? (store.connectionError ?? "Not connected")
+                                                  : "No MPD server configured"))
+                            .font(.subheadline)
+                            .foregroundColor(store.isConnected ? .green : (store.isConfigured ? .red : .secondary))
                     }
                 }
             }

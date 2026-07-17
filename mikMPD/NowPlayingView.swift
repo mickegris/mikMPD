@@ -19,6 +19,9 @@ struct NowPlayingView: View {
     // Presents the shared "Add to Playlist" sheet for the current song
     @State private var addRequest: AddToPlaylistRequest?
 
+    // Presents ConnectionView from the "no server configured" banner
+    @State private var showConnection = false
+
     var song: MPDSong { store.currentSong }
 
     // What fraction to show in the slider
@@ -96,32 +99,52 @@ struct NowPlayingView: View {
 
     // MARK: - Subviews
 
+    @ViewBuilder
     var connectionStatus: some View {
-        HStack(spacing: 8) {
-            Image(systemName: store.isConnected ? "checkmark.circle.fill" : "xmark.circle.fill")
-                .foregroundColor(store.isConnected ? .green : .red)
-                .font(.caption)
-            
-            VStack(alignment: .leading, spacing: 2) {
-                Text(store.isConnected 
-                    ? "Connected to \(store.host):\(store.portStr)"
-                    : "Not connected")
-                .font(.caption)
-                .foregroundColor(store.isConnected ? .secondary : .red)
-
-                if store.isConnected {
-                    Text("Partition: \(store.currentPartition)")
-                        .font(.caption2)
+        if !store.isConfigured {
+            // Persistent setup affordance after dismissing the first-run prompt.
+            Button { showConnection = true } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "questionmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                        .font(.caption)
+                    Text("No MPD server configured — tap to set up")
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                .padding(.horizontal)
+                .padding(.vertical, 6)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color(.systemGray6)))
             }
+            .buttonStyle(.plain)
+            .sheet(isPresented: $showConnection) { ConnectionView() }
+        } else {
+            HStack(spacing: 8) {
+                Image(systemName: store.isConnected ? "checkmark.circle.fill" : "xmark.circle.fill")
+                    .foregroundColor(store.isConnected ? .green : .red)
+                    .font(.caption)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(store.isConnected
+                        ? "Connected to \(store.host):\(store.portStr)"
+                        : "Not connected")
+                    .font(.caption)
+                    .foregroundColor(store.isConnected ? .secondary : .red)
+
+                    if store.isConnected {
+                        Text("Partition: \(store.currentPartition)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(store.isConnected ? Color(.systemGray6) : Color.red.opacity(0.1))
+            )
         }
-        .padding(.horizontal)
-        .padding(.vertical, 6)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(store.isConnected ? Color(.systemGray6) : Color.red.opacity(0.1))
-        )
     }
 
     @ViewBuilder

@@ -727,6 +727,31 @@ import Testing
     }
 }
 
+// MARK: - Legacy server migration gate
+
+@Suite struct LegacyMigrationTests {
+    @Test func freshInstallDoesNotMigrate() {
+        // No persisted legacy host: the old @AppStorage default was never
+        // written to UserDefaults, so nothing should be invented.
+        #expect(!shouldMigrateLegacyServer(persistedHost: nil, hasServers: false))
+    }
+
+    @Test func persistedLegacyHostMigrates() {
+        #expect(shouldMigrateLegacyServer(persistedHost: "192.168.1.1", hasServers: false))
+        #expect(shouldMigrateLegacyServer(persistedHost: "myhost.local", hasServers: false))
+    }
+
+    @Test func emptyOrBlankHostDoesNotMigrate() {
+        #expect(!shouldMigrateLegacyServer(persistedHost: "", hasServers: false))
+        #expect(!shouldMigrateLegacyServer(persistedHost: "   ", hasServers: false))
+    }
+
+    @Test func existingServersNeverMigrate() {
+        #expect(!shouldMigrateLegacyServer(persistedHost: "myhost", hasServers: true))
+        #expect(!shouldMigrateLegacyServer(persistedHost: nil, hasServers: true))
+    }
+}
+
 // MARK: - Multi-disc album markers
 
 @Suite struct AlbumDiscTests {

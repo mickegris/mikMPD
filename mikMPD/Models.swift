@@ -195,6 +195,18 @@ nonisolated func migratedLegacyProfile(host: String, portStr: String, streamURL:
                      streamURL: streamURL, lastPartition: lastPartition ?? "")
 }
 
+/// A legacy (pre-multi-server) host was only ever *persisted* if the user
+/// actually configured one — @AppStorage defaults are never written to
+/// UserDefaults. On a fresh install there is nothing to migrate; fabricating a
+/// profile from the old hardcoded placeholder produced a bogus "192.168.1.1"
+/// server that the app then tried to dial.
+nonisolated func shouldMigrateLegacyServer(persistedHost: String?, hasServers: Bool) -> Bool {
+    guard !hasServers,
+          let host = persistedHost?.trimmingCharacters(in: .whitespaces),
+          !host.isEmpty else { return false }
+    return true
+}
+
 /// MPD playlist names are file names (NAME.m3u): returns the trimmed name,
 /// or nil for empty names or names containing path separators/newlines.
 nonisolated func validatePlaylistName(_ name: String) -> String? {
