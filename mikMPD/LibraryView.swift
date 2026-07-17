@@ -108,7 +108,7 @@ struct AlbumDetailView: View {
                     HStack(alignment:.top,spacing:14){
                         ArtThumb(song:songs.first,size:90).cornerRadius(8)
                         VStack(alignment:.leading,spacing:4){
-                            Text(displayAlbum.isEmpty ? "(no title)" : displayAlbum).font(.headline).lineLimit(3)
+                            Text(displayAlbum.isEmpty ? "(no title)" : displayAlbum).font(.headline)
                             if !displayArtist.isEmpty {
                                 NavigationLink(destination:ArtistDetailView(artist:displayArtist)){
                                     Text(displayArtist).font(.subheadline).foregroundStyle(.secondary).underline()

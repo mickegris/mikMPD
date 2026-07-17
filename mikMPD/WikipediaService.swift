@@ -49,19 +49,43 @@ actor WikipediaService {
                 cache[key] = r.extract; return r.extract
             }
         }
-        // Search with progressively looser queries
+        // Plain exact title — distinctive album names ("An Acoustic Evening at
+        // the Vienna Opera House") are articles without any "(album)" suffix.
+        // Validated hard: must read as music and pass the artist check, so an
+        // album named after a city/person doesn't pick up the wrong article.
+        if let r = await summaryData(title: album), !r.extract.isEmpty, isMusicRelated(r.extract),
+           Self.albumResultMatches(title: album, extract: r.extract, album: album, artist: artist) {
+            cache[key] = r.extract; return r.extract
+        }
+        // Search with progressively looser queries. A hit whose *title* names the
+        // album wins immediately; extract-only matches are kept as fallback —
+        // a sequel's article often cites the album by full name in its extract
+        // ("Live at Carnegie Hall…" mentions the Vienna Opera House album).
         let searches = artist.isEmpty
             ? ["\(album) album"]
             : ["\(album) \(artist) album", "\(album) album"]
+        var extractOnlyMatch: String? = nil
         for searchQ in searches {
             for ttl in await searchTitles(searchQ) {
-                if let r = await summaryData(title: ttl), !r.extract.isEmpty,
-                   Self.albumResultMatches(title: ttl, extract: r.extract, album: album, artist: artist) {
+                guard let r = await summaryData(title: ttl), !r.extract.isEmpty,
+                      Self.albumResultMatches(title: ttl, extract: r.extract, album: album, artist: artist)
+                else { continue }
+                if Self.titleMatchesAlbum(title: ttl, album: album) {
                     cache[key] = r.extract; return r.extract
                 }
+                if extractOnlyMatch == nil { extractOnlyMatch = r.extract }
             }
         }
+        if let e = extractOnlyMatch { cache[key] = e; return e }
         cache[key] = ""; return nil
+    }
+
+    /// Strong signal: the article *title* names the album (exact containment
+    /// after normalization, or most of the album's words appear in the title).
+    nonisolated static func titleMatchesAlbum(title: String, album: String) -> Bool {
+        let t = title.normalizedForLookup.lowercased()
+        let a = album.normalizedForLookup.lowercased()
+        return t.contains(a) || tokensMostlyPresent(a, in: t)
     }
 
     /// A search hit must relate to this album, not just the artist's
