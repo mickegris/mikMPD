@@ -61,8 +61,12 @@ final class MPDStore: ObservableObject {
     // MARK: - Settings
     // host/portStr/password/httpStreamURL are the *live* connection values;
     // they are loaded from the active MPDServerProfile on switch.
-    @AppStorage("mpd_host")     var host:    String = "192.168.1.1"
+    @AppStorage("mpd_host")     var host:    String = ""
     @AppStorage("mpd_port")     var portStr: String = "6600"
+
+    /// False on a fresh install until the user adds a server — the app must
+    /// not dial anywhere and the UI should offer setup instead of an error.
+    var isConfigured: Bool { !servers.isEmpty && !host.trimmingCharacters(in: .whitespaces).isEmpty }
     var password: String {
         get { KeychainHelper.load(key: Self.passwordKey(forServerID: activeServerID)) ?? "" }
         set { KeychainHelper.save(key: Self.passwordKey(forServerID: activeServerID), value: newValue) }
@@ -129,6 +133,10 @@ final class MPDStore: ObservableObject {
             servers = decoded
         }
         if servers.isEmpty {
+            // Only migrate when a legacy host was actually persisted — on a
+            // fresh install there is no server, and none should be invented.
+            guard shouldMigrateLegacyServer(persistedHost: UserDefaults.standard.string(forKey: "mpd_host"),
+                                            hasServers: false) else { return }
             let profile = migratedLegacyProfile(host: host, portStr: portStr,
                                                 streamURL: httpStreamURL,
                                                 lastPartition: lastUsedPartitionName)
@@ -150,6 +158,9 @@ final class MPDStore: ObservableObject {
             self.isConnected = false
             self.connectionError = nil
         }
+        // Nothing configured (fresh install) — don't dial anywhere. Also covers
+        // the foreground-resume reconnect and the 3 s retry loop.
+        guard !host.trimmingCharacters(in: .whitespaces).isEmpty else { return }
         let h = host, p = port, pw = password
         // On cold start partitionToRestore is nil; fall back to persisted @AppStorage value
         var pendingRestore = partitionToRestore
