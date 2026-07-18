@@ -227,6 +227,60 @@ nonisolated func songsAssigningPositions(_ records: [MPDRecord]) -> [MPDSong] {
     }
 }
 
+// MARK: - Recently played
+
+nonisolated struct RecentlyPlayedEntry: Codable, Identifiable, Equatable {
+    var file: String
+    var title: String
+    var artist: String
+    var album: String
+    var playedAt: Date
+    var id: String { "\(file)|\(playedAt.timeIntervalSince1970)" }
+}
+
+/// Commits a song to history once it has played ~30 s continuously (half its
+/// duration for short tracks, Spotify-style), driven by the store's poll.
+/// Accumulates wall-clock deltas between ticks (poll cadence is 1 s foreground /
+/// 2 s while streaming; a single delta is capped so suspended-app gaps don't
+/// count). A file change resets — skipped songs never commit. One commit per
+/// continuous play of a file; repeat-one therefore logs once, not per loop.
+nonisolated struct RecentlyPlayedRecorder {
+    private var file = ""
+    private var accumulated: TimeInterval = 0
+    private var lastTick: Date?
+    private var committed = false
+
+    mutating func tick(song: MPDSong, isPlaying: Bool, now: Date) -> RecentlyPlayedEntry? {
+        if song.file != file {
+            file = song.file
+            accumulated = 0
+            committed = false
+            lastTick = (isPlaying && !file.isEmpty) ? now : nil
+            return nil
+        }
+        guard !file.isEmpty else { lastTick = nil; return nil }
+        guard isPlaying else { lastTick = nil; return nil }  // pause keeps progress, stops the clock
+        if let last = lastTick {
+            accumulated += min(now.timeIntervalSince(last), 5)
+        }
+        lastTick = now
+        guard !committed else { return nil }
+        let threshold = song.duration > 0 ? min(30, max(5, song.duration / 2)) : 30
+        guard accumulated >= threshold else { return nil }
+        committed = true
+        return RecentlyPlayedEntry(file: song.file, title: song.displayTitle,
+                                   artist: song.artist, album: song.album, playedAt: now)
+    }
+}
+
+/// Retention: drop entries older than `maxAge`, then trim to the `cap` newest.
+/// Expects (and preserves) newest-first order.
+nonisolated func prunedRecentHistory(_ entries: [RecentlyPlayedEntry], now: Date,
+                                     maxAge: TimeInterval = 30 * 86_400,
+                                     cap: Int = 100) -> [RecentlyPlayedEntry] {
+    Array(entries.filter { now.timeIntervalSince($0.playedAt) <= maxAge }.prefix(cap))
+}
+
 nonisolated struct MPDBrowseItem: Identifiable {
     enum Kind { case directory, file, playlist }
     var kind: Kind

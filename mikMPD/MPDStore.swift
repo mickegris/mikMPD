@@ -122,6 +122,7 @@ final class MPDStore: ObservableObject {
             UserDefaults.standard.removeObject(forKey: "mpd_password")
         }
         loadServersMigratingIfNeeded()
+        loadRecentlyPlayed()
         connect()
     }
 
@@ -245,6 +246,7 @@ final class MPDStore: ObservableObject {
     func deleteServer(_ profile: MPDServerProfile) {
         servers.removeAll { $0.id == profile.id }
         KeychainHelper.save(key: "mpd_password_\(profile.id.uuidString)", value: "")  // removes the entry
+        UserDefaults.standard.removeObject(forKey: "recentlyPlayed_\(profile.id.uuidString)")
         if profile.id.uuidString == activeServerID {
             if let next = servers.first {
                 switchToServer(next, force: true)
@@ -254,6 +256,36 @@ final class MPDStore: ObservableObject {
             }
         }
     }
+
+    // MARK: - Recently played
+
+    /// Newest-first, per server, partition-agnostic (the poll only ever sees
+    /// the partition the app is tuned to, so this is simply "what I saw play").
+    @Published var recentlyPlayed: [RecentlyPlayedEntry] = [] {
+        didSet {
+            guard !activeServerID.isEmpty else { return }
+            UserDefaults.standard.set((try? JSONEncoder().encode(recentlyPlayed)) ?? Data(),
+                                      forKey: "recentlyPlayed_\(activeServerID)")
+        }
+    }
+    private var recentRecorder = RecentlyPlayedRecorder()
+
+    /// Load the active server's history, pruning stale entries; also resets the
+    /// recorder so a half-accumulated song can't leak across servers.
+    private func loadRecentlyPlayed() {
+        recentRecorder = RecentlyPlayedRecorder()
+        guard !activeServerID.isEmpty,
+              let data = UserDefaults.standard.data(forKey: "recentlyPlayed_\(activeServerID)"),
+              let decoded = try? JSONDecoder().decode([RecentlyPlayedEntry].self, from: data)
+        else { recentlyPlayed = []; return }
+        recentlyPlayed = prunedRecentHistory(decoded, now: Date())
+    }
+
+    private func pushRecent(_ entry: RecentlyPlayedEntry) {
+        recentlyPlayed = prunedRecentHistory([entry] + recentlyPlayed, now: entry.playedAt)
+    }
+
+    func clearRecentlyPlayed() { recentlyPlayed = [] }
 
     /// Make a profile the active server and reconnect. `force` reconnects
     /// even if it is already active (used as an explicit reconnect).
@@ -273,6 +305,7 @@ final class MPDStore: ObservableObject {
         httpStreamURL = profile.streamURL
         lastUsedPartitionName = profile.lastPartition.isEmpty ? nil : profile.lastPartition
         resetServerState()
+        loadRecentlyPlayed()
         connect()
     }
 
@@ -429,6 +462,9 @@ final class MPDStore: ObservableObject {
                     self.elapsed = elapsed
                 }
                 if songChanged { self.fetchArt(for: song); self.fetchLyrics(for: song) }
+                if let entry = self.recentRecorder.tick(song: song, isPlaying: self.isPlaying, now: Date()) {
+                    self.pushRecent(entry)
+                }
                 if self.isPhoneStreaming { self.updateNowPlayingInfo() }
             }
         } catch {

@@ -23,6 +23,9 @@ struct NowPlayingView: View {
     // Presents ConnectionView from the "no server configured" banner
     @State private var showConnection = false
 
+    // Presents the Recently Played sheet
+    @State private var showHistory = false
+
     var song: MPDSong { store.currentSong }
 
     // What fraction to show in the slider
@@ -48,6 +51,7 @@ struct NowPlayingView: View {
                     .font(.headline)
                 HStack {
                     addToPlaylistButton
+                    historyButton
                     Spacer()
                     queueToggle
                     lyricsToggle
@@ -98,6 +102,15 @@ struct NowPlayingView: View {
                     .font(.body)
             }
         }
+    }
+
+    var historyButton: some View {
+        Button { showHistory = true } label: {
+            Image(systemName: "clock.arrow.circlepath")
+                .font(.body)
+        }
+        .accessibilityLabel("Recently played")
+        .sheet(isPresented: $showHistory) { RecentlyPlayedSheet() }
     }
 
     // MARK: - Subviews
@@ -447,6 +460,69 @@ struct ModeBtn: View {
             .background(RoundedRectangle(cornerRadius: 10)
                 .fill(active ? Color.accentColor.opacity(0.15) : Color(.systemGray6)))
         }
+    }
+}
+
+/// Client-side listening history (MPD has no history command — only what
+/// played while the app was connected is captured). Tap plays, swipes add
+/// to queue or a stored playlist.
+struct RecentlyPlayedSheet: View {
+    @EnvironmentObject var store: MPDStore
+    @Environment(\.dismiss) var dismiss
+    @State private var addRequest: AddToPlaylistRequest?
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if store.recentlyPlayed.isEmpty {
+                    ContentUnavailableView("Nothing Played Yet", systemImage: "clock.arrow.circlepath",
+                        description: Text("Songs appear here after they've played for a while."))
+                } else {
+                    List(store.recentlyPlayed) { entry in
+                        HStack(spacing: 10) {
+                            ArtThumbByKey(artist: entry.artist, album: entry.album, size: 44).cornerRadius(4)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(entry.title).font(.subheadline).lineLimit(1)
+                                if !entry.artist.isEmpty {
+                                    Text(entry.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                }
+                            }
+                            Spacer()
+                            Text(entry.playedAt, style: .relative)
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture { store.addAndPlay(uri: entry.file) }
+                        .swipeActions(edge: .trailing) {
+                            Button { store.add(uri: entry.file) } label: {
+                                Label("Add", systemImage: "plus")
+                            }.tint(.green)
+                        }
+                        .swipeActions(edge: .leading) {
+                            // CD tracks can't live in stored playlists
+                            if !entry.file.lowercased().hasPrefix("cdda") {
+                                Button { addRequest = AddToPlaylistRequest(uris: [entry.file]) } label: {
+                                    Label("Playlist", systemImage: "music.note.list")
+                                }.tint(.indigo)
+                            }
+                        }
+                    }
+                    .listStyle(.plain)
+                }
+            }
+            .navigationTitle("Recently Played").navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("Clear", role: .destructive) { store.clearRecentlyPlayed() }
+                        .disabled(store.recentlyPlayed.isEmpty)
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .sheet(item: $addRequest) { AddToPlaylistSheet(uris: $0.uris) }
+        }
+        .presentationDetents([.medium, .large])
     }
 }
 
