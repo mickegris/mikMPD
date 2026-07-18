@@ -1371,7 +1371,7 @@ final class MPDStore: ObservableObject {
         ]
         let strippedArtist = artist.lowercased().filter(\.isLetter)
         for query in queries {
-            let mbids = await searchMusicBrainz(query: query, expectedArtist: strippedArtist)
+            let mbids = await searchMusicBrainz(query: query, expectedArtist: strippedArtist, expectedAlbum: album)
             for mbid in mbids {
                 if let img = await fetchCoverArt(mbid: mbid) { return img }
             }
@@ -1380,8 +1380,10 @@ final class MPDStore: ObservableObject {
     }
 
     /// Search MusicBrainz for releases. Returns MBIDs of matching releases (up to 5).
-    /// When `expectedArtist` is non-empty, filters to releases whose artist matches.
-    private static func searchMusicBrainz(query: String, expectedArtist: String) async -> [String] {
+    /// When `expectedArtist` is non-empty, filters to releases whose artist matches;
+    /// release titles must also name the album (same word-level check as Wikipedia),
+    /// so "Best of the Doors" can't return the debut album's cover.
+    private static func searchMusicBrainz(query: String, expectedArtist: String, expectedAlbum: String) async -> [String] {
         var c = URLComponents(string: "https://musicbrainz.org/ws/2/release/")!
         c.queryItems = [
             URLQueryItem(name: "query", value: query),
@@ -1401,6 +1403,12 @@ final class MPDStore: ObservableObject {
         var mbids: [String] = []
         for release in releases {
             guard let mbid = release["id"] as? String else { continue }
+            // Validate the release title when present (skip check on missing data)
+            if !expectedAlbum.isEmpty, let title = release["title"] as? String {
+                let t = title.normalizedForLookup.lowercased()
+                let a = expectedAlbum.normalizedForLookup.lowercased()
+                guard t.contains(a) || titleTokensMatch(candidate: t, query: a) else { continue }
+            }
             // Validate artist if we have an expected name
             if !expectedArtist.isEmpty,
                let credits = release["artist-credit"] as? [[String: Any]],

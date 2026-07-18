@@ -81,11 +81,11 @@ actor WikipediaService {
     }
 
     /// Strong signal: the article *title* names the album (exact containment
-    /// after normalization, or most of the album's words appear in the title).
+    /// after normalization, or word-level token overlap via titleTokensMatch).
     nonisolated static func titleMatchesAlbum(title: String, album: String) -> Bool {
         let t = title.normalizedForLookup.lowercased()
         let a = album.normalizedForLookup.lowercased()
-        return t.contains(a) || tokensMostlyPresent(a, in: t)
+        return t.contains(a) || titleTokensMatch(candidate: t, query: a)
     }
 
     /// A search hit must relate to this album, not just the artist's
@@ -95,24 +95,16 @@ actor WikipediaService {
         let albumLower = album.normalizedForLookup.lowercased()
         let titleLower = title.normalizedForLookup.lowercased()
         let extractLower = extract.normalizedForLookup.lowercased()
-        let aboutAlbum = titleLower.contains(albumLower) || extractLower.contains(albumLower)
-            || Self.tokensMostlyPresent(albumLower, in: titleLower + " " + extractLower)
+        // Token overlap counts only toward the *title*. The extract must contain
+        // the exact album name — a related article (sequel, other compilation)
+        // freely mentions enough of the album's words to fool a token match.
+        let aboutAlbum = Self.titleMatchesAlbum(title: titleLower, album: albumLower)
+            || extractLower.contains(albumLower)
         let artistLower = artist.normalizedForLookup.lowercased()
         let aboutArtist = artist.isEmpty
             || extractLower.contains(artistLower)
             || extractLower.filter(\.isLetter).contains(artistLower.filter(\.isLetter))
         return aboutAlbum && aboutArtist
-    }
-
-    /// Fallback for decorated tags ("Beacon Theatre. Live from...") whose exact
-    /// string never appears in the article: at least two-thirds of the album's
-    /// words (3+ chars) must appear in the result. The artist check still guards
-    /// against unrelated hits.
-    nonisolated private static func tokensMostlyPresent(_ needle: String, in haystack: String) -> Bool {
-        let tokens = needle.split { !$0.isLetter && !$0.isNumber }.map(String.init).filter { $0.count >= 3 }
-        guard !tokens.isEmpty else { return false }
-        let hits = tokens.filter { haystack.contains($0) }.count
-        return hits * 3 >= tokens.count * 2
     }
 
     /// Fetch artist info with music disambiguation.

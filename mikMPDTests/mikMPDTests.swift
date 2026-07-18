@@ -1060,6 +1060,65 @@ import Testing
     @Test func qualifierOnlyTitleKept() {
         #expect(albumLookupTitle("(Live)") == "(Live)")
     }
+
+    @Test func catalogNumberQualifiers() {
+        #expect(albumLookupTitle("Black Rain (Original 88697…)") == "Black Rain")
+        #expect(albumLookupTitle("Helldorado {Japan, VICP-60852}") == "Helldorado")
+        #expect(albumLookupTitle("Helldorado {Japan, VICP...}") == "Helldorado")
+    }
+
+    @Test func curlyBraceDiscMarker() {
+        let r = albumBaseAndDisc("X {Disc 1}")
+        #expect(r.base == "X")
+        #expect(r.disc == 1)
+    }
+
+    @Test func partNumberIsNotAQualifier() {
+        // "Part 2" (word + space + digit) must survive — it's part of the title
+        #expect(albumLookupTitle("Blood of Emeralds - The Very Best of Gary Moore Part 2")
+                == "Blood of Emeralds - The Very Best of Gary Moore Part 2")
+        #expect(albumLookupTitle("Album (Part 2)") == "Album (Part 2)")
+    }
+}
+
+// MARK: - Duplicate library copies
+
+@Suite struct DedupedAlbumTracksTests {
+    private func song(file: String, title: String, track: String, disc: String = "") -> MPDSong {
+        var s = MPDSong()
+        s.file = file; s.title = title; s.track = track; s.disc = disc; s.album = "A"
+        return s
+    }
+
+    @Test func duplicateCopiesCollapse() {
+        let deduped = dedupedAlbumTracks([
+            song(file: "a/01.flac", title: "Fear of a Blank Planet", track: "1"),
+            song(file: "b/01.flac", title: "Fear of a Blank Planet", track: "1"),
+            song(file: "a/02.flac", title: "My Ashes", track: "2"),
+            song(file: "b/02.flac", title: "MY ASHES", track: "2"),
+        ])
+        #expect(deduped.count == 2)
+        #expect(deduped.map(\.file) == ["a/01.flac", "a/02.flac"])  // first wins
+    }
+
+    @Test func differentTracksTitlesDiscsKept() {
+        let kept = dedupedAlbumTracks([
+            song(file: "1", title: "Song", track: "1"),
+            song(file: "2", title: "Song", track: "2"),          // other track
+            song(file: "3", title: "Other", track: "1"),         // other title
+            song(file: "4", title: "Song", track: "1", disc: "2"), // other disc
+        ])
+        #expect(kept.count == 4)
+    }
+
+    @Test func untitledFilesKeyOnFilename() {
+        // displayTitle falls back to the file name, keeping distinct files apart
+        let kept = dedupedAlbumTracks([
+            song(file: "a/one.flac", title: "", track: "0"),
+            song(file: "a/two.flac", title: "", track: "0"),
+        ])
+        #expect(kept.count == 2)
+    }
 }
 
 // MARK: - Token-overlap album matching
@@ -1108,6 +1167,45 @@ import Testing
         #expect(WikipediaService.titleMatchesAlbum(
             title: "Live from the Beacon Theatre",
             album: "Beacon Theatre. Live from..."))
+    }
+
+    // "the" is a stopword and matching is word-level: {best, doors} vs
+    // "The Doors (album)" is 1 of 2 hits — the debut album must not match.
+    @Test func compilationDoesNotMatchDebutAlbum() {
+        #expect(!WikipediaService.titleMatchesAlbum(
+            title: "The Doors (album)", album: "Best of the Doors"))
+        #expect(WikipediaService.titleMatchesAlbum(
+            title: "The Best of the Doors", album: "Best of the Doors"))
+    }
+
+    @Test func stopwordDoesNotHitInsideWords() {
+        // Substring matching would let "the" hit "theatre"
+        #expect(!titleTokensMatch(candidate: "theatre and anderson", query: "the best songs"))
+    }
+
+    @Test func singleTokenAlbumsNeverTokenMatch() {
+        // "101" is covered by exact containment, not by tokens
+        #expect(!titleTokensMatch(candidate: "101 dalmatians", query: "101"))
+    }
+
+    // A related article mentioning most of the album's words in its extract
+    // must no longer pass — the extract needs the exact album name.
+    @Test func extractWordSoupIsRejected() {
+        let ok = WikipediaService.albumResultMatches(
+            title: "Ballads & Blues 1982",
+            extract: "A Gary Moore compilation of his very best emerald-era blood-pumping songs, part two of a series.",
+            album: "Blood of Emeralds - The Very Best of Gary Moore Part 2",
+            artist: "Gary Moore")
+        #expect(!ok)
+    }
+
+    @Test func exactExtractMentionStillMatches() {
+        let ok = WikipediaService.albumResultMatches(
+            title: "Gary Moore discography",
+            extract: "Includes Blood of Emeralds - The Very Best of Gary Moore Part 2, released 1999 by Gary Moore.",
+            album: "Blood of Emeralds - The Very Best of Gary Moore Part 2",
+            artist: "Gary Moore")
+        #expect(ok)
     }
 }
 

@@ -17,10 +17,10 @@ nonisolated func artCacheKey(artist: String, album: String) -> String {
 /// subtitles ("[Disc 1: Live]") are deliberately not matched — those pass through.
 nonisolated private enum DiscMarker {
     static let numbered = try! NSRegularExpression(
-        pattern: #"(?:[\s\-–—:,]+|\s*[(\[])\s*(?:disc|disk|cd)[\s.\-]*([0-9]{1,3})\s*[)\]]?\s*$"#,
+        pattern: #"(?:[\s\-–—:,]+|\s*[(\[{])\s*(?:disc|disk|cd)[\s.\-]*([0-9]{1,3})\s*[)\]}]?\s*$"#,
         options: [.caseInsensitive])
     static let lettered = try! NSRegularExpression(
-        pattern: #"\s*[(\[]\s*(?:disc|disk|cd)[\s.\-]*([a-z])\s*[)\]]\s*$"#,
+        pattern: #"\s*[(\[{]\s*(?:disc|disk|cd)[\s.\-]*([a-z])\s*[)\]}]\s*$"#,
         options: [.caseInsensitive])
 }
 
@@ -57,9 +57,12 @@ nonisolated func albumBaseAndDisc(_ album: String) -> (base: String, disc: Int?)
 /// ("(What's the Story) Morning Glory?" is untouched — its bracket isn't trailing).
 nonisolated private enum EditionQualifier {
     static let trailingBracket = try! NSRegularExpression(
-        pattern: #"[(\[]([^)\]]*)[)\]]\s*$"#, options: [])
+        pattern: #"[(\[{]([^)\]}]*)[)\]}]\s*$"#, options: [])
+    // Keyword words, years, N-bit/kHz, bare catalog digit runs ("88697…"),
+    // and letter–digit catalog numbers ("VICP-60852"). "Part 2" has none of
+    // these (space between word and digit) and must stay untouched.
     static let keywords = try! NSRegularExpression(
-        pattern: #"(?i)\b(remaster(ed)?|deluxe|edition|expanded|anniversary|bonus|reissue|mono|stereo|live|explicit|hi-?res|sacd)\b|\b(19|20)[0-9]{2}\b|\b[0-9]+\s*-?\s*(bit|khz)\b"#,
+        pattern: #"(?i)\b(remaster(ed)?|deluxe|edition|expanded|anniversary|bonus|reissue|mono|stereo|live|explicit|hi-?res|sacd|original|recording|version|japan|import|promo|limited)\b|\b(19|20)[0-9]{2}\b|\b[0-9]+\s*-?\s*(bit|khz)\b|\b[0-9]{4,}\b|\b[a-z]{2,6}-?[0-9]{3,}\b"#,
         options: [])
 }
 
@@ -96,6 +99,34 @@ nonisolated func groupAlbumVariants(_ albums: [String]) -> [(base: String, varia
 /// Album track order: disc first (tag or album-suffix derived), then track number.
 nonisolated func sortedByDiscAndTrack(_ songs: [MPDSong]) -> [MPDSong] {
     songs.sorted { ($0.effectiveDisc, $0.trackNumber) < ($1.effectiveDisc, $1.trackNumber) }
+}
+
+/// Collapse duplicate library copies of the same track (same disc, track and
+/// title, case-insensitive; first occurrence wins). Display-only — the album
+/// page uses it; queue/search keep showing the real files.
+nonisolated func dedupedAlbumTracks(_ songs: [MPDSong]) -> [MPDSong] {
+    var seen = Set<String>()
+    return songs.filter { s in
+        seen.insert("\(s.effectiveDisc)|\(s.trackNumber)|\(s.displayTitle.lowercased())").inserted
+    }
+}
+
+/// Word-level title comparison for external lookups (Wikipedia article titles,
+/// MusicBrainz release titles): at least two-thirds of the query's significant
+/// words (3+ chars, stopwords dropped) — and no fewer than two — must appear as
+/// whole words in the candidate. Substring matching is deliberately avoided:
+/// "the" must not hit "theatre", and "Best of the Doors" must not match the
+/// debut album "The Doors". Callers pass normalized/lowercased strings or rely
+/// on the internal lowercasing.
+nonisolated func titleTokensMatch(candidate: String, query: String) -> Bool {
+    let stopwords: Set<String> = ["the", "and"]
+    func words(_ s: String) -> Set<String> {
+        Set(s.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init))
+    }
+    let queryTokens = words(query).filter { $0.count >= 3 && !stopwords.contains($0) }
+    guard queryTokens.count >= 2 else { return false }
+    let hits = queryTokens.intersection(words(candidate)).count
+    return hits * 3 >= queryTokens.count * 2 && hits >= 2
 }
 
 nonisolated enum PlaybackSourceKind {
