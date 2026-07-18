@@ -87,7 +87,6 @@ struct SearchView: View {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(item.discCount > 1 ? albumBaseAndDisc(item.album).base : item.album)
                                         .font(.subheadline)
-                                        .lineLimit(2)
                                     if !item.artist.isEmpty {
                                         Text(item.artist)
                                             .font(.caption)
