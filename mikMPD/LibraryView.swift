@@ -148,7 +148,9 @@ struct AlbumDetailView: View {
             }
         }
         .listStyle(.insetGrouped)
-        .navigationTitle(displayAlbum.isEmpty ? "(no title)" : displayAlbum).navigationBarTitleDisplayMode(.inline)
+        // No bar title: the inline nav bar truncates long album names and can't
+        // wrap — the in-page header above shows the full name instead.
+        .navigationTitle("").navigationBarTitleDisplayMode(.inline)
         .sheet(item:$addRequest){ AddToPlaylistSheet(uris:$0.uris) }
         .onAppear{ loadSongs() }
     }
