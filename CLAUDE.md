@@ -65,6 +65,10 @@ Multiple server profiles (`MPDServerProfile`: name, host, port, stream URL, last
 - **Background polling**: A `DispatchSourceTimer` on `Q` polls MPD every 2s while streaming, since `RunLoop`-based timers suspend when the app backgrounds.
 - **`parseStreamURL`**: validates http/https scheme and non-empty host. Lives on `MPDStore` as a static for testability.
 
+### Recently played
+
+MPD has no history command, so history is client-side: `RecentlyPlayedRecorder` (Models.swift, pure) is ticked from the poll's main-thread block and commits a song after ~30 s of accumulated wall-clock play (half-duration for short tracks; per-tick delta capped at 5 s so suspended-app gaps don't count; pause freezes the clock; a file change resets, so skips never register; repeat-one logs once per continuous play). One list per server — deliberately partition-agnostic, since the poll only observes the currently tuned partition. Stored in UserDefaults under `recentlyPlayed_<serverID>`, pruned via `prunedRecentHistory` (30 days / 100 entries) on insert and load, reloaded on `switchToServer` (which also resets the recorder), and deleted with the profile. UI: `RecentlyPlayedSheet` (NowPlayingView.swift) from the clock button in the Now Playing header.
+
 ### Connection lifecycle
 
 Disconnects on background, reconnects on foreground resume — **unless phone streaming is active** (`isPhoneStreaming` guards the disconnect in `MPDClientApp`). Partition is restored automatically. 3-second retry on connection loss, guarded by `isReconnecting` to prevent stacking.
