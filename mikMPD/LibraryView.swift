@@ -109,6 +109,7 @@ struct AlbumDetailView: View {
                         ArtThumb(song:songs.first,size:90).cornerRadius(8)
                         VStack(alignment:.leading,spacing:4){
                             Text(displayAlbum.isEmpty ? "(no title)" : displayAlbum).font(.headline)
+                                .fixedSize(horizontal: false, vertical: true)
                             if !displayArtist.isEmpty {
                                 NavigationLink(destination:ArtistDetailView(artist:displayArtist)){
                                     Text(displayArtist).font(.subheadline).foregroundStyle(.secondary).underline()
@@ -148,9 +149,9 @@ struct AlbumDetailView: View {
             }
         }
         .listStyle(.insetGrouped)
-        // No bar title: the inline nav bar truncates long album names and can't
-        // wrap — the in-page header above shows the full name instead.
-        .navigationTitle("").navigationBarTitleDisplayMode(.inline)
+        // The inline bar title truncates long names — that's fine, the header
+        // in the page shows the full name (fixedSize guarantees wrapping).
+        .navigationTitle(displayAlbum.isEmpty ? "(no title)" : displayAlbum).navigationBarTitleDisplayMode(.inline)
         .sheet(item:$addRequest){ AddToPlaylistSheet(uris:$0.uris) }
         .onAppear{ loadSongs() }
     }
