@@ -101,16 +101,6 @@ nonisolated func sortedByDiscAndTrack(_ songs: [MPDSong]) -> [MPDSong] {
     songs.sorted { ($0.effectiveDisc, $0.trackNumber) < ($1.effectiveDisc, $1.trackNumber) }
 }
 
-/// Collapse duplicate library copies of the same track (same disc, track and
-/// title, case-insensitive; first occurrence wins). Display-only — the album
-/// page uses it; queue/search keep showing the real files.
-nonisolated func dedupedAlbumTracks(_ songs: [MPDSong]) -> [MPDSong] {
-    var seen = Set<String>()
-    return songs.filter { s in
-        seen.insert("\(s.effectiveDisc)|\(s.trackNumber)|\(s.displayTitle.lowercased())").inserted
-    }
-}
-
 /// Word-level title comparison for external lookups (Wikipedia article titles,
 /// MusicBrainz release titles): at least two-thirds of the query's significant
 /// words (3+ chars, stopwords dropped) — and no fewer than two — must appear as
