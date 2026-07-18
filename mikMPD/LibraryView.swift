@@ -176,7 +176,7 @@ struct AlbumDetailView: View {
         var acc:[MPDSong] = []
         func next(){
             guard let t = remaining.first else {
-                songs = sortedByDiscAndTrack(acc); loading = false
+                songs = dedupedAlbumTracks(sortedByDiscAndTrack(acc)); loading = false
                 if let s = songs.first { store.fetchArtIfNeeded(for:s) }
                 loadWiki()
                 return
