@@ -609,13 +609,46 @@ final class MPDStore: ObservableObject {
         }
     }
 
-    func albumSongs(album: String, artist: String? = nil, completion: @escaping @MainActor ([MPDSong]) -> Void) {
+    /// `artistTag` is "artist" for song-link navigation and "albumartist" when
+    /// the album row came from the grouped album list — different tags for
+    /// compilations, so the caller decides.
+    func albumSongs(album: String, artist: String? = nil, artistTag: String = "artist", completion: @escaping @MainActor ([MPDSong]) -> Void) {
         Q.async { [weak self] in
             guard let self else { return }
             var cmd = "find album \"\(album.esc)\""
-            if let a = artist, !a.isEmpty { cmd += " artist \"\(a.esc)\"" }
+            if let a = artist, !a.isEmpty { cmd += " \(artistTag) \"\(a.esc)\"" }
             let songs = sortedByDiscAndTrack((try? self.socket.command(cmd))?.map { MPDSong($0) } ?? [])
             DispatchQueue.main.async { completion(songs) }
+        }
+    }
+
+    /// Albums grouped per album artist ("list album [FILTER] group albumartist"),
+    /// sorted artist-then-album. Same-named albums by different artists come back
+    /// as separate pairs. Falls back to a flat name-only list (empty artists) if
+    /// the server rejects the group syntax.
+    func listAlbumsByArtist(filter: String? = nil, value: String? = nil,
+                            completion: @escaping @MainActor ([(artist: String, album: String)]) -> Void) {
+        Q.async { [weak self] in
+            guard let self else { return }
+            var base = "list album"
+            if let f = filter, let v = value, !v.isEmpty { base += " \(f) \"\(v.esc)\"" }
+            if let lines = try? self.socket.rawLines(base + " group albumartist") {
+                let pairs = parseGroupedValues(lines, groupKey: "albumartist", valueKey: "album")
+                    .filter { !$0.value.isEmpty }
+                    .sorted {
+                        let byArtist = $0.group.localizedCaseInsensitiveCompare($1.group)
+                        if byArtist != .orderedSame { return byArtist == .orderedAscending }
+                        return $0.value.localizedCaseInsensitiveCompare($1.value) == .orderedAscending
+                    }
+                    .map { (artist: $0.group, album: $0.value) }
+                DispatchQueue.main.async { completion(pairs) }
+                return
+            }
+            let vals = ((try? self.socket.listValues(base, key: "album")) ?? [])
+                .filter { !$0.isEmpty }
+                .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+                .map { (artist: "", album: $0) }
+            DispatchQueue.main.async { completion(vals) }
         }
     }
 

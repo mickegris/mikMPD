@@ -65,22 +65,30 @@ nonisolated final class MPDSocket: @unchecked Sendable {
         }
     }
 
-    /// Send a command, return all values for one key (for `list` responses).
-    func listValues(_ cmd: String, key: String) throws -> [String] {
+    /// Send a command, return the raw response lines. Needed for
+    /// `list … group …` responses, whose interleaved structure neither
+    /// `listValues` (single key) nor `parseMPDRecords` (collapses — no
+    /// record-starter keys) preserves.
+    func rawLines(_ cmd: String) throws -> [String] {
         guard connected else { throw MPDError.notConnected }
         do {
             try send(cmd + "\n")
             let lines = try readUntilOK()
             if lines.first?.hasPrefix("ACK") == true { throw MPDError.ack(lines[0]) }
-            let lk = key.lowercased()
-            return lines.compactMap { line -> String? in
-                guard let c = line.firstIndex(of: ":") else { return nil }
-                guard String(line[..<c]).trimmingCharacters(in: .whitespaces).lowercased() == lk else { return nil }
-                return String(line[line.index(after: c)...]).trimmingCharacters(in: .whitespaces)
-            }
+            return lines
         } catch {
             if case MPDError.ack = error { throw error }
             disconnect(); throw error
+        }
+    }
+
+    /// Send a command, return all values for one key (for `list` responses).
+    func listValues(_ cmd: String, key: String) throws -> [String] {
+        let lk = key.lowercased()
+        return try rawLines(cmd).compactMap { line -> String? in
+            guard let c = line.firstIndex(of: ":") else { return nil }
+            guard String(line[..<c]).trimmingCharacters(in: .whitespaces).lowercased() == lk else { return nil }
+            return String(line[line.index(after: c)...]).trimmingCharacters(in: .whitespaces)
         }
     }
 
@@ -269,5 +277,22 @@ nonisolated func parseMPDRecords(_ lines: [String]) -> [MPDRecord] {
         cur[k] = v
     }
     flush()
+    return out
+}
+
+/// Parse a grouped `list` response ("list album group albumartist"): a
+/// `groupKey` line sets the current group, each `valueKey` line yields a pair.
+/// Values before the first group line get an empty group; other keys are ignored.
+nonisolated func parseGroupedValues(_ lines: [String], groupKey: String, valueKey: String) -> [(group: String, value: String)] {
+    let gk = groupKey.lowercased(), vk = valueKey.lowercased()
+    var group = ""
+    var out: [(group: String, value: String)] = []
+    for line in lines {
+        guard let c = line.firstIndex(of: ":") else { continue }
+        let key = String(line[..<c]).trimmingCharacters(in: .whitespaces).lowercased()
+        let value = String(line[line.index(after: c)...]).trimmingCharacters(in: .whitespaces)
+        if key == gk { group = value }
+        else if key == vk { out.append((group, value)) }
+    }
     return out
 }
