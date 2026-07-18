@@ -542,9 +542,12 @@ struct RecentlyPlayedSheet: View {
     }
 }
 
-/// Single-line text that renders normally when it fits and auto-scrolls
-/// (marquee) when it doesn't, so long album titles are readable in full.
-/// State is reset via .id(text) whenever the text changes.
+/// Single-line text that renders normally when it fits and ping-pongs when it
+/// doesn't (scroll to the end, dwell, scroll back), so long names are readable
+/// in full. Driven by PhaseAnimator — a `.animation(value:)` + repeatForever
+/// combination gets cancelled by Now Playing's 10 Hz elapsed re-renders and by
+/// identity churn on song change, which froze the scroll. State resets via
+/// .id(text) whenever the text changes.
 struct MarqueeText: View {
     let text: String
     var font: Font = .body
@@ -553,9 +556,7 @@ struct MarqueeText: View {
 
     @State private var textWidth: CGFloat = 0
     @State private var boxWidth: CGFloat = 0
-    @State private var scrolling = false
 
-    private let gap: CGFloat = 48
     private let pointsPerSecond: CGFloat = 30
 
     private var overflows: Bool { textWidth > boxWidth + 1 }
@@ -563,7 +564,7 @@ struct MarqueeText: View {
     var body: some View {
         // The (possibly truncated) base label defines height and available
         // width; a hidden fixed-size copy measures the full text width; the
-        // scrolling pair overlays the base only when the text overflows.
+        // animated copy overlays the base only when the text overflows.
         label
             .lineLimit(1)
             .opacity(overflows ? 0 : 1)
@@ -587,16 +588,17 @@ struct MarqueeText: View {
 
     @ViewBuilder private var marquee: some View {
         if overflows {
-            HStack(spacing: gap) {
+            let distance = textWidth - boxWidth
+            // Trigger-less PhaseAnimator cycles forever: start → end → start …
+            // The delay gives a readable dwell at each end.
+            PhaseAnimator([false, true]) { atEnd in
                 label.fixedSize()
-                label.fixedSize()
+                    .offset(x: atEnd ? -distance : 0)
+                    .frame(width: boxWidth, alignment: .leading)
+                    .clipped()
+            } animation: { _ in
+                .linear(duration: max(1.0, Double(distance / pointsPerSecond))).delay(0.8)
             }
-            .offset(x: scrolling ? -(textWidth + gap) : 0)
-            .frame(width: boxWidth, alignment: .leading)
-            .clipped()
-            .animation(.linear(duration: Double((textWidth + gap) / pointsPerSecond))
-                .repeatForever(autoreverses: false), value: scrolling)
-            .onAppear { scrolling = true }
         }
     }
 }
