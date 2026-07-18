@@ -64,31 +64,57 @@ struct LibraryView: View {
 // MARK: - Albums
 struct AlbumListView: View {
     @EnvironmentObject var store: MPDStore
-    @State private var albums:[String]=[];@State private var loading=true;@State private var filter=""
-    var shown:[String]{ filter.isEmpty ? albums : albums.filter{$0.localizedCaseInsensitiveContains(filter)} }
+    @State private var albums:[(artist: String, album: String)]=[];@State private var loading=true;@State private var filter=""
+    var shown:[(artist: String, album: String)]{
+        filter.isEmpty ? albums : albums.filter{
+            $0.album.localizedCaseInsensitiveContains(filter) || $0.artist.localizedCaseInsensitiveContains(filter)
+        }
+    }
     var body: some View {
         Group {
             if loading { ProgressView().frame(maxWidth:.infinity,maxHeight:.infinity) }
             else {
-                List(groupAlbumVariants(shown),id:\.base){ g in
-                    NavigationLink(destination:AlbumDetailView(album:g.variants[0],artist:nil)){
-                        HStack {
-                            Label(g.base.isEmpty ? "(no title)" : g.base, systemImage:"square.stack")
-                            if g.variants.count > 1 {
-                                Spacer()
-                                Text("\(g.variants.count) discs").font(.caption).foregroundStyle(.secondary)
-                            }
-                        }
-                    }
+                List(groupAlbumVariants(shown)){ g in
+                    AlbumGroupRow(group: g)
                 }.listStyle(.plain).searchable(text:$filter,prompt:"Filter albums…")
             }
         }
-        .onAppear{ guard albums.isEmpty else{return}; store.listTag("album"){albums=$0;loading=false} }
+        .onAppear{ guard albums.isEmpty else{return}; store.listAlbumsByArtist{albums=$0;loading=false} }
+    }
+}
+
+/// Row for an artist-aware album list entry — same-named albums by different
+/// artists are separate rows, told apart by the artist caption.
+struct AlbumGroupRow: View {
+    let group: AlbumGroup
+    var body: some View {
+        NavigationLink(destination:AlbumDetailView(album:group.variants[0],
+                                                   artist:group.artist.isEmpty ? nil : group.artist,
+                                                   artistTag:"albumartist")){
+            HStack {
+                Label {
+                    VStack(alignment:.leading,spacing:2){
+                        Text(group.base.isEmpty ? "(no title)" : group.base)
+                        if !group.artist.isEmpty {
+                            Text(group.artist).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                } icon: {
+                    Image(systemName:"square.stack")
+                }
+                if group.variants.count > 1 {
+                    Spacer()
+                    Text("\(group.variants.count) discs").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
     }
 }
 struct AlbumDetailView: View {
     @EnvironmentObject var store: MPDStore
     let album:String; let artist:String?
+    // "artist" for song-link navigation, "albumartist" from the grouped lists
+    var artistTag:String = "artist"
     @State private var songs:[MPDSong]=[];@State private var loading=true
     @State private var wiki:String?=nil;@State private var wikiLoading=false;@State private var expanded=false
     @State private var addRequest:AddToPlaylistRequest?=nil
@@ -164,10 +190,17 @@ struct AlbumDetailView: View {
         }
     }
     // Merge sibling disc variants ("X [Disc 1]" + "X [Disc 2]") into one page,
-    // whichever variant this view was opened with.
+    // whichever variant this view was opened with. Album identity includes the
+    // artist: without one there is no safe way to pick siblings (same-named
+    // albums by other artists would merge), so merging is skipped.
     func loadSongs(){
+        guard let artist, !artist.isEmpty else {
+            mergedTags = [album]
+            loadSongs(tags: [album])
+            return
+        }
         let base = albumBaseAndDisc(album).base
-        store.listTag("album", filter: artist==nil ? nil : "artist", value: artist){ all in
+        store.listTag("album", filter: artistTag, value: artist){ all in
             let sibs = all.filter{ albumBaseAndDisc($0).base == base }
             let tags = sibs.count > 1 ? sibs : [album]
             mergedTags = tags
@@ -179,13 +212,13 @@ struct AlbumDetailView: View {
         var acc:[MPDSong] = []
         func next(){
             guard let t = remaining.first else {
-                songs = sortedByDiscAndTrack(acc); loading = false
+                songs = dedupedAlbumTracks(sortedByDiscAndTrack(acc)); loading = false
                 if let s = songs.first { store.fetchArtIfNeeded(for:s) }
                 loadWiki()
                 return
             }
             remaining.removeFirst()
-            store.albumSongs(album:t,artist:artist){ acc.append(contentsOf:$0); next() }
+            store.albumSongs(album:t,artist:artist,artistTag:artistTag){ acc.append(contentsOf:$0); next() }
         }
         next()
     }
@@ -310,7 +343,7 @@ struct GenreListView: View {
 struct GenreDetailView: View {
     @EnvironmentObject var store: MPDStore
     let genre:String
-    @State private var albums:[String]=[];@State private var loading=true
+    @State private var albums:[(artist: String, album: String)]=[];@State private var loading=true
     var body: some View {
         List {
             Section{
@@ -319,23 +352,13 @@ struct GenreDetailView: View {
             Section("Albums"){
                 if loading { HStack{Spacer();ProgressView();Spacer()} }
                 else {
-                    ForEach(groupAlbumVariants(albums),id:\.base){ g in
-                        NavigationLink(destination:AlbumDetailView(album:g.variants[0],artist:nil)){
-                            HStack {
-                                Label(g.base.isEmpty ? "(no title)":g.base,systemImage:"square.stack")
-                                if g.variants.count > 1 {
-                                    Spacer()
-                                    Text("\(g.variants.count) discs").font(.caption).foregroundStyle(.secondary)
-                                }
-                            }
-                        }
-                    }
+                    ForEach(groupAlbumVariants(albums)){ g in AlbumGroupRow(group: g) }
                 }
             }
         }
         .listStyle(.insetGrouped)
         .navigationTitle(genre.isEmpty ? "(none)" : genre).navigationBarTitleDisplayMode(.inline)
-        .onAppear{ store.listTag("album",filter:"genre",value:genre){albums=$0;loading=false} }
+        .onAppear{ store.listAlbumsByArtist(filter:"genre",value:genre){albums=$0;loading=false} }
     }
 }
 

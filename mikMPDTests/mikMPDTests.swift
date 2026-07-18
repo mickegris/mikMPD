@@ -1081,6 +1081,143 @@ import Testing
     }
 }
 
+// MARK: - Grouped list parsing (list album group albumartist)
+
+@Suite struct GroupedListParseTests {
+    @Test func interleavedGroups() {
+        let lines = [
+            "AlbumArtist: Gamma Ray",
+            "Album: Blast from the Past [Disc 1]",
+            "Album: Blast from the Past [Disc 2]",
+            "AlbumArtist: The Doors",
+            "Album: The Best of the Doors",
+        ]
+        let pairs = parseGroupedValues(lines, groupKey: "albumartist", valueKey: "album")
+        #expect(pairs.count == 3)
+        #expect(pairs[0].group == "Gamma Ray")
+        #expect(pairs[0].value == "Blast from the Past [Disc 1]")
+        #expect(pairs[1].group == "Gamma Ray")
+        #expect(pairs[2].group == "The Doors")
+        #expect(pairs[2].value == "The Best of the Doors")
+    }
+
+    @Test func valuesBeforeFirstGroupGetEmptyGroup() {
+        let pairs = parseGroupedValues(["Album: Orphan", "AlbumArtist: X", "Album: A"],
+                                       groupKey: "albumartist", valueKey: "album")
+        #expect(pairs.count == 2)
+        #expect(pairs[0].group.isEmpty)
+        #expect(pairs[1].group == "X")
+    }
+
+    @Test func otherKeysAndMalformedLinesIgnored() {
+        let pairs = parseGroupedValues(["Date: 1999", "no colon here", "AlbumArtist: X", "Album: A"],
+                                       groupKey: "albumartist", valueKey: "album")
+        #expect(pairs.count == 1)
+        #expect(pairs[0].group == "X")
+    }
+
+    @Test func keysMatchCaseInsensitively() {
+        let pairs = parseGroupedValues(["albumartist: X", "ALBUM: A"],
+                                       groupKey: "AlbumArtist", valueKey: "Album")
+        #expect(pairs.count == 1)
+        #expect(pairs[0].group == "X")
+    }
+}
+
+// MARK: - Artist-aware album grouping
+
+@Suite struct AlbumGroupTests {
+    @Test func sameNameDifferentArtistsStaySeparate() {
+        let g = groupAlbumVariants([(artist: "A", album: "Greatest Hits"),
+                                    (artist: "B", album: "Greatest Hits")])
+        #expect(g.count == 2)
+        #expect(g[0].id != g[1].id)
+    }
+
+    @Test func variantsMergeWithinOneArtist() {
+        let g = groupAlbumVariants([(artist: "Gamma Ray", album: "Blast [Disc 1]"),
+                                    (artist: "Gamma Ray", album: "Blast [Disc 2]"),
+                                    (artist: "Other", album: "Blast")])
+        #expect(g.count == 2)
+        #expect(g[0].base == "Blast")
+        #expect(g[0].variants.count == 2)
+        #expect(g[1].artist == "Other")
+        #expect(g[1].variants == ["Blast"])
+    }
+
+    @Test func emptyArtistGroupsTogether() {
+        let g = groupAlbumVariants([(artist: "", album: "X [Disc 1]"),
+                                    (artist: "", album: "X [Disc 2]")])
+        #expect(g.count == 1)
+        #expect(g[0].variants.count == 2)
+    }
+
+    @Test func artistCaseInsensitiveKey() {
+        let g = groupAlbumVariants([(artist: "ABBA", album: "Gold [Disc 1]"),
+                                    (artist: "Abba", album: "Gold [Disc 2]")])
+        #expect(g.count == 1)
+    }
+}
+
+// MARK: - Duplicate library copies (artist-scoped)
+
+@Suite struct DedupedAlbumTracksTests {
+    private func song(file: String, title: String, track: String,
+                      artist: String = "PT", albumArtist: String = "") -> MPDSong {
+        var s = MPDSong()
+        s.file = file; s.title = title; s.track = track
+        s.artist = artist; s.albumArtist = albumArtist; s.album = "A"
+        return s
+    }
+
+    @Test func duplicateCopiesOfSameArtistCollapse() {
+        let deduped = dedupedAlbumTracks([
+            song(file: "a/01.flac", title: "Fear of a Blank Planet", track: "1"),
+            song(file: "b/01.flac", title: "Fear of a Blank Planet", track: "1"),
+            song(file: "a/02.flac", title: "My Ashes", track: "2"),
+            song(file: "b/02.flac", title: "MY ASHES", track: "2"),
+        ])
+        #expect(deduped.count == 2)
+        #expect(deduped.map(\.file) == ["a/01.flac", "a/02.flac"])  // first wins
+    }
+
+    // The case that forced the earlier revert: same album name, same track
+    // titles, DIFFERENT artists — nothing may collapse.
+    @Test func sameTitlesAcrossArtistsAreKept() {
+        let kept = dedupedAlbumTracks([
+            song(file: "x/01.flac", title: "Intro", track: "1", artist: "Artist One"),
+            song(file: "y/01.flac", title: "Intro", track: "1", artist: "Artist Two"),
+        ])
+        #expect(kept.count == 2)
+    }
+
+    @Test func albumArtistWinsOverArtistForTheKey() {
+        // Compilation copies: per-song artists match, albumartist identical
+        let kept = dedupedAlbumTracks([
+            song(file: "x/01.flac", title: "Song", track: "1", artist: "Feat A", albumArtist: "Various"),
+            song(file: "y/01.flac", title: "Song", track: "1", artist: "Feat A", albumArtist: "Various"),
+        ])
+        #expect(kept.count == 1)
+    }
+
+    @Test func differentTracksAndTitlesKept() {
+        let kept = dedupedAlbumTracks([
+            song(file: "1", title: "Song", track: "1"),
+            song(file: "2", title: "Song", track: "2"),
+            song(file: "3", title: "Other", track: "1"),
+        ])
+        #expect(kept.count == 3)
+    }
+
+    @Test func untitledFilesKeyOnFilename() {
+        let kept = dedupedAlbumTracks([
+            song(file: "a/one.flac", title: "", track: "0"),
+            song(file: "a/two.flac", title: "", track: "0"),
+        ])
+        #expect(kept.count == 2)
+    }
+}
+
 // MARK: - Token-overlap album matching
 
 @Suite struct AlbumTokenMatchTests {

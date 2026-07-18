@@ -96,9 +96,46 @@ nonisolated func groupAlbumVariants(_ albums: [String]) -> [(base: String, varia
     return order.map { ($0, groups[$0]!) }
 }
 
+/// One row in an artist-aware album list: disc variants merged per artist.
+nonisolated struct AlbumGroup: Identifiable, Equatable {
+    var artist: String
+    var base: String
+    var variants: [String]
+    var id: String { "\(artist.lowercased())|\(base)" }
+}
+
+/// Artist-aware variant of groupAlbumVariants for (artist, album) pairs from
+/// `list album group albumartist`: variants merge only within one artist, so
+/// same-named albums by different artists stay separate rows.
+nonisolated func groupAlbumVariants(_ pairs: [(artist: String, album: String)]) -> [AlbumGroup] {
+    var order: [String] = []
+    var groups: [String: AlbumGroup] = [:]
+    for p in pairs {
+        let base = albumBaseAndDisc(p.album).base
+        let key = "\(p.artist.lowercased())|\(base)"
+        if groups[key] == nil {
+            order.append(key)
+            groups[key] = AlbumGroup(artist: p.artist, base: base, variants: [])
+        }
+        groups[key]!.variants.append(p.album)
+    }
+    return order.map { groups[$0]! }
+}
+
 /// Album track order: disc first (tag or album-suffix derived), then track number.
 nonisolated func sortedByDiscAndTrack(_ songs: [MPDSong]) -> [MPDSong] {
     songs.sorted { ($0.effectiveDisc, $0.trackNumber) < ($1.effectiveDisc, $1.trackNumber) }
+}
+
+/// Collapse duplicate library copies of the same track (first occurrence wins).
+/// The artist is part of the key, so same-titled tracks on same-named albums by
+/// *different* artists never collapse — that mistake forced an earlier revert.
+/// Display-only: the album page uses it; queue/search show the real files.
+nonisolated func dedupedAlbumTracks(_ songs: [MPDSong]) -> [MPDSong] {
+    var seen = Set<String>()
+    return songs.filter { s in
+        seen.insert("\(s.groupingArtist.lowercased())|\(s.effectiveDisc)|\(s.trackNumber)|\(s.displayTitle.lowercased())").inserted
+    }
 }
 
 /// Word-level title comparison for external lookups (Wikipedia article titles,
@@ -130,6 +167,7 @@ nonisolated struct MPDSong: Identifiable, Equatable {
     var title:    String = ""
     var artist:   String = ""
     var album:    String = ""
+    var albumArtist: String = ""
     var track:    String = ""
     var disc:     String = ""
     var duration: Double = 0
@@ -143,6 +181,9 @@ nonisolated struct MPDSong: Identifiable, Equatable {
     /// Disc for grouping/sorting: the disc tag when present, else one parsed
     /// from an album-tag suffix like "… [Disc 2]"; 0 when unknown.
     var effectiveDisc: Int { discNumber > 0 ? discNumber : (albumBaseAndDisc(album).disc ?? 0) }
+    /// Album-identity artist: the albumartist tag when present (keeps
+    /// compilations together), else the plain artist.
+    var groupingArtist: String { albumArtist.isEmpty ? artist : albumArtist }
     var artKey: String { artCacheKey(artist: artist, album: album) }
     var sourceKind: PlaybackSourceKind {
         let trimmedFile = file.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -170,6 +211,7 @@ nonisolated struct MPDSong: Identifiable, Equatable {
         title    = r["title"]    ?? ""
         artist   = r["artist"]   ?? ""
         album    = r["album"]    ?? ""
+        albumArtist = r["albumartist"] ?? ""
         track    = r["track"]    ?? ""
         disc     = r["disc"]     ?? ""
         duration = Double(r["duration"] ?? "0") ?? 0
