@@ -134,6 +134,11 @@ struct SearchView: View {
                                     ? Color.accentColor.opacity(0.12)
                                     : Color.clear
                             )
+                            .swipeActions(edge: .leading) {
+                                Button { addRequest = AddToPlaylistRequest(uris: [song.file]) } label: {
+                                    Label("Playlist", systemImage: "music.note.list")
+                                }.tint(.indigo)
+                            }
                             .contextMenu {
                                 Button { addRequest = AddToPlaylistRequest(uris: [song.file]) } label: {
                                     Label("Add to Playlist…", systemImage: "music.note.list")
@@ -157,6 +162,8 @@ struct SearchView: View {
                         }
                         .font(.caption)
                     }
+                } footer: {
+                    Text("Long press or swipe a song to add it to a playlist. Double-tap to play.")
                 }
             }
         }

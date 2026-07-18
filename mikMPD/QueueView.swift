@@ -10,20 +10,29 @@ struct QueueView: View {
                         description: Text("Add songs from the Library or Browser."))
                 } else {
                     List {
-                        ForEach(store.queue) { song in
-                            QueueRow(song: song, isCurrent: song.pos == store.playlistPos)
-                                .contentShape(Rectangle())
-                                .onTapGesture(count: 2) { store.play(at: song.pos) }
-                                .listRowBackground(song.pos == store.playlistPos
-                                    ? Color.accentColor.opacity(0.12) : Color.clear)
-                                .contextMenu {
-                                    Button { addRequest = AddToPlaylistRequest(uris: [song.file]) } label: {
-                                        Label("Add to Playlist…", systemImage: "music.note.list")
+                        Section {
+                            ForEach(store.queue) { song in
+                                QueueRow(song: song, isCurrent: song.pos == store.playlistPos)
+                                    .contentShape(Rectangle())
+                                    .onTapGesture(count: 2) { store.play(at: song.pos) }
+                                    .listRowBackground(song.pos == store.playlistPos
+                                        ? Color.accentColor.opacity(0.12) : Color.clear)
+                                    .swipeActions(edge: .leading) {
+                                        Button { addRequest = AddToPlaylistRequest(uris: [song.file]) } label: {
+                                            Label("Playlist", systemImage: "music.note.list")
+                                        }.tint(.indigo)
                                     }
-                                }
+                                    .contextMenu {
+                                        Button { addRequest = AddToPlaylistRequest(uris: [song.file]) } label: {
+                                            Label("Add to Playlist…", systemImage: "music.note.list")
+                                        }
+                                    }
+                            }
+                            .onDelete { store.delete(at: $0) }
+                            .onMove { store.moveRow(from: $0, to: $1) }
+                        } footer: {
+                            Text("Double-tap to play. Long press or swipe to add to a playlist.")
                         }
-                        .onDelete { store.delete(at: $0) }
-                        .onMove { store.moveRow(from: $0, to: $1) }
                     }.listStyle(.plain)
                 }
             }

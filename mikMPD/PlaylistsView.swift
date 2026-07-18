@@ -25,22 +25,28 @@ struct PlaylistListView: View {
                 ContentUnavailableView("No Playlists", systemImage: "music.note.list",
                     description: Text("Save the queue as a playlist, or use “Add to Playlist” on a song or album."))
             } else {
-                List(shown) { pl in
-                    NavigationLink(destination: PlaylistDetailView(name: pl.name)) {
-                        Label(pl.name, systemImage: "music.note.list").lineLimit(2)
-                    }
-                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                        Button(role: .destructive) { playlistToDelete = pl } label: {
-                            Label("Delete", systemImage: "trash")
+                List {
+                    Section {
+                        ForEach(shown) { pl in
+                            NavigationLink(destination: PlaylistDetailView(name: pl.name)) {
+                                Label(pl.name, systemImage: "music.note.list").lineLimit(2)
+                            }
+                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                Button(role: .destructive) { playlistToDelete = pl } label: {
+                                    Label("Delete", systemImage: "trash")
+                                }
+                            }
+                            .contextMenu {
+                                Button {
+                                    renameName = pl.name
+                                    renameTarget = pl
+                                } label: {
+                                    Label("Rename…", systemImage: "pencil")
+                                }
+                            }
                         }
-                    }
-                    .contextMenu {
-                        Button {
-                            renameName = pl.name
-                            renameTarget = pl
-                        } label: {
-                            Label("Rename…", systemImage: "pencil")
-                        }
+                    } footer: {
+                        Text("Long press a playlist to rename it. Swipe to delete.")
                     }
                 }
                 .listStyle(.plain)
@@ -145,7 +151,7 @@ struct PlaylistDetailView: View {
                     }
                 }.padding(.vertical, 4)
             }
-            Section("Tracks") {
+            Section {
                 if loading {
                     HStack { Spacer(); ProgressView(); Spacer() }
                 } else if songs.isEmpty {
@@ -159,6 +165,9 @@ struct PlaylistDetailView: View {
                                 Button { store.add(uri: s.file) } label: {
                                     Label("Queue", systemImage: "plus")
                                 }.tint(.green)
+                                Button { addRequest = AddToPlaylistRequest(uris: [s.file]) } label: {
+                                    Label("Playlist", systemImage: "music.note.list")
+                                }.tint(.indigo)
                             }
                             .contextMenu {
                                 Button { addRequest = AddToPlaylistRequest(uris: [s.file]) } label: {
@@ -176,6 +185,10 @@ struct PlaylistDetailView: View {
                         store.movePlaylistSong(name: name, from: offsets, to: destination) { reload() }
                     }
                 }
+            } header: {
+                Text("Tracks")
+            } footer: {
+                Text("Long press or swipe a track to add it to another playlist.")
             }
         }
         .listStyle(.insetGrouped)

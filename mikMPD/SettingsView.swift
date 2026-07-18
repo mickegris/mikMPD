@@ -46,7 +46,7 @@ struct ConnectionView: View {
                 } header: {
                     Text("Servers")
                 } footer: {
-                    Text("Tap a server to connect. Swipe for edit and delete.")
+                    Text("Tap a server to connect. Long press or swipe to edit. Swipe to delete.")
                 }
                 Section {
                     if discovery.permissionDenied {
