@@ -73,7 +73,7 @@ struct AlbumListView: View {
                 List(groupAlbumVariants(shown),id:\.base){ g in
                     NavigationLink(destination:AlbumDetailView(album:g.variants[0],artist:nil)){
                         HStack {
-                            Label(g.base.isEmpty ? "(no title)" : g.base, systemImage:"square.stack").lineLimit(2)
+                            Label(g.base.isEmpty ? "(no title)" : g.base, systemImage:"square.stack")
                             if g.variants.count > 1 {
                                 Spacer()
                                 Text("\(g.variants.count) discs").font(.caption).foregroundStyle(.secondary)
@@ -259,7 +259,7 @@ struct ArtistDetailView: View {
                         NavigationLink(destination:AlbumDetailView(album:g.variants[0],artist:artist)){
                             HStack(spacing:10){
                                 ArtThumbByKey(artist:artist,album:g.variants[0],size:44).cornerRadius(4)
-                                Text(g.base.isEmpty ? "(no title)" : g.base).lineLimit(2)
+                                Text(g.base.isEmpty ? "(no title)" : g.base)
                                 if g.variants.count > 1 {
                                     Spacer()
                                     Text("\(g.variants.count) discs").font(.caption).foregroundStyle(.secondary)
@@ -319,7 +319,7 @@ struct GenreDetailView: View {
                     ForEach(groupAlbumVariants(albums),id:\.base){ g in
                         NavigationLink(destination:AlbumDetailView(album:g.variants[0],artist:nil)){
                             HStack {
-                                Label(g.base.isEmpty ? "(no title)":g.base,systemImage:"square.stack").lineLimit(2)
+                                Label(g.base.isEmpty ? "(no title)":g.base,systemImage:"square.stack")
                                 if g.variants.count > 1 {
                                     Spacer()
                                     Text("\(g.variants.count) discs").font(.caption).foregroundStyle(.secondary)

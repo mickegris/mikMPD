@@ -36,22 +36,31 @@ struct QueueView: View {
                     }.listStyle(.plain)
                 }
             }
-            .navigationTitle("Queue")
+            .navigationTitle("Queue").navigationBarTitleDisplayMode(.inline)
             .sheet(item: $addRequest) { AddToPlaylistSheet(uris: $0.uris) }
             .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Button("Clear", role: .destructive) { store.clearQueue() }.disabled(store.queue.isEmpty)
-                }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     EditButton().disabled(store.queue.isEmpty)
                 }
+                // Everything else lives in one menu — four separate items
+                // collided with the collapsing title while scrolling.
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button { store.toggleConsume() } label: {
-                        Image(systemName: store.consumeMode ? "arrow.down.circle.fill" : "arrow.down.circle")
+                    Menu {
+                        Button { store.toggleConsume() } label: {
+                            Label(store.consumeMode ? "Consume: On" : "Consume: Off",
+                                  systemImage: store.consumeMode ? "arrow.down.circle.fill" : "arrow.down.circle")
+                        }
+                        Button { store.loadQueue() } label: {
+                            Label("Refresh", systemImage: "arrow.clockwise")
+                        }
+                        Divider()
+                        Button(role: .destructive) { store.clearQueue() } label: {
+                            Label("Clear Queue", systemImage: "trash")
+                        }
+                        .disabled(store.queue.isEmpty)
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
                     }
-                }
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button { store.loadQueue() } label: { Image(systemName: "arrow.clockwise") }
                 }
             }
         }

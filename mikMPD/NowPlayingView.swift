@@ -46,33 +46,38 @@ struct NowPlayingView: View {
             connectionStatus
                 .padding(.top, 8)
 
-            ZStack {
-                Text("Now Playing")
-                    .font(.headline)
-                HStack {
+            Spacer(minLength: 8)
+
+            // Buttons flank the art instead of crowding a header row — the
+            // square pane is height-bound on most layouts, so the side gutters
+            // are otherwise unused space. Fixed column widths keep the pane
+            // centered even when the playlist button is hidden (CD source).
+            HStack(alignment: .top, spacing: 10) {
+                VStack(spacing: 18) {
                     addToPlaylistButton
                     historyButton
-                    Spacer()
+                }
+                .frame(width: 30)
+
+                // Tap-to-toggle lives on the art/lyrics panes, not the container —
+                // a container gesture would swallow the queue list's row taps.
+                Group {
+                    switch pane {
+                    case .art:    albumArt.onTapGesture { togglePane(.lyrics) }
+                    case .lyrics: lyricsPane.onTapGesture { togglePane(.lyrics) }
+                    case .queue:  queuePane
+                    }
+                }
+                .aspectRatio(1, contentMode: .fit)
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .shadow(color: .black.opacity(0.3), radius: 10, y: 4)
+
+                VStack(spacing: 18) {
                     queueToggle
                     lyricsToggle
                 }
+                .frame(width: 30)
             }
-            .padding(.vertical, 6)
-
-            Spacer(minLength: 0)
-
-            // Tap-to-toggle lives on the art/lyrics panes, not the container —
-            // a container gesture would swallow the queue list's row taps.
-            Group {
-                switch pane {
-                case .art:    albumArt.onTapGesture { togglePane(.lyrics) }
-                case .lyrics: lyricsPane.onTapGesture { togglePane(.lyrics) }
-                case .queue:  queuePane
-                }
-            }
-            .aspectRatio(1, contentMode: .fit)
-            .clipShape(RoundedRectangle(cornerRadius: 14))
-            .shadow(color: .black.opacity(0.3), radius: 10, y: 4)
 
             Spacer(minLength: 4)
 
@@ -319,8 +324,7 @@ struct NowPlayingView: View {
 
     var songInfo: some View {
         VStack(spacing: 4) {
-            Text(song.displayTitle)
-                .font(.title2.bold()).multilineTextAlignment(.center).lineLimit(2)
+            MarqueeText(text: song.displayTitle, font: .title2.bold(), color: .primary)
             if !song.artist.isEmpty {
                 NavigationLink(destination: ArtistDetailView(artist: song.artist)) {
                     Text(song.artist)
@@ -483,8 +487,20 @@ struct RecentlyPlayedSheet: View {
                             ArtThumbByKey(artist: entry.artist, album: entry.album, size: 44).cornerRadius(4)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(entry.title).font(.subheadline).lineLimit(1)
-                                if !entry.artist.isEmpty {
-                                    Text(entry.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                HStack(spacing: 4) {
+                                    if !entry.artist.isEmpty {
+                                        NavigationLink(destination: ArtistDetailView(artist: entry.artist)) {
+                                            Text(entry.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1).underline()
+                                        }.buttonStyle(.plain)
+                                    }
+                                    if !entry.artist.isEmpty && !entry.album.isEmpty {
+                                        Text("·").font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    if !entry.album.isEmpty {
+                                        NavigationLink(destination: AlbumDetailView(album: entry.album, artist: entry.artist.isEmpty ? nil : entry.artist)) {
+                                            Text(entry.album).font(.caption).foregroundStyle(.secondary).lineLimit(1).underline()
+                                        }.buttonStyle(.plain)
+                                    }
                                 }
                             }
                             Spacer()
