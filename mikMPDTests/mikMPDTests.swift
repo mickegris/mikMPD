@@ -727,6 +727,135 @@ import Testing
     }
 }
 
+// MARK: - Recently played recorder
+
+@Suite struct RecentlyPlayedRecorderTests {
+    private let t0 = Date(timeIntervalSince1970: 1_000_000)
+
+    private func song(file: String = "a.mp3", duration: Double = 300) -> MPDSong {
+        var s = MPDSong()
+        s.file = file; s.title = "Title"; s.artist = "Artist"; s.album = "Album"
+        s.duration = duration
+        return s
+    }
+
+    /// Ticks every second for `seconds`, returning the first committed entry.
+    private func play(_ r: inout RecentlyPlayedRecorder, _ s: MPDSong,
+                      from: TimeInterval, seconds: Int, playing: Bool = true) -> RecentlyPlayedEntry? {
+        var entry: RecentlyPlayedEntry? = nil
+        for i in 0...seconds {
+            let e = r.tick(song: s, isPlaying: playing, now: t0.addingTimeInterval(from + Double(i)))
+            if entry == nil { entry = e }
+        }
+        return entry
+    }
+
+    @Test func commitsAfterThirtySeconds() {
+        var r = RecentlyPlayedRecorder()
+        let entry = play(&r, song(), from: 0, seconds: 30)
+        #expect(entry != nil)
+        #expect(entry?.file == "a.mp3")
+        #expect(entry?.title == "Title")
+    }
+
+    @Test func doesNotCommitBeforeThreshold() {
+        var r = RecentlyPlayedRecorder()
+        #expect(play(&r, song(), from: 0, seconds: 20) == nil)
+    }
+
+    @Test func noSecondCommitWhileSameFileKeepsPlaying() {
+        var r = RecentlyPlayedRecorder()
+        #expect(play(&r, song(), from: 0, seconds: 30) != nil)
+        #expect(play(&r, song(), from: 31, seconds: 120) == nil)
+    }
+
+    @Test func skippedSongNeverCommits() {
+        var r = RecentlyPlayedRecorder()
+        #expect(play(&r, song(file: "skipped.mp3"), from: 0, seconds: 10) == nil)
+        // Switching files resets — the new song commits, the skipped one is gone
+        let entry = play(&r, song(file: "next.mp3"), from: 11, seconds: 31)
+        #expect(entry?.file == "next.mp3")
+    }
+
+    @Test func pauseFreezesAccumulationButKeepsProgress() {
+        var r = RecentlyPlayedRecorder()
+        #expect(play(&r, song(), from: 0, seconds: 20) == nil)
+        // Paused for a long stretch: no progress
+        #expect(play(&r, song(), from: 100, seconds: 200, playing: false) == nil)
+        // Resume: only ~10 more seconds needed
+        #expect(play(&r, song(), from: 400, seconds: 12) != nil)
+    }
+
+    @Test func largeTickGapIsCapped() {
+        var r = RecentlyPlayedRecorder()
+        _ = r.tick(song: song(), isPlaying: true, now: t0)
+        // One minute between ticks (app suspended) counts as at most 5 s
+        #expect(r.tick(song: song(), isPlaying: true, now: t0.addingTimeInterval(60)) == nil)
+        #expect(r.tick(song: song(), isPlaying: true, now: t0.addingTimeInterval(120)) == nil)
+    }
+
+    @Test func shortTrackCommitsAtHalfDuration() {
+        var r = RecentlyPlayedRecorder()
+        #expect(play(&r, song(duration: 20), from: 0, seconds: 10) != nil)
+    }
+
+    @Test func unknownDurationUsesThirtySeconds() {
+        var r = RecentlyPlayedRecorder()
+        #expect(play(&r, song(file: "http://radio/stream", duration: 0), from: 0, seconds: 20) == nil)
+        #expect(play(&r, song(file: "http://radio/stream", duration: 0), from: 21, seconds: 10) != nil)
+    }
+
+    @Test func stopThenReplayCommitsAgain() {
+        var r = RecentlyPlayedRecorder()
+        #expect(play(&r, song(), from: 0, seconds: 30) != nil)
+        _ = r.tick(song: MPDSong(), isPlaying: false, now: t0.addingTimeInterval(40))  // stopped
+        #expect(play(&r, song(), from: 50, seconds: 30) != nil)
+    }
+}
+
+// MARK: - Recently played retention
+
+@Suite struct RecentHistoryPruneTests {
+    private let now = Date(timeIntervalSince1970: 2_000_000)
+
+    private func entry(ageSeconds: TimeInterval) -> RecentlyPlayedEntry {
+        RecentlyPlayedEntry(file: "f\(ageSeconds)", title: "t", artist: "a", album: "l",
+                            playedAt: now.addingTimeInterval(-ageSeconds))
+    }
+
+    @Test func dropsOldEntries() {
+        let entries = [entry(ageSeconds: 10), entry(ageSeconds: 100)]
+        let pruned = prunedRecentHistory(entries, now: now, maxAge: 50, cap: 100)
+        #expect(pruned.count == 1)
+        #expect(pruned[0].playedAt == now.addingTimeInterval(-10))
+    }
+
+    @Test func capsToNewest() {
+        let entries = (0..<10).map { entry(ageSeconds: Double($0)) }
+        let pruned = prunedRecentHistory(entries, now: now, maxAge: 1000, cap: 3)
+        #expect(pruned.count == 3)
+        #expect(pruned[0].playedAt == now)
+    }
+
+    @Test func bothLimitsTogether() {
+        let entries = [entry(ageSeconds: 1), entry(ageSeconds: 2), entry(ageSeconds: 999)]
+        let pruned = prunedRecentHistory(entries, now: now, maxAge: 100, cap: 1)
+        #expect(pruned.count == 1)
+    }
+
+    @Test func emptyInput() {
+        #expect(prunedRecentHistory([], now: now).isEmpty)
+    }
+
+    @Test func codableRoundtrip() throws {
+        let e = entry(ageSeconds: 5)
+        let decoded = try JSONDecoder().decode(RecentlyPlayedEntry.self,
+                                               from: JSONEncoder().encode(e))
+        #expect(decoded == e)
+        #expect(decoded.id == e.id)
+    }
+}
+
 // MARK: - Legacy server migration gate
 
 @Suite struct LegacyMigrationTests {
