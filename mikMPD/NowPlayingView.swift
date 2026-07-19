@@ -59,12 +59,12 @@ struct NowPlayingView: View {
                 }
                 .frame(width: 30)
 
-                // Tap-to-toggle lives on the art/lyrics panes, not the container —
-                // a container gesture would swallow the queue list's row taps.
+                // No tap-to-toggle on the panes: accidental art taps kept
+                // flipping to lyrics. The flanking buttons are the only toggles.
                 Group {
                     switch pane {
-                    case .art:    albumArt.onTapGesture { togglePane(.lyrics) }
-                    case .lyrics: lyricsPane.onTapGesture { togglePane(.lyrics) }
+                    case .art:    albumArt
+                    case .lyrics: lyricsPane
                     case .queue:  queuePane
                     }
                 }
