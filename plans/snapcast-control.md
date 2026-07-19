@@ -91,3 +91,25 @@ Edited in `ServerFormView` under a "Snapcast" section (host placeholder "same as
   (matches "volume on devices is focus").
 - Port 1705 must be reachable from the phone (LAN); no TLS/auth exists in the snapcast
   control protocol — nothing to store in the Keychain.
+
+## Codex added input to the plan
+
+- The protocol assumptions look correct: Snapcast JSON-RPC control uses raw TCP on
+  port 1705, newline-delimited JSON, and can interleave notifications with responses.
+- Implement phase 1 exactly first: socket, request/response matching, status decoding,
+  and read-only rendering. Add controls only after that surface is proven.
+- Keep request encoding, response matching, and volume clamping as pure helpers so the
+  tricky parts can be tested without a live Snapcast server.
+- Prefer a new `SnapcastModels.swift` over adding more types to `Models.swift`; the
+  existing file is already broad, and this keeps the feature self-contained.
+- Treat the custom `MPDServerProfile` Codable initializer as required. Existing saved
+  profiles will not contain `snapcastHost` or `snapcastPort`, so decoding must use
+  defaults through `decodeIfPresent`.
+- Match the current More/List UI style: add a simple `NavigationLink` row in
+  `MoreView`, then make `SnapcastView` a grouped `List` similar in tone to
+  `OutputsView`.
+- The highest UI-risk part is slider polling conflict. Track per-row drag state so
+  the 2 s status poll does not overwrite a slider while the user is editing it.
+- A view-scoped `@StateObject` `SnapcastStore` is the cleanest fit. It can read the
+  active MPD profile for host/port at connect time without becoming part of
+  `MPDStore`'s app-wide lifecycle.
