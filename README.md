@@ -10,6 +10,8 @@ A lightweight iOS/iPadOS client for [Music Player Daemon](https://www.musicpd.or
 
 **Playlists** — Full stored-playlist support: browse, rename, and delete playlists, save the queue as a playlist, tap a track to play it in playlist context, drag to reorder, swipe to remove or enqueue. "Add to Playlist" is available from Now Playing, albums, search results, and the queue.
 
+**Recently Played** — Client-side listening history, accessible from the clock button in Now Playing. Shows an album grid (tap to open the album) and a per-track list; history is kept per server for 30 days / 100 entries. Note: recording requires the app to be running — songs played on the MPD device while the app is backgrounded (without "Listen on Phone" active) are not captured.
+
 **Radio** — Built-in Swedish Radio streams (SR P1–P4 Göteborg) plus custom station management with persistent storage.
 
 **CD** — Play audio CDs directly via `cdda:///` URIs with per-track control.
