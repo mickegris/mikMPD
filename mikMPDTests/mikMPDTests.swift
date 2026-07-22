@@ -1403,6 +1403,7 @@ nonisolated(unsafe) private let snapStatusFixture: [String: Any] = [
                     "host": ["name": "pi-living"],
                     "config": [
                         "name": "Living Room",
+                        "latency": 50,
                         "volume": ["percent": 85, "muted": false]
                     ]
                 ],
@@ -1419,7 +1420,10 @@ nonisolated(unsafe) private let snapStatusFixture: [String: Any] = [
         ]
     ],
     "server": [:],
-    "streams": []
+    "streams": [
+        ["id": "default", "status": "playing"],
+        ["id": "optical", "status": "idle"]
+    ]
 ]
 
 @Suite struct SnapcastModelTests {
@@ -1443,6 +1447,12 @@ nonisolated(unsafe) private let snapStatusFixture: [String: Any] = [
         #expect(client.displayName == "Living Room")   // name wins
         #expect(client.volume.percent == 85)
         #expect(client.volume.muted == false)
+        #expect(client.latency == 50)
+    }
+
+    @Test func clientLatencyDefaultsToZero() {
+        let client = decodeSnapGroups(from: snapStatusFixture)[0].clients[1]
+        #expect(client.latency == 0)    // no latency key in fixture for disconnected client
     }
 
     @Test func disconnectedClientDisplayNameFallsBackToHost() {
@@ -1614,5 +1624,85 @@ nonisolated(unsafe) private let snapStatusFixture: [String: Any] = [
         let e = entry(artist: "Artist", album: "Album")
         let result = recentAlbumGroups([e])
         #expect(result[0].id == artCacheKey(artist: "Artist", album: "Album"))
+    }
+}
+
+// MARK: - Snapcast stream tests
+
+@Suite struct SnapStreamTests {
+    @Test func decodeTwoStreamsFromFixture() {
+        let streams = decodeSnapStreams(from: snapStatusFixture)
+        #expect(streams.count == 2)
+        #expect(streams[0].id == "default")
+        #expect(streams[0].status == "playing")
+        #expect(streams[1].id == "optical")
+        #expect(streams[1].status == "idle")
+    }
+
+    @Test func emptyStreamsArray() {
+        let fixture: [String: Any] = ["groups": [], "streams": [], "server": [:]]
+        #expect(decodeSnapStreams(from: fixture).isEmpty)
+    }
+
+    @Test func missingStreamsKeyReturnsEmpty() {
+        #expect(decodeSnapStreams(from: ["groups": []]).isEmpty)
+    }
+
+    @Test func streamStatusDefaultsToUnknown() {
+        let fixture: [String: Any] = ["streams": [["id": "test"]]]
+        let s = decodeSnapStreams(from: fixture)
+        #expect(s[0].status == "unknown")
+    }
+}
+
+// MARK: - Snapcast command payload tests
+
+@Suite struct SnapcastCommandPayloadTests {
+    @Test func setLatencyPayload() throws {
+        let data = try snapcastRequestData(method: "Client.SetLatency",
+                                           params: ["id": "aa:bb", "latency": 100], id: 1)
+        let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        #expect(json["method"] as? String == "Client.SetLatency")
+        let p = json["params"] as? [String: Any]
+        #expect(p?["id"] as? String == "aa:bb")
+        #expect(p?["latency"] as? Int == 100)
+    }
+
+    @Test func setNamePayload() throws {
+        let data = try snapcastRequestData(method: "Client.SetName",
+                                           params: ["id": "aa:bb", "name": "Kitchen"], id: 2)
+        let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        #expect(json["method"] as? String == "Client.SetName")
+        let p = json["params"] as? [String: Any]
+        #expect(p?["name"] as? String == "Kitchen")
+    }
+
+    @Test func deleteClientPayload() throws {
+        let data = try snapcastRequestData(method: "Server.DeleteClient",
+                                           params: ["id": "aa:bb"], id: 3)
+        let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        #expect(json["method"] as? String == "Server.DeleteClient")
+        #expect((json["params"] as? [String: Any])?["id"] as? String == "aa:bb")
+    }
+
+    @Test func setGroupStreamPayload() throws {
+        let data = try snapcastRequestData(method: "Group.SetStream",
+                                           params: ["id": "group-1", "stream_id": "optical"], id: 4)
+        let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        #expect(json["method"] as? String == "Group.SetStream")
+        let p = json["params"] as? [String: Any]
+        #expect(p?["id"] as? String == "group-1")
+        #expect(p?["stream_id"] as? String == "optical")
+    }
+
+    @Test func setGroupClientsPayload() throws {
+        let clients = ["aa:bb:cc", "11:22:33"]
+        let data = try snapcastRequestData(method: "Group.SetClients",
+                                           params: ["id": "group-1", "clients": clients], id: 5)
+        let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        #expect(json["method"] as? String == "Group.SetClients")
+        let p = json["params"] as? [String: Any]
+        #expect(p?["id"] as? String == "group-1")
+        #expect((p?["clients"] as? [String]) == clients)
     }
 }

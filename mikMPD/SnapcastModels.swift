@@ -12,6 +12,7 @@ nonisolated struct SnapClient: Identifiable, Equatable {
     var hostName: String
     var name: String        // config.name — user-set label
     var volume: SnapVolume
+    var latency: Int        // config.latency in ms (0 = no delay)
     var displayName: String { name.isEmpty ? hostName : name }
 
     init?(json: [String: Any]) {
@@ -21,6 +22,7 @@ nonisolated struct SnapClient: Identifiable, Equatable {
         self.hostName  = (json["host"] as? [String: Any])?["name"] as? String ?? ""
         let config     = json["config"] as? [String: Any] ?? [:]
         self.name      = config["name"] as? String ?? ""
+        self.latency   = config["latency"] as? Int ?? 0
         let vol        = config["volume"] as? [String: Any] ?? [:]
         self.volume    = SnapVolume(percent: vol["percent"] as? Int ?? 100,
                                    muted:   vol["muted"]   as? Bool ?? false)
@@ -45,12 +47,31 @@ nonisolated struct SnapGroup: Identifiable, Equatable {
     }
 }
 
+nonisolated struct SnapStream: Identifiable, Equatable {
+    var id: String
+    var status: String  // "playing", "idle", "unknown"
+
+    init?(json: [String: Any]) {
+        guard let id = json["id"] as? String else { return nil }
+        self.id     = id
+        self.status = json["status"] as? String ?? "unknown"
+    }
+}
+
 /// Decode groups from a Server.GetStatus result object.
 nonisolated func decodeSnapGroups(from result: Any) -> [SnapGroup] {
     guard let dict = result as? [String: Any],
           let arr  = dict["groups"] as? [[String: Any]]
     else { return [] }
     return arr.compactMap { SnapGroup(json: $0) }
+}
+
+/// Decode streams from a Server.GetStatus result object.
+nonisolated func decodeSnapStreams(from result: Any) -> [SnapStream] {
+    guard let dict = result as? [String: Any],
+          let arr  = dict["streams"] as? [[String: Any]]
+    else { return [] }
+    return arr.compactMap { SnapStream(json: $0) }
 }
 
 // MARK: - Pure wire helpers (testable without a live server)
@@ -62,7 +83,7 @@ nonisolated func snapcastRequestData(method: String, params: [String: Any], id: 
 }
 
 /// Find the response for `id` among interleaved lines, skipping notifications
-/// (which have no `id` or a non-matching `id`).
+/// (which have no `id` or a non-matching `id`). Used in unit tests.
 nonisolated func snapcastFindResponse(in lines: [String], id: Int) -> [String: Any]? {
     for line in lines {
         guard let data = line.data(using: .utf8),

@@ -8,6 +8,14 @@ struct SnapcastView: View {
     // Local slider positions — synced from snap.groups, frozen per-client while dragging.
     @State private var localVolumes: [String: Double] = [:]
 
+    // Rename alert state
+    @State private var renameClientID: String? = nil
+    @State private var renameText = ""
+
+    // Latency alert state
+    @State private var latencyClientID: String? = nil
+    @State private var latencyText = ""
+
     private var activeProfile: MPDServerProfile? {
         store.servers.first { $0.id.uuidString == store.activeServerID }
     }
@@ -38,8 +46,7 @@ struct SnapcastView: View {
 
             Section {
                 HStack {
-                    Image(systemName: "network")
-                        .foregroundStyle(.secondary)
+                    Image(systemName: "network").foregroundStyle(.secondary)
                     Text("\(snapHost):\(snapPort)")
                         .font(.caption).foregroundStyle(.secondary)
                 }
@@ -48,25 +55,66 @@ struct SnapcastView: View {
         .listStyle(.insetGrouped)
         .navigationTitle("Snapcast")
         .navigationBarTitleDisplayMode(.inline)
-        .onAppear {
-            snap.connect(host: snapHost, port: snapPort)
-        }
+        .onAppear { snap.connect(host: snapHost, port: snapPort) }
         .onDisappear { snap.disconnect() }
         .onChange(of: snap.groups) { _, newGroups in
-            // Sync local volumes for non-dragging clients
             for group in newGroups {
-                for client in group.clients {
-                    if !snap.draggingClients.contains(client.id) {
-                        localVolumes[client.id] = Double(client.volume.percent)
-                    }
+                for client in group.clients where !snap.draggingClients.contains(client.id) {
+                    localVolumes[client.id] = Double(client.volume.percent)
                 }
             }
+        }
+        // Rename alert
+        .alert("Rename Client", isPresented: Binding(
+            get: { renameClientID != nil },
+            set: { if !$0 { renameClientID = nil } }
+        )) {
+            TextField("Name", text: $renameText)
+                .autocorrectionDisabled()
+            Button("Rename") {
+                if let id = renameClientID, !renameText.isEmpty {
+                    snap.setClientName(clientID: id, name: renameText)
+                }
+                renameClientID = nil
+            }
+            Button("Cancel", role: .cancel) { renameClientID = nil }
+        } message: {
+            Text("Enter a display name for this client.")
+        }
+        // Latency alert
+        .alert("Set Latency", isPresented: Binding(
+            get: { latencyClientID != nil },
+            set: { if !$0 { latencyClientID = nil } }
+        )) {
+            TextField("0", text: $latencyText).keyboardType(.numberPad)
+            Button("Set") {
+                if let id = latencyClientID, let ms = Int(latencyText), ms >= 0 {
+                    snap.setLatency(clientID: id, latency: ms)
+                }
+                latencyClientID = nil
+            }
+            Button("Cancel", role: .cancel) { latencyClientID = nil }
+        } message: {
+            Text("Milliseconds of audio delay (0 = no delay). Use to sync this client with others.")
         }
     }
 
     @ViewBuilder
     private func groupSection(_ group: SnapGroup) -> some View {
         Section {
+            // Stream picker — only shown when multiple streams exist
+            if snap.streams.count > 1 {
+                Picker(selection: Binding(
+                    get: { group.streamID },
+                    set: { snap.setGroupStream(groupID: group.id, streamID: $0) }
+                ), label: Label("Stream", systemImage: "music.note")) {
+                    ForEach(snap.streams) { stream in
+                        Text(stream.id).tag(stream.id)
+                    }
+                }
+                .pickerStyle(.menu)
+            }
+
             // Group mute row
             HStack {
                 Image(systemName: group.muted ? "speaker.slash.fill" : "speaker.2.fill")
@@ -82,32 +130,44 @@ struct SnapcastView: View {
             }
 
             ForEach(group.clients) { client in
-                clientRow(client)
+                clientRow(client, group: group)
+                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                        if !client.connected {
+                            Button(role: .destructive) {
+                                snap.deleteClient(clientID: client.id)
+                            } label: {
+                                Label("Remove", systemImage: "trash")
+                            }
+                        }
+                    }
             }
         } header: {
             Text(group.displayName)
         } footer: {
-            Text("Long press a client for options · Slider commits on release")
+            Text("Long press a client for options · Swipe left to remove disconnected clients")
                 .font(.caption2)
         }
     }
 
     @ViewBuilder
-    private func clientRow(_ client: SnapClient) -> some View {
+    private func clientRow(_ client: SnapClient, group: SnapGroup) -> some View {
         let isDimmed = !client.connected
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Circle()
                     .fill(client.connected ? Color.green : Color.gray)
                     .frame(width: 8, height: 8)
-                Text(client.displayName)
-                    .fontWeight(.medium)
+                Text(client.displayName).fontWeight(.medium)
+                if client.latency != 0 {
+                    Text("+\(client.latency) ms")
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.secondary)
+                }
                 Spacer()
                 Button {
-                    let muted = !client.volume.muted
                     snap.setVolume(clientID: client.id,
                                    percent: client.volume.percent,
-                                   muted: muted)
+                                   muted: !client.volume.muted)
                 } label: {
                     Image(systemName: client.volume.muted ? "speaker.slash.fill" : "speaker.fill")
                         .foregroundStyle(client.volume.muted ? Color.secondary : Color.accentColor)
@@ -142,13 +202,45 @@ struct SnapcastView: View {
             } label: { Label("Set to Full Volume", systemImage: "speaker.wave.3.fill") }
 
             Button {
-                let muted = !client.volume.muted
                 snap.setVolume(clientID: client.id,
                                percent: client.volume.percent,
-                               muted: muted)
+                               muted: !client.volume.muted)
             } label: {
                 Label(client.volume.muted ? "Unmute" : "Mute",
                       systemImage: client.volume.muted ? "speaker.fill" : "speaker.slash.fill")
+            }
+
+            Divider()
+
+            Button {
+                renameText = client.displayName
+                renameClientID = client.id
+            } label: { Label("Rename…", systemImage: "pencil") }
+
+            Button {
+                latencyText = "\(client.latency)"
+                latencyClientID = client.id
+            } label: { Label("Set Latency…", systemImage: "timer") }
+
+            let otherGroups = snap.groups.filter { $0.id != group.id }
+            if !otherGroups.isEmpty {
+                Divider()
+                Menu("Move to Group") {
+                    ForEach(otherGroups) { otherGroup in
+                        Button(otherGroup.displayName) {
+                            snap.moveClient(clientID: client.id,
+                                            fromGroupID: group.id,
+                                            toGroupID: otherGroup.id)
+                        }
+                    }
+                }
+            }
+
+            if !client.connected {
+                Divider()
+                Button(role: .destructive) {
+                    snap.deleteClient(clientID: client.id)
+                } label: { Label("Remove from Server", systemImage: "trash") }
             }
         }
     }
