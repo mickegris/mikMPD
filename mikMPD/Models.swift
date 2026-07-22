@@ -250,6 +250,24 @@ nonisolated struct MPDServerProfile: Codable, Identifiable, Equatable {
     var port: Int = 6600
     var streamURL: String = ""      // per-server httpd output URL
     var lastPartition: String = ""  // per-server "remember partitions" value
+    var snapcastHost: String = ""   // empty = use MPD host
+    var snapcastPort: Int = 1705
+}
+
+// Custom decoder for back-compat: legacy profiles lack snapcastHost/Port.
+// encode(to:) remains synthesized — it includes all properties.
+extension MPDServerProfile {
+    nonisolated init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id            = try c.decodeIfPresent(UUID.self,   forKey: .id)            ?? UUID()
+        name          = try c.decode(          String.self, forKey: .name)
+        host          = try c.decode(          String.self, forKey: .host)
+        port          = try c.decodeIfPresent(Int.self,     forKey: .port)          ?? 6600
+        streamURL     = try c.decodeIfPresent(String.self,  forKey: .streamURL)     ?? ""
+        lastPartition = try c.decodeIfPresent(String.self,  forKey: .lastPartition) ?? ""
+        snapcastHost  = try c.decodeIfPresent(String.self,  forKey: .snapcastHost)  ?? ""
+        snapcastPort  = try c.decodeIfPresent(Int.self,     forKey: .snapcastPort)  ?? 1705
+    }
 }
 
 /// Build the initial profile from pre-multi-server settings (one-time migration).

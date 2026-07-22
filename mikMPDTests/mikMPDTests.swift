@@ -1387,6 +1387,145 @@ import Testing
     }
 }
 
+// MARK: - Snapcast tests
+
+nonisolated(unsafe) private let snapStatusFixture: [String: Any] = [
+    "groups": [
+        [
+            "id": "group-1",
+            "name": "Downstairs",
+            "muted": false,
+            "stream_id": "default",
+            "clients": [
+                [
+                    "id": "aa:bb:cc:dd:ee:ff",
+                    "connected": true,
+                    "host": ["name": "pi-living"],
+                    "config": [
+                        "name": "Living Room",
+                        "volume": ["percent": 85, "muted": false]
+                    ]
+                ],
+                [
+                    "id": "11:22:33:44:55:66",
+                    "connected": false,
+                    "host": ["name": "desktop"],
+                    "config": [
+                        "name": "",     // falls back to hostName
+                        "volume": ["percent": 50, "muted": true]
+                    ]
+                ]
+            ]
+        ]
+    ],
+    "server": [:],
+    "streams": []
+]
+
+@Suite struct SnapcastModelTests {
+    @Test func decodeGroupsFromFixture() {
+        let groups = decodeSnapGroups(from: snapStatusFixture)
+        #expect(groups.count == 1)
+        let g = groups[0]
+        #expect(g.id == "group-1")
+        #expect(g.name == "Downstairs")
+        #expect(g.muted == false)
+        #expect(g.streamID == "default")
+        #expect(g.clients.count == 2)
+    }
+
+    @Test func connectedClientParsed() {
+        let client = decodeSnapGroups(from: snapStatusFixture)[0].clients[0]
+        #expect(client.id == "aa:bb:cc:dd:ee:ff")
+        #expect(client.connected == true)
+        #expect(client.name == "Living Room")
+        #expect(client.hostName == "pi-living")
+        #expect(client.displayName == "Living Room")   // name wins
+        #expect(client.volume.percent == 85)
+        #expect(client.volume.muted == false)
+    }
+
+    @Test func disconnectedClientDisplayNameFallsBackToHost() {
+        let client = decodeSnapGroups(from: snapStatusFixture)[0].clients[1]
+        #expect(client.connected == false)
+        #expect(client.name == "")
+        #expect(client.displayName == "desktop")       // hostName fallback
+        #expect(client.volume.muted == true)
+    }
+
+    @Test func emptyGroupsWhenKeyMissing() {
+        #expect(decodeSnapGroups(from: ["server": [:]]).isEmpty)
+    }
+
+    @Test func groupDisplayNameFallsBackToStreamID() {
+        let json: [String: Any] = ["groups": [
+            ["id": "g1", "name": "", "muted": false, "stream_id": "stream1", "clients": []]
+        ]]
+        let g = decodeSnapGroups(from: json)[0]
+        #expect(g.displayName == "stream1")
+    }
+}
+
+@Suite struct SnapcastWireTests {
+    @Test func requestDataIncludesMethod() throws {
+        let data = try snapcastRequestData(method: "Client.SetVolume",
+                                           params: ["id": "aa", "volume": ["percent": 80, "muted": false]],
+                                           id: 3)
+        let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        #expect(json["jsonrpc"] as? String == "2.0")
+        #expect(json["method"] as? String == "Client.SetVolume")
+        #expect(json["id"] as? Int == 3)
+        let volume = (json["params"] as? [String: Any])?["volume"] as? [String: Any]
+        #expect(volume?["percent"] as? Int == 80)
+    }
+
+    @Test func requestIDsIncrement() throws {
+        let d1 = try snapcastRequestData(method: "M", params: [:], id: 1)
+        let d2 = try snapcastRequestData(method: "M", params: [:], id: 2)
+        let j1 = try JSONSerialization.jsonObject(with: d1) as! [String: Any]
+        let j2 = try JSONSerialization.jsonObject(with: d2) as! [String: Any]
+        #expect(j1["id"] as? Int == 1)
+        #expect(j2["id"] as? Int == 2)
+    }
+
+    @Test func findResponseSkipsNotifications() {
+        let notification = #"{"jsonrpc":"2.0","method":"Client.OnVolumeChanged","params":{"id":"x","volume":{"percent":50,"muted":false}}}"#
+        let response     = #"{"jsonrpc":"2.0","id":3,"result":{"percent":80,"muted":false}}"#
+        let wrong        = #"{"jsonrpc":"2.0","id":2,"result":{}}"#
+        let lines = [notification, wrong, response]
+        let found = snapcastFindResponse(in: lines, id: 3)
+        #expect(found != nil)
+        #expect(found?["id"] as? Int == 3)
+    }
+
+    @Test func findResponseReturnsNilWhenAbsent() {
+        let notification = #"{"jsonrpc":"2.0","method":"Server.OnUpdate","params":{}}"#
+        #expect(snapcastFindResponse(in: [notification], id: 1) == nil)
+    }
+}
+
+@Suite struct SnapcastProfileCodableTests {
+    @Test func legacyProfileDecodesWithDefaults() throws {
+        let legacy = """
+        {"id":"00000000-0000-0000-0000-000000000001","name":"Home","host":"192.168.1.1","port":6600,"streamURL":"","lastPartition":""}
+        """
+        let profile = try JSONDecoder().decode(MPDServerProfile.self, from: Data(legacy.utf8))
+        #expect(profile.host == "192.168.1.1")
+        #expect(profile.snapcastHost == "")
+        #expect(profile.snapcastPort == 1705)
+    }
+
+    @Test func roundtripPreservesSnapcastFields() throws {
+        var p = MPDServerProfile(name: "Test", host: "10.0.0.1")
+        p.snapcastHost = "10.0.0.2"
+        p.snapcastPort = 1706
+        let data = try JSONEncoder().encode(p)
+        let p2 = try JSONDecoder().decode(MPDServerProfile.self, from: data)
+        #expect(p2.snapcastHost == "10.0.0.2")
+        #expect(p2.snapcastPort == 1706)
+    }
+}
+
 @Suite struct RelativeDayTests {
     private func date(daysAgo: Int, now: Date = Date()) -> Date {
         Calendar.current.date(byAdding: .day, value: -daysAgo, to: now)!
