@@ -1386,3 +1386,94 @@ import Testing
         #expect(s.discNumber == 2)
     }
 }
+
+@Suite struct RelativeDayTests {
+    private func date(daysAgo: Int, now: Date = Date()) -> Date {
+        Calendar.current.date(byAdding: .day, value: -daysAgo, to: now)!
+    }
+
+    @Test func today() { #expect(relativeDay(date(daysAgo: 0)) == "Today") }
+    @Test func yesterday() { #expect(relativeDay(date(daysAgo: 1)) == "Yesterday") }
+    @Test func twoDaysAgo() { #expect(relativeDay(date(daysAgo: 2)) == "2 days ago") }
+    @Test func tenDaysAgo() { #expect(relativeDay(date(daysAgo: 10)) == "10 days ago") }
+    @Test func explicitNow() {
+        let now = Date()
+        let yesterday = Calendar.current.date(byAdding: .day, value: -1, to: now)!
+        #expect(relativeDay(yesterday, now: now) == "Yesterday")
+    }
+}
+
+@Suite struct RecentAlbumGroupTests {
+    private func entry(file: String = "f", title: String = "T", artist: String = "A",
+                       album: String = "X", ago: TimeInterval = 0) -> RecentlyPlayedEntry {
+        RecentlyPlayedEntry(file: file, title: title, artist: artist, album: album,
+                            playedAt: Date(timeIntervalSinceReferenceDate: 1000 - ago))
+    }
+
+    @Test func dedupesSameAlbum() {
+        let entries = [entry(title: "T1", ago: 0), entry(title: "T2", ago: 60)]
+        let result = recentAlbumGroups(entries)
+        #expect(result.count == 1)
+        #expect(result[0].album == "X")
+    }
+
+    @Test func newestEntryWins() {
+        let entries = [entry(title: "T1", ago: 0), entry(title: "T2", ago: 60)]
+        let result = recentAlbumGroups(entries)
+        // first entry in the input (newest) should be the representative
+        #expect(result[0].lastPlayed == entries[0].playedAt)
+    }
+
+    @Test func discVariantsCollapse() {
+        let entries = [entry(album: "X [Disc 1]", ago: 0), entry(album: "X [Disc 2]", ago: 60)]
+        let result = recentAlbumGroups(entries)
+        #expect(result.count == 1)
+    }
+
+    @Test func sameAlbumDifferentArtistsStaySeparate() {
+        let entries = [
+            entry(file: "f1", artist: "Artist A", album: "Hits", ago: 0),
+            entry(file: "f2", artist: "Artist B", album: "Hits", ago: 60),
+        ]
+        let result = recentAlbumGroups(entries)
+        #expect(result.count == 2)
+    }
+
+    @Test func albumlessTilesGroupByFile() {
+        let entries = [
+            entry(file: "http://radio.example.com/stream", title: "Radio", artist: "Station", album: "", ago: 0),
+            entry(file: "http://radio.example.com/stream", title: "Radio", artist: "Station", album: "", ago: 60),
+        ]
+        let result = recentAlbumGroups(entries)
+        #expect(result.count == 1)
+        #expect(result[0].albumless == true)
+        #expect(result[0].title == "Radio")
+    }
+
+    @Test func albumlessTilesPreserveTitle() {
+        let e = entry(file: "loose.flac", title: "Untitled", artist: "", album: "")
+        let result = recentAlbumGroups([e])
+        #expect(result[0].albumless == true)
+        #expect(result[0].title == "Untitled")
+    }
+
+    @Test func newestFirst() {
+        let entries = [
+            entry(file: "f1", album: "Alpha", ago: 0),
+            entry(file: "f2", album: "Beta", ago: 60),
+            entry(file: "f3", album: "Gamma", ago: 120),
+        ]
+        let result = recentAlbumGroups(entries)
+        #expect(result.map(\.album) == ["Alpha", "Beta", "Gamma"])
+    }
+
+    @Test func emptyInput() {
+        #expect(recentAlbumGroups([]).isEmpty)
+    }
+
+    @Test func idEqualsArtCacheKey() {
+        let e = entry(artist: "Artist", album: "Album")
+        let result = recentAlbumGroups([e])
+        #expect(result[0].id == artCacheKey(artist: "Artist", album: "Album"))
+    }
+}

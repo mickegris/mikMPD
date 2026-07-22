@@ -344,6 +344,39 @@ nonisolated func prunedRecentHistory(_ entries: [RecentlyPlayedEntry], now: Date
     Array(entries.filter { now.timeIntervalSince($0.playedAt) <= maxAge }.prefix(cap))
 }
 
+nonisolated struct RecentAlbum: Identifiable, Equatable {
+    var artist: String
+    var album: String        // raw tag from the newest entry; empty for album-less tiles
+    var file: String         // representative file (album-less replay target)
+    var title: String        // display title for album-less tiles (radio/loose files)
+    var lastPlayed: Date
+    var albumless: Bool      // true when keyed on file, not album
+    var id: String { albumless ? file : artCacheKey(artist: artist, album: album) }
+}
+
+/// Derives album groups from track history (expects newest-first input), returning newest-first.
+/// Disc variants with the same artCacheKey collapse into one tile. Entries without an album
+/// tag group by file so radio/loose files still appear as tiles.
+nonisolated func recentAlbumGroups(_ entries: [RecentlyPlayedEntry]) -> [RecentAlbum] {
+    var seen: Set<String> = []
+    var result: [RecentAlbum] = []
+    for entry in entries {
+        let albumless = entry.album.isEmpty
+        let key = albumless ? entry.file : artCacheKey(artist: entry.artist, album: entry.album)
+        guard !seen.contains(key) else { continue }
+        seen.insert(key)
+        result.append(RecentAlbum(
+            artist: entry.artist,
+            album: entry.album,
+            file: entry.file,
+            title: entry.title,
+            lastPlayed: entry.playedAt,
+            albumless: albumless
+        ))
+    }
+    return result
+}
+
 nonisolated struct MPDBrowseItem: Identifiable {
     enum Kind { case directory, file, playlist }
     var kind: Kind
@@ -369,4 +402,16 @@ func formatTime(_ s: Double) -> String {
     guard s > 0, s.isFinite else { return "0:00" }
     let t = Int(s)
     return "\(t / 60):\(String(format: "%02d", t % 60))"
+}
+
+nonisolated func relativeDay(_ date: Date, now: Date = Date()) -> String {
+    let cal = Calendar.current
+    let days = cal.dateComponents([.day],
+        from: cal.startOfDay(for: date),
+        to: cal.startOfDay(for: now)).day ?? 0
+    switch days {
+    case 0: return "Today"
+    case 1: return "Yesterday"
+    default: return "\(days) days ago"
+    }
 }
