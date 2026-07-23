@@ -19,6 +19,9 @@ struct SnapcastView: View {
     @State private var latencyClientID: String? = nil
     @State private var latencyText = ""
 
+    // Stream picker state — tracks which group's stream dialog is open
+    @State private var streamPickerGroupID: String? = nil
+
     private var activeProfile: MPDServerProfile? {
         store.servers.first { $0.id.uuidString == store.activeServerID }
     }
@@ -119,19 +122,29 @@ struct SnapcastView: View {
         let visibleClients = group.clients.filter { showDisconnected || $0.connected }
         Section {
             // Stream selector — only shown when multiple streams exist.
-            // Uses Menu+Button instead of Picker so each option is a discrete committing tap.
+            // Uses Button+confirmationDialog to avoid the List gesture-gate conflict that
+            // both Picker(.menu) and Menu suffer from inside List cells.
             let streams = snap.streams
             if streams.count > 1 {
-                Menu {
-                    ForEach(streams) { s in
-                        Button {
-                            snap.setGroupStream(groupID: group.id, streamID: s.id)
-                        } label: {
-                            Label(s.id, systemImage: group.streamID == s.id ? "checkmark" : "music.note")
-                        }
-                    }
+                Button {
+                    streamPickerGroupID = group.id
                 } label: {
                     LabeledContent("Stream", value: group.streamID)
+                }
+                .foregroundStyle(.primary)
+                .confirmationDialog(
+                    "Choose Stream",
+                    isPresented: Binding(
+                        get: { streamPickerGroupID == group.id },
+                        set: { if !$0 { streamPickerGroupID = nil } }
+                    ),
+                    titleVisibility: .visible
+                ) {
+                    ForEach(streams) { s in
+                        Button(s.id == group.streamID ? "✓ \(s.id)" : s.id) {
+                            snap.setGroupStream(groupID: group.id, streamID: s.id)
+                        }
+                    }
                 }
             }
 
