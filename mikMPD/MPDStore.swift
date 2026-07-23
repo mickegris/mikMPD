@@ -103,7 +103,9 @@ final class MPDStore: ObservableObject {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }()
-    nonisolated(unsafe) private var lastSongID = ""  // only meaningfully touched on Q (poll)
+    nonisolated(unsafe) private var lastSongID = ""   // only touched on Q (poll)
+    nonisolated(unsafe) private var lastSong   = MPDSong() // Q-side cache; skip currentsong when unchanged
+    private var currentPollInterval: TimeInterval = 1.0   // tracks active poll rate for throttle logic
     private var lyricsToken   = UUID()   // invalidates in-flight lyric fetches on song change
     private var isReconnecting = false
     private var isRestoringPartition = false
@@ -324,8 +326,9 @@ final class MPDStore: ObservableObject {
 
     private func startTimers() {
         stopTimers()
+        currentPollInterval = 1.0
 
-        // Poll: every 1s, fetches ground truth from MPD
+        // Poll: every 1s playing / 3s paused — adjusted by setPollingInterval() each poll cycle
         let p = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
             guard let self else { return }
             self.Q.async { self.poll() }
@@ -333,20 +336,51 @@ final class MPDStore: ObservableObject {
         RunLoop.main.add(p, forMode: .common)
         pollTimer = p
 
-        // Display: every 0.1s, smoothly advances elapsed on main thread
+        // Display timer starts running; first poll (≤1s away) calls setDisplayTimerActive
+        // to stop it immediately if MPD is paused/stopped.
         let d = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
             guard let self else { return }
-            Task { @MainActor in
-                self.tickElapsed()
-            }
+            Task { @MainActor in self.tickElapsed() }
         }
         RunLoop.main.add(d, forMode: .common)
         displayTimer = d
     }
 
     private func stopTimers() {
-        pollTimer?.invalidate(); pollTimer = nil
+        pollTimer?.invalidate();    pollTimer    = nil
         displayTimer?.invalidate(); displayTimer = nil
+        currentPollInterval = 1.0
+    }
+
+    /// Start or stop the 10 Hz display timer based on whether we are actively playing.
+    /// Stopping it eliminates 10 CPU wakes/second when paused or stopped.
+    private func setDisplayTimerActive(_ active: Bool) {
+        if active {
+            guard displayTimer == nil else { return }
+            let d = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
+                guard let self else { return }
+                Task { @MainActor in self.tickElapsed() }
+            }
+            RunLoop.main.add(d, forMode: .common)
+            displayTimer = d
+        } else {
+            displayTimer?.invalidate()
+            displayTimer = nil
+        }
+    }
+
+    /// Adjust the poll interval without restarting when rate is already correct.
+    /// Playing → 1 s; paused/stopped → 3 s.
+    private func setPollingInterval(_ interval: TimeInterval) {
+        guard currentPollInterval != interval else { return }
+        currentPollInterval = interval
+        pollTimer?.invalidate()
+        let p = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            self.Q.async { self.poll() }
+        }
+        RunLoop.main.add(p, forMode: .common)
+        pollTimer = p
     }
 
     /// GCD timer on Q that keeps polling while streaming in background.
@@ -390,11 +424,11 @@ final class MPDStore: ObservableObject {
             return
         }
         do {
-            // Two separate commands — simple and correct
+            // Fetch status first; only send currentsong when the song actually changed —
+            // saves one MPD round-trip per poll during normal playback.
             let sRecs = try socket.command("status")
-            let cRecs = try socket.command("currentsong")
 
-            // MPD returns multiple records - merge them all
+            // MPD returns multiple records — merge them all
             var s: MPDRecord = [:]
             for rec in sRecs {
                 s.merge(rec) { _, new in new }
@@ -419,13 +453,20 @@ final class MPDStore: ObservableObject {
             let con  = s["consume"] == "1"
             let curPartition = s["partition"] ?? ""
 
-            let song        = cRecs.first.map { MPDSong($0) } ?? MPDSong()
-            let songChanged = song.songID != self.lastSongID
-            if songChanged { self.lastSongID = song.songID }
+            let songChanged = sid != self.lastSongID
+            let song: MPDSong
+            if songChanged {
+                let cRecs = try socket.command("currentsong")
+                song = cRecs.first.map { MPDSong($0) } ?? MPDSong()
+                self.lastSongID = sid
+                self.lastSong   = song
+            } else {
+                song = self.lastSong
+            }
 
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
-                
+
                 // Only update play/pause state if not locked
                 if Date() >= self.stateLockUntil {
                     let newPlaying = (state == "play")
@@ -433,6 +474,11 @@ final class MPDStore: ObservableObject {
                     if self.isPlaying != newPlaying { self.isPlaying = newPlaying }
                     if self.isPaused  != newPaused  { self.isPaused  = newPaused }
                 }
+
+                // Stop 10 Hz display timer while paused/stopped; restart when playing.
+                // Throttle poll from 1s → 3s when not playing.
+                self.setDisplayTimerActive(self.isPlaying)
+                self.setPollingInterval(self.isPlaying ? 1.0 : 3.0)
 
                 // Only fire @Published setters when values actually change
                 // to avoid unnecessary SwiftUI view re-evaluations
@@ -457,8 +503,8 @@ final class MPDStore: ObservableObject {
                 if self.singleMode   != sin { self.singleMode   = sin }
                 if self.consumeMode  != con { self.consumeMode  = con }
                 if self.currentSong  != song { self.currentSong = song }
-                // Only update elapsed from poll when not seek-locked
-                if Date() >= self.seekLockUntil {
+                // Only update elapsed from poll when not seek-locked and value differs
+                if Date() >= self.seekLockUntil, self.elapsed != elapsed {
                     self.elapsed = elapsed
                 }
                 if songChanged { self.fetchArt(for: song); self.fetchLyrics(for: song) }
