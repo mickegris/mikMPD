@@ -339,6 +339,12 @@ struct NowPlayingView: View {
                     MarqueeText(text: song.album, font: .caption, color: .secondary, underlined: true)
                 }
             }
+            if let ctx = store.playbackContext {
+                NavigationLink(destination: PlaylistDetailView(name: ctx)) {
+                    Label("Playing from \(ctx)", systemImage: "music.note.list")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+            }
         }
     }
 

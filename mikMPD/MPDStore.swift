@@ -47,6 +47,7 @@ final class MPDStore: ObservableObject {
     @Published var partitions:     [String]        = []
     @Published var browseItems:    [MPDBrowseItem] = []
     @Published var searchResults:  [MPDSong]       = []
+    @Published var playbackContext: String?        = nil  // stored-playlist name; nil = unknown/other
     @Published var albumArtCache:  [String: UIImage] = [:]
     private var artAccessOrder: [String] = []
     private let artCacheLimit = 100
@@ -335,7 +336,7 @@ final class MPDStore: ObservableObject {
         searchResults = []; browseItems = []; playlists = []
         elapsed = 0; duration = 0; isPlaying = false; isPaused = false
         playlistPos = -1; bitrate = ""; audioFmt = ""; currentPartition = ""
-        lyricsState = .unavailable
+        lyricsState = .unavailable; playbackContext = nil
     }
 
     // MARK: - Timers
@@ -819,7 +820,7 @@ final class MPDStore: ObservableObject {
             _ = try? self.socket.command("add \"\(uri.esc)\"")
             _ = try? self.socket.command("play 0")
             self.poll()
-            DispatchQueue.main.async { self.loadQueue() }
+            DispatchQueue.main.async { self.playbackContext = nil; self.loadQueue() }
         }
     }
 
@@ -874,11 +875,17 @@ final class MPDStore: ObservableObject {
     // MARK: - Queue management
 
     func clearQueue() {
-        Q.async { [weak self] in _ = try? self?.socket.command("clear"); DispatchQueue.main.async { self?.loadQueue() } }
+        Q.async { [weak self] in
+            _ = try? self?.socket.command("clear")
+            DispatchQueue.main.async { self?.playbackContext = nil; self?.loadQueue() }
+        }
     }
 
     func add(uri: String) {
-        Q.async { [weak self] in _ = try? self?.socket.command("add \"\(uri.esc)\""); DispatchQueue.main.async { self?.loadQueue() } }
+        Q.async { [weak self] in
+            _ = try? self?.socket.command("add \"\(uri.esc)\"")
+            DispatchQueue.main.async { self?.playbackContext = nil; self?.loadQueue() }
+        }
     }
 
     func addAndPlay(uri: String) {
@@ -888,7 +895,7 @@ final class MPDStore: ObservableObject {
             _ = try? self.socket.command("add \"\(uri.esc)\"")
             _ = try? self.socket.command("play \(before)")
             self.poll()
-            DispatchQueue.main.async { self.loadQueue() }
+            DispatchQueue.main.async { self.playbackContext = nil; self.loadQueue() }
         }
     }
 
@@ -926,7 +933,10 @@ final class MPDStore: ObservableObject {
                 _ = try? self.socket.command("play 0")
                 self.poll()
             }
-            DispatchQueue.main.async { self.loadQueue() }
+            DispatchQueue.main.async {
+                self.playbackContext = (replace || play) ? name : nil
+                self.loadQueue()
+            }
         }
     }
 
@@ -938,7 +948,10 @@ final class MPDStore: ObservableObject {
             for s in songs { _ = try? self.socket.command("add \"\(s.file.esc)\"") }
             if playFirst || replace { _ = try? self.socket.command("play \(before)") }
             if playFirst || replace { self.poll() }
-            DispatchQueue.main.async { self.loadQueue() }
+            DispatchQueue.main.async {
+                if replace { self.playbackContext = nil }
+                self.loadQueue()
+            }
         }
     }
 
@@ -1039,7 +1052,7 @@ final class MPDStore: ObservableObject {
             _ = try? self.socket.command("load \"\(name.esc)\"")
             _ = try? self.socket.command("play \(index)")
             self.poll()
-            DispatchQueue.main.async { self.loadQueue() }
+            DispatchQueue.main.async { self.playbackContext = name; self.loadQueue() }
         }
     }
 
