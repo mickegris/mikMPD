@@ -11,9 +11,7 @@ import SwiftUI
             case .background:
                 if !store.isPhoneStreaming { store.disconnect() }
             case .active:
-                if !store.isConnected {
-                    store.connect()
-                }
+                store.refreshOnForeground()
             default:
                 break
             }

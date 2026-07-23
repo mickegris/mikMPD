@@ -212,8 +212,23 @@ final class MPDStore: ObservableObject {
         if !currentPartition.isEmpty {
             partitionToRestore = currentPartition
         }
+        // Synchronous — eliminates the stale-flag race where .active fires before
+        // a deferred DispatchQueue.main.async block runs, causing connect() to be skipped.
+        isConnected = false
         Q.async { self.socket.disconnect() }
-        DispatchQueue.main.async { self.isConnected = false }
+    }
+
+    /// Called on every foreground transition. Reconnects if the socket is gone;
+    /// otherwise forces an immediate poll so elapsed/isPlaying snap to ground
+    /// truth within one frame instead of waiting up to 3 s for the next timer tick.
+    func refreshOnForeground() {
+        guard !host.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        if !isConnected {
+            connect()
+        } else {
+            seekLockUntil = .distantPast   // nothing is mid-seek on resume
+            Q.async { [weak self] in self?.poll() }
+        }
     }
 
     // MARK: - Saved servers
