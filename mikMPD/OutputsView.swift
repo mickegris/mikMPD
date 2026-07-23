@@ -6,6 +6,7 @@ struct OutputsView: View {
     @State private var newPartitionName = ""
     @State private var partitionToDelete: String?
     @State private var partitionError: String?
+    @State private var moveError: String?
     var body: some View {
         NavigationStack {
             List {
@@ -44,7 +45,9 @@ struct OutputsView: View {
                                     // Show move options for all partitions except the one it's currently in
                                     ForEach(store.partitions.filter { $0 != part }, id: \.self) { targetPartition in
                                         Button {
-                                            store.moveOutputToPartition(out.outputID, targetPartition: targetPartition)
+                                            store.moveOutputToPartition(out.outputID, targetPartition: targetPartition) { err in
+                                                moveError = err
+                                            }
                                         } label: {
                                             Label("Move to \(targetPartition)", systemImage: "arrow.right.circle")
                                         }
@@ -123,6 +126,14 @@ struct OutputsView: View {
                 Button("OK", role: .cancel) { partitionError = nil }
             } message: {
                 Text(partitionError ?? "")
+            }
+            .alert("Move Failed", isPresented: Binding(
+                get: { moveError != nil },
+                set: { if !$0 { moveError = nil } }
+            )) {
+                Button("OK", role: .cancel) { moveError = nil }
+            } message: {
+                Text(moveError ?? "")
             }
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {

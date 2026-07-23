@@ -109,6 +109,7 @@ final class MPDStore: ObservableObject {
     private var lyricsToken   = UUID()   // invalidates in-flight lyric fetches on song change
     private var isReconnecting = false
     private var isRestoringPartition = false
+    private var isMovingOutput = false   // prevents stacking a second move onto Q
     private var partitionToRestore: String?
 
     // Seek lock: elapsed from poll is ignored until this date passes
@@ -1037,41 +1038,54 @@ final class MPDStore: ObservableObject {
         }
     }
 
-    func moveOutputToCurrentPartition(_ id: String) {
-        moveOutputToPartition(id, targetPartition: currentPartition)
+    func moveOutputToCurrentPartition(_ id: String, completion: @escaping @MainActor (String?) -> Void = { _ in }) {
+        moveOutputToPartition(id, targetPartition: currentPartition, completion: completion)
     }
-    
-    func moveOutputToPartition(_ id: String, targetPartition: String) {
-        let originalPartition = currentPartition
-        
+
+    func moveOutputToPartition(_ id: String, targetPartition: String, completion: @escaping @MainActor (String?) -> Void) {
+        guard !isMovingOutput else { completion("A move is already in progress — please wait"); return }
         guard !targetPartition.isEmpty else { return }
-        guard let outputName = outputs.first(where: { $0.outputID == id })?.name else { return }
-        
+        guard let output = outputs.first(where: { $0.outputID == id }) else { return }
+        let outputName  = output.name
+        let wasEnabled  = output.enabled
+        let originalPartition = currentPartition
+        isMovingOutput = true
+
         Q.async { [weak self] in
             guard let self else { return }
+            var failure: String? = nil
             do {
-                let partCmd = "partition \"\(targetPartition.esc)\""
-                _ = try self.socket.command(partCmd)
+                // Disable before moving so moveoutput never operates on an open,
+                // actively-rendering output — avoids the MPD server deadlock.
+                if wasEnabled {
+                    _ = try self.socket.command("disableoutput \(id)")
+                    Thread.sleep(forTimeInterval: 0.1)
+                }
+                _ = try self.socket.command("partition \"\(targetPartition.esc)\"")
                 Thread.sleep(forTimeInterval: 0.1)
-                
-                let moveCmd = "moveoutput \"\(outputName.esc)\""
-                _ = try self.socket.command(moveCmd)
-                
-                if !originalPartition.isEmpty {
-                    _ = try? self.socket.command("partition \"\(originalPartition.esc)\"")
+                _ = try self.socket.command("moveoutput \"\(outputName.esc)\"")
+                // Re-enable in the target partition so the move is seamless.
+                // Locate the new outputid by name (MPD may assign a fresh id after move).
+                if wasEnabled {
+                    let recs = (try? self.socket.command("outputs")) ?? []
+                    if let newID = recs.first(where: {
+                        $0["outputname"] == outputName && $0["plugin"] != "dummy"
+                    })?["outputid"] {
+                        _ = try? self.socket.command("enableoutput \(newID)")
+                    }
                 }
-
-                DispatchQueue.main.async {
-                    self.outputNameToPartition[outputName] = targetPartition
-                }
+                DispatchQueue.main.async { self.outputNameToPartition[outputName] = targetPartition }
             } catch {
-                if !originalPartition.isEmpty {
-                    _ = try? self.socket.command("partition \"\(originalPartition.esc)\"")
-                }
+                failure = Self.ackMessage(error.localizedDescription)
             }
-            Thread.sleep(forTimeInterval: 0.2)
+            if !originalPartition.isEmpty {
+                _ = try? self.socket.command("partition \"\(originalPartition.esc)\"")
+            }
+            Thread.sleep(forTimeInterval: 0.1)
             DispatchQueue.main.async {
+                self.isMovingOutput = false
                 self.loadOutputs()
+                completion(failure)
             }
         }
     }
