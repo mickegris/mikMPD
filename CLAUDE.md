@@ -8,11 +8,16 @@ Open `mikMPD.xcodeproj` and build the `mikMPD` scheme. No external dependencies 
 
 Deployment target: iOS 26.2+. Swift 6 language mode with default actor isolation set to `MainActor` in build settings — data-race violations are compile errors. `MPDSocket` is `nonisolated` and `@unchecked Sendable` under the invariant that all access after init happens on the store's serial queue `Q`; pure value types and helpers are `nonisolated`; completion callbacks that cross the socket queue are `@MainActor`.
 
+**Adding source files**: `mikMPD/mikMPD/` is an Xcode synchronized group — write `.swift` files directly to that directory on disk and Xcode picks them up automatically. Do not use `XcodeWrite` or manually add file references in the project navigator.
+
 ## Tests
 
-Unit tests use the Swift Testing framework (`mikMPDTests` target). Run via **Product → Test** (Cmd+U) in Xcode.
+Unit tests use the Swift Testing framework (`mikMPDTests` target).
 
-Tests cover pure logic that doesn't need an MPD server: model init/computed properties, `formatTime`, `String.esc`, `Double.clamped`, `parseMPDRecords` (MPD protocol record parsing), `parseGroupedValues` (grouped `list` responses), `SavedStation`/`MPDServerProfile` Codable roundtrips, `parseStreamURL` validation, `artCacheKey`, `sourceKind` detection, `mpdMoveTarget` (onMove index conversion), `ackMessage` (ACK prefix stripping), playlist name validation and position assignment, discovery host formatting, Wikipedia album-match validation, multi-disc/album-identity handling (`albumBaseAndDisc` marker parsing, `groupAlbumVariants` incl. the artist-aware overload, `sortedByDiscAndTrack`, `dedupedAlbumTracks`), Snapcast model decoding (`decodeSnapGroups`, `decodeSnapStreams`, `SnapClient` latency/name/volume parsing), Snapcast wire helpers (`snapcastRequestData`, `snapcastFindResponse`, command payload shapes for all RPC methods), `MPDServerProfile` Codable back-compat (snapcastHost/Port defaults on legacy JSON), `relativeDay`, `recentAlbumGroups` (dedup, disc collapse, artist-aware). One integration-style regression test (`PhoneStreamTests`) starts a phone stream and pumps the run loop to catch actor-isolation traps in SDK callbacks.
+- **Run all**: **Product → Test** (Cmd+U)
+- **Run a single test**: click the diamond button in the gutter next to the test function, or right-click it in the Test Navigator and choose **Run**.
+
+Tests cover pure logic that doesn't need an MPD server: MPD protocol parsing (`parseMPDRecords`, `parseGroupedValues`), all model helpers and computed properties, Codable roundtrips, album/disc grouping, Snapcast model decoding and wire helpers, Wikipedia/MusicBrainz match logic, recently-played derivation, and Bonjour host formatting. One integration-style regression test (`PhoneStreamTests`) pumps the run loop to catch actor-isolation traps in SDK callbacks.
 
 `parseMPDRecords` is an internal free function extracted from `MPDSocket` specifically for testability.
 
@@ -34,8 +39,9 @@ This is an MPD (Music Player Daemon) client for iOS/iPadOS.
 
 ### Dual-timer design
 
-- **Poll timer (1s)**: fetches ground truth from MPD (`status`, `currentsong`, `outputs`).
-- **Display timer (0.1s)**: smoothly advances `elapsed` during playback without waiting for the next poll.
+- **Poll timer**: fetches ground truth from MPD (`status`, `outputs`, and `currentsong` only when `songid` changed). Runs at 1s while playing, throttled to 3s while paused/stopped (`setPollingInterval`) to cut connections and main-thread dispatches.
+- **Display timer (0.1s)**: smoothly advances `elapsed` during playback without waiting for the next poll. Stopped entirely while paused/stopped (`setDisplayTimerActive`) for zero CPU wakes, restarted on resume.
+- `elapsed` is only reassigned on poll when the value actually changed, and `currentsong` is skipped when `songid` is unchanged from `lastSongID` (cached in `lastSong`) — both avoid redundant `@Published` churn during steady-state playback/pause.
 
 ### Optimistic UI with locking
 

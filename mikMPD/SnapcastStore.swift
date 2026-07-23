@@ -109,9 +109,17 @@ final class SnapcastStore: ObservableObject {
     func setGroupStream(groupID: String, streamID: String) {
         applyGroupStream(groupID: groupID, streamID: streamID)
         let sock = socket
-        Q.async {
-            _ = try? sock.request(method: "Group.SetStream",
-                                  params: ["id": groupID, "stream_id": streamID])
+        Q.async { [weak self] in
+            do {
+                _ = try sock.request(method: "Group.SetStream",
+                                     params: ["id": groupID, "stream_id": streamID])
+            } catch {
+                let msg = error.localizedDescription
+                DispatchQueue.main.async {
+                    self?.connectionError = "Set stream failed: \(msg)"
+                    self?.refreshStatus()
+                }
+            }
         }
     }
 

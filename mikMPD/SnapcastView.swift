@@ -118,23 +118,21 @@ struct SnapcastView: View {
     private func groupSection(_ group: SnapGroup) -> some View {
         let visibleClients = group.clients.filter { showDisconnected || $0.connected }
         Section {
-            // Stream picker — only shown when multiple streams exist.
-            // Guard selection so it always matches a tag (avoids "invalid selection" warning
-            // during transient states where group.streamID isn't yet in snap.streams).
+            // Stream selector — only shown when multiple streams exist.
+            // Uses Menu+Button instead of Picker so each option is a discrete committing tap.
             let streams = snap.streams
             if streams.count > 1 {
-                let currentID = group.streamID
-                let safeID = streams.contains(where: { $0.id == currentID })
-                    ? currentID : (streams.first?.id ?? currentID)
-                Picker(selection: Binding(
-                    get: { safeID },
-                    set: { snap.setGroupStream(groupID: group.id, streamID: $0) }
-                ), label: Label("Stream", systemImage: "music.note")) {
-                    ForEach(streams) { stream in
-                        Text(stream.id).tag(stream.id)
+                Menu {
+                    ForEach(streams) { s in
+                        Button {
+                            snap.setGroupStream(groupID: group.id, streamID: s.id)
+                        } label: {
+                            Label(s.id, systemImage: group.streamID == s.id ? "checkmark" : "music.note")
+                        }
                     }
+                } label: {
+                    LabeledContent("Stream", value: group.streamID)
                 }
-                .pickerStyle(.menu)
             }
 
             // Group mute row
