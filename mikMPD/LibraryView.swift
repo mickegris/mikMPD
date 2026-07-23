@@ -82,9 +82,14 @@ struct AlbumListView: View {
         }
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
-                Menu { Picker("Sort", selection: $albumSort) {
-                    ForEach(AlbumSort.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                }} label: { Image(systemName: "arrow.up.arrow.down") }
+                Menu {
+                    ForEach(AlbumSort.allCases, id: \.self) { sort in
+                        Button { albumSort = sort } label: {
+                            if albumSort == sort { Label(sort.rawValue, systemImage: "checkmark") }
+                            else { Text(sort.rawValue) }
+                        }
+                    }
+                } label: { Image(systemName: "arrow.up.arrow.down") }
             }
         }
         .onAppear{ guard albums.isEmpty else{return}; store.listAlbumsByArtist{albums=$0;loading=false} }
@@ -264,9 +269,14 @@ struct ArtistListView: View {
         }
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
-                Menu { Picker("Sort", selection: $artistSort) {
-                    ForEach(ArtistSort.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                }} label: { Image(systemName: "arrow.up.arrow.down") }
+                Menu {
+                    ForEach(ArtistSort.allCases, id: \.self) { sort in
+                        Button { artistSort = sort } label: {
+                            if artistSort == sort { Label(sort.rawValue, systemImage: "checkmark") }
+                            else { Text(sort.rawValue) }
+                        }
+                    }
+                } label: { Image(systemName: "arrow.up.arrow.down") }
             }
         }
         .onAppear{ guard artists.isEmpty else{return}; store.listTag("artist"){artists=$0;loading=false} }
