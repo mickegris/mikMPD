@@ -45,7 +45,6 @@ nonisolated final class SnapcastSocket: @unchecked Sendable {
     func connect(host: String, port: Int) throws {
         disconnect()    // clears state; safe to call before we have a new fd
 
-        // Store fd immediately so disconnect() can cancel a slow connect
         let s = try openTCP(host: host, port: port)
         let gen: Int
         stateLock.lock()
@@ -61,12 +60,11 @@ nonisolated final class SnapcastSocket: @unchecked Sendable {
     /// Thread-safe: unblocks any in-progress request and stops the reader Thread.
     func disconnect() {
         stateLock.lock()
-        let wasCon = _connected
         _connected = false
         let oldFD = _fd; _fd = -1
         stateLock.unlock()
 
-        if wasCon && oldFD >= 0 {
+        if oldFD >= 0 {
             // shutdown() unblocks recv() in the reader Thread immediately
             Darwin.shutdown(oldFD, SHUT_RDWR)
             Darwin.close(oldFD)

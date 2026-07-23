@@ -57,6 +57,9 @@ struct SnapcastView: View {
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { snap.connect(host: snapHost, port: snapPort) }
         .onDisappear { snap.disconnect() }
+        .onChange(of: store.activeServerID) { _, _ in
+            snap.connect(host: snapHost, port: snapPort)
+        }
         .onChange(of: snap.groups) { _, newGroups in
             for group in newGroups {
                 for client in group.clients where !snap.draggingClients.contains(client.id) {
@@ -196,51 +199,53 @@ struct SnapcastView: View {
         }
         .opacity(isDimmed ? 0.4 : 1)
         .contextMenu {
-            Button {
-                snap.setVolume(clientID: client.id, percent: 100, muted: false)
-                localVolumes[client.id] = 100
-            } label: { Label("Set to Full Volume", systemImage: "speaker.wave.3.fill") }
+            Section {
+                Button {
+                    snap.setVolume(clientID: client.id, percent: 100, muted: false)
+                    localVolumes[client.id] = 100
+                } label: { Label("Set to Full Volume", systemImage: "speaker.wave.3.fill") }
 
-            Button {
-                snap.setVolume(clientID: client.id,
-                               percent: client.volume.percent,
-                               muted: !client.volume.muted)
-            } label: {
-                Label(client.volume.muted ? "Unmute" : "Mute",
-                      systemImage: client.volume.muted ? "speaker.fill" : "speaker.slash.fill")
+                Button {
+                    snap.setVolume(clientID: client.id,
+                                   percent: client.volume.percent,
+                                   muted: !client.volume.muted)
+                } label: {
+                    Label(client.volume.muted ? "Unmute" : "Mute",
+                          systemImage: client.volume.muted ? "speaker.fill" : "speaker.slash.fill")
+                }
             }
 
-            Divider()
+            Section {
+                Button {
+                    renameText = client.displayName
+                    renameClientID = client.id
+                } label: { Label("Rename…", systemImage: "pencil") }
 
-            Button {
-                renameText = client.displayName
-                renameClientID = client.id
-            } label: { Label("Rename…", systemImage: "pencil") }
+                Button {
+                    latencyText = "\(client.latency)"
+                    latencyClientID = client.id
+                } label: { Label("Set Latency…", systemImage: "timer") }
 
-            Button {
-                latencyText = "\(client.latency)"
-                latencyClientID = client.id
-            } label: { Label("Set Latency…", systemImage: "timer") }
-
-            let otherGroups = snap.groups.filter { $0.id != group.id }
-            if !otherGroups.isEmpty {
-                Divider()
-                Menu("Move to Group") {
-                    ForEach(otherGroups) { otherGroup in
-                        Button(otherGroup.displayName) {
-                            snap.moveClient(clientID: client.id,
-                                            fromGroupID: group.id,
-                                            toGroupID: otherGroup.id)
+                let otherGroups = snap.groups.filter { $0.id != group.id }
+                if !otherGroups.isEmpty {
+                    Menu("Move to Group") {
+                        ForEach(otherGroups) { otherGroup in
+                            Button(otherGroup.displayName) {
+                                snap.moveClient(clientID: client.id,
+                                                fromGroupID: group.id,
+                                                toGroupID: otherGroup.id)
+                            }
                         }
                     }
                 }
             }
 
             if !client.connected {
-                Divider()
-                Button(role: .destructive) {
-                    snap.deleteClient(clientID: client.id)
-                } label: { Label("Remove from Server", systemImage: "trash") }
+                Section {
+                    Button(role: .destructive) {
+                        snap.deleteClient(clientID: client.id)
+                    } label: { Label("Remove from Server", systemImage: "trash") }
+                }
             }
         }
     }

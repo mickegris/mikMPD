@@ -138,7 +138,7 @@ final class SnapcastStore: ObservableObject {
         }
 
         let sock = socket
-        Q.async {
+        Q.async { [srcIDs, dstIDs] in
             _ = try? sock.request(method: "Group.SetClients",
                                   params: ["id": fromGroupID, "clients": srcIDs])
             _ = try? sock.request(method: "Group.SetClients",
@@ -207,6 +207,7 @@ final class SnapcastStore: ObservableObject {
     // MARK: - Private helpers
 
     private func startPollTimer() {
+        pollTimer?.cancel()
         let t = DispatchSource.makeTimerSource(queue: Q)
         t.schedule(deadline: .now(), repeating: 2)
         t.setEventHandler { @Sendable [weak self] in self?.poll() }
