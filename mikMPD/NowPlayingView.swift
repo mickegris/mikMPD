@@ -229,8 +229,7 @@ struct NowPlayingView: View {
                     List {
                         ForEach(store.queue) { qSong in
                             QueueRow(song: qSong, isCurrent: qSong.pos == store.playlistPos)
-                                .contentShape(Rectangle())
-                                .onTapGesture { store.play(at: qSong.pos) }
+                                .playableRow{ store.play(at: qSong.pos) }
                                 .listRowBackground(qSong.pos == store.playlistPos
                                     ? Color.accentColor.opacity(0.12) : Color.clear)
                                 .id(qSong.pos)
@@ -600,11 +599,13 @@ struct RecentlyPlayedSheet: View {
                     }
                 }
                 Spacer()
+                if entry.file == store.currentSong.file {
+                    Image(systemName: "speaker.wave.2.fill").font(.caption2).foregroundStyle(.tint)
+                }
                 Text(relativeDay(entry.playedAt))
                     .font(.caption2).foregroundStyle(.secondary)
             }
-            .contentShape(Rectangle())
-            .onTapGesture { store.addAndPlay(uri: entry.file) }
+            .playableRow{ store.addAndPlay(uri: entry.file) }
             .swipeActions(edge: .trailing) {
                 Button { store.add(uri: entry.file) } label: {
                     Label("Add", systemImage: "plus")

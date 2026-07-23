@@ -192,7 +192,8 @@ struct AlbumDetailView: View {
     @ViewBuilder
     func trackRows(_ list:[MPDSong]) -> some View {
         ForEach(list){ s in
-            SongRow(song:s).contentShape(Rectangle()).onTapGesture{ store.addAndPlay(uri:s.file) }
+            SongRow(song:s, isCurrentlyPlaying: s.file == store.currentSong.file)
+                .playableRow{ store.addAndPlay(uri:s.file) }
                 .swipeActions(edge:.trailing){ Button{store.add(uri:s.file)} label:{Label("Add",systemImage:"plus")}.tint(.green) }
                 .swipeActions(edge:.leading){ Button{addRequest=AddToPlaylistRequest(uris:[s.file])} label:{Label("Playlist",systemImage:"music.note.list")}.tint(.indigo) }
         }
@@ -545,8 +546,43 @@ struct CDView: View {
 }
 
 // MARK: - Shared helpers
+
+enum Haptics {
+    static func tap() { UIImpactFeedbackGenerator(style: .light).impactOccurred() }
+}
+
+private struct PlayableRowModifier: ViewModifier {
+    let action: () -> Void
+    @State private var flashing = false
+    func body(content: Content) -> some View {
+        content
+            .contentShape(Rectangle())
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color.accentColor.opacity(flashing ? 0.25 : 0))
+                    .animation(.easeOut(duration: 0.35), value: flashing)
+            )
+            .onTapGesture {
+                Haptics.tap()
+                action()
+                flashing = true
+                Task {
+                    try? await Task.sleep(for: .milliseconds(350))
+                    flashing = false
+                }
+            }
+    }
+}
+
+extension View {
+    func playableRow(action: @escaping () -> Void) -> some View {
+        modifier(PlayableRowModifier(action: action))
+    }
+}
+
 struct SongRow: View {
-    let song:MPDSong
+    let song: MPDSong
+    var isCurrentlyPlaying: Bool = false
     var body: some View {
         HStack(spacing:10){
             if !song.track.isEmpty { Text(song.track.components(separatedBy:"/").first ?? song.track).font(.caption2).foregroundStyle(.secondary).frame(minWidth:24,alignment:.trailing) }
@@ -555,6 +591,9 @@ struct SongRow: View {
                 if !song.artist.isEmpty { Text(song.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
             }
             Spacer()
+            if isCurrentlyPlaying {
+                Image(systemName: "speaker.wave.2.fill").font(.caption2).foregroundStyle(.tint)
+            }
             Text(formatTime(song.duration)).font(.caption2).foregroundStyle(.secondary)
         }.padding(.vertical,2)
     }

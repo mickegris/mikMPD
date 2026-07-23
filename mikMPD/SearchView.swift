@@ -9,6 +9,7 @@ struct SearchView: View {
     @State private var isSearching = false
     @State private var searchTask: Task<Void, Never>?
     @State private var addRequest: AddToPlaylistRequest?
+    @State private var flashedSongID: String?
 
     var body: some View {
         NavigationStack {
@@ -112,11 +113,24 @@ struct SearchView: View {
             if !store.searchResults.isEmpty {
                 Section {
                     ForEach(store.searchResults) { song in
-                        SearchRow(song: song, selected: selectedSongs.contains(song.id))
+                        SearchRow(song: song, selected: selectedSongs.contains(song.id),
+                                  isCurrentlyPlaying: song.file == store.currentSong.file)
                             .contentShape(Rectangle())
+                            .background(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(Color.accentColor.opacity(flashedSongID == song.id ? 0.25 : 0))
+                                    .animation(.easeOut(duration: 0.35), value: flashedSongID == song.id)
+                            )
                             .simultaneousGesture(
                                 TapGesture(count: 2).onEnded { _ in
+                                    Haptics.tap()
                                     store.addAndPlay(uri: song.file)
+                                    let id = song.id
+                                    flashedSongID = id
+                                    Task {
+                                        try? await Task.sleep(for: .milliseconds(350))
+                                        if flashedSongID == id { flashedSongID = nil }
+                                    }
                                 }
                             )
                             .simultaneousGesture(
@@ -247,19 +261,20 @@ struct SearchView: View {
 struct SearchRow: View {
     let song: MPDSong
     let selected: Bool
-    
+    var isCurrentlyPlaying: Bool = false
+
     var body: some View {
         HStack(spacing: 10) {
             if selected {
                 Image(systemName: "checkmark.circle.fill")
                     .foregroundStyle(.tint)
             }
-            
+
             VStack(alignment: .leading, spacing: 2) {
                 Text(song.displayTitle)
                     .font(.subheadline.bold())
                     .lineLimit(1)
-                
+
                 HStack(spacing: 4) {
                     if !song.artist.isEmpty {
                         NavigationLink(destination:ArtistDetailView(artist:song.artist)){
@@ -278,9 +293,14 @@ struct SearchRow: View {
                 .font(.caption)
                 .lineLimit(1)
             }
-            
+
             Spacer()
-            
+
+            if isCurrentlyPlaying {
+                Image(systemName: "speaker.wave.2.fill")
+                    .font(.caption)
+                    .foregroundStyle(.tint)
+            }
             Text(formatTime(song.duration))
                 .font(.caption)
                 .foregroundStyle(.secondary)
