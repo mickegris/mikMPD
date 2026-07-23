@@ -8,6 +8,9 @@ struct SnapcastView: View {
     // Local slider positions — synced from snap.groups, frozen per-client while dragging.
     @State private var localVolumes: [String: Double] = [:]
 
+    // Disconnected-client visibility filter (on by default)
+    @State private var showDisconnected = true
+
     // Rename alert state
     @State private var renameClientID: String? = nil
     @State private var renameText = ""
@@ -25,6 +28,12 @@ struct SnapcastView: View {
     }
     private var snapPort: Int { activeProfile?.snapcastPort ?? 1705 }
 
+    private var visibleGroups: [SnapGroup] {
+        snap.groups.filter { group in
+            showDisconnected || group.clients.contains(where: { $0.connected })
+        }
+    }
+
     var body: some View {
         List {
             if !snap.isConnected {
@@ -39,7 +48,7 @@ struct SnapcastView: View {
                         .listRowBackground(Color.clear)
                 }
             } else {
-                ForEach(snap.groups) { group in
+                ForEach(visibleGroups) { group in
                     groupSection(group)
                 }
             }
@@ -47,7 +56,7 @@ struct SnapcastView: View {
             Section {
                 HStack {
                     Image(systemName: "network").foregroundStyle(.secondary)
-                    Text("\(snapHost):\(snapPort)")
+                    Text(verbatim: "\(snapHost):\(snapPort)")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
@@ -55,6 +64,18 @@ struct SnapcastView: View {
         .listStyle(.insetGrouped)
         .navigationTitle("Snapcast")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button {
+                    showDisconnected.toggle()
+                } label: {
+                    Image(systemName: showDisconnected
+                          ? "line.3.horizontal.decrease.circle"
+                          : "line.3.horizontal.decrease.circle.fill")
+                }
+                .help(showDisconnected ? "Hide disconnected clients" : "Show all clients")
+            }
+        }
         .onAppear { snap.connect(host: snapHost, port: snapPort) }
         .onDisappear { snap.disconnect() }
         .onChange(of: store.activeServerID) { _, _ in
@@ -104,14 +125,21 @@ struct SnapcastView: View {
 
     @ViewBuilder
     private func groupSection(_ group: SnapGroup) -> some View {
+        let visibleClients = group.clients.filter { showDisconnected || $0.connected }
         Section {
-            // Stream picker — only shown when multiple streams exist
-            if snap.streams.count > 1 {
+            // Stream picker — only shown when multiple streams exist.
+            // Guard selection so it always matches a tag (avoids "invalid selection" warning
+            // during transient states where group.streamID isn't yet in snap.streams).
+            let streams = snap.streams
+            if streams.count > 1 {
+                let currentID = group.streamID
+                let safeID = streams.contains(where: { $0.id == currentID })
+                    ? currentID : (streams.first?.id ?? currentID)
                 Picker(selection: Binding(
-                    get: { group.streamID },
+                    get: { safeID },
                     set: { snap.setGroupStream(groupID: group.id, streamID: $0) }
                 ), label: Label("Stream", systemImage: "music.note")) {
-                    ForEach(snap.streams) { stream in
+                    ForEach(streams) { stream in
                         Text(stream.id).tag(stream.id)
                     }
                 }
@@ -132,7 +160,7 @@ struct SnapcastView: View {
                 .labelsHidden()
             }
 
-            ForEach(group.clients) { client in
+            ForEach(visibleClients) { client in
                 clientRow(client, group: group)
                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                         if !client.connected {
@@ -147,8 +175,13 @@ struct SnapcastView: View {
         } header: {
             Text(group.displayName)
         } footer: {
-            Text("Long press a client for options · Swipe left to remove disconnected clients")
-                .font(.caption2)
+            if showDisconnected {
+                Text("Long press a client for options · Swipe left to remove disconnected clients")
+                    .font(.caption2)
+            } else {
+                Text("Long press a client for options")
+                    .font(.caption2)
+            }
         }
     }
 

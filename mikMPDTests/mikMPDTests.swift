@@ -1467,6 +1467,16 @@ nonisolated(unsafe) private let snapStatusFixture: [String: Any] = [
         #expect(decodeSnapGroups(from: ["server": [:]]).isEmpty)
     }
 
+    // Server.GetStatus returns {"server": {groups:[], streams:[]}}; poll() unwraps ["server"]
+    // before calling decode functions. This test guards against the regression where poll()
+    // passed the outer wrapper directly, causing decodeSnapGroups to always return [].
+    @Test func decodingFromWrappedGetStatusResult() {
+        let outerResult: Any = ["server": snapStatusFixture]
+        let serverObj = (outerResult as? [String: Any])?["server"] ?? outerResult
+        #expect(decodeSnapGroups(from: serverObj).count == 1)
+        #expect(decodeSnapStreams(from: serverObj).count == 2)
+    }
+
     @Test func groupDisplayNameFallsBackToStreamID() {
         let json: [String: Any] = ["groups": [
             ["id": "g1", "name": "", "muted": false, "stream_id": "stream1", "clients": []]

@@ -219,8 +219,10 @@ final class SnapcastStore: ObservableObject {
         guard socket.connected else { return }
         do {
             let result    = try socket.request(method: "Server.GetStatus")
-            let newGroups = decodeSnapGroups(from: result)
-            let newStreams = decodeSnapStreams(from: result)
+            // Server.GetStatus result is {server: {groups:[], streams:[]}}; unwrap the inner object.
+            let serverObj = (result as? [String: Any])?["server"] ?? result
+            let newGroups = decodeSnapGroups(from: serverObj)
+            let newStreams = decodeSnapStreams(from: serverObj)
             DispatchQueue.main.async { [weak self] in
                 self?.mergeGroups(newGroups)
                 self?.streams = newStreams
@@ -242,8 +244,9 @@ final class SnapcastStore: ObservableObject {
         Q.async {
             guard sock.connected,
                   let result = try? sock.request(method: "Server.GetStatus") else { return }
-            let newGroups = decodeSnapGroups(from: result)
-            let newStreams = decodeSnapStreams(from: result)
+            let serverObj = (result as? [String: Any])?["server"] ?? result
+            let newGroups = decodeSnapGroups(from: serverObj)
+            let newStreams = decodeSnapStreams(from: serverObj)
             DispatchQueue.main.async { [weak self] in
                 self?.mergeGroups(newGroups)
                 self?.streams = newStreams
