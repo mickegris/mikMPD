@@ -122,6 +122,57 @@ nonisolated func groupAlbumVariants(_ pairs: [(artist: String, album: String)]) 
     return order.map { groups[$0]! }
 }
 
+// MARK: - Library sort options
+
+enum AlbumSort: String, CaseIterable {
+    case artistAsc  = "Artist A–Z"
+    case albumAsc   = "Album A–Z"
+    case artistDesc = "Artist Z–A"
+    case albumDesc  = "Album Z–A"
+}
+
+enum ArtistSort: String, CaseIterable {
+    case az = "A–Z"
+    case za = "Z–A"
+}
+
+/// Sort a grouped album list. Empty artist/base always sort last regardless of direction.
+nonisolated func sortedAlbumGroups(_ groups: [AlbumGroup], by sort: AlbumSort) -> [AlbumGroup] {
+    groups.sorted { a, b in
+        if a.artist.isEmpty != b.artist.isEmpty { return !a.artist.isEmpty }
+        if a.base.isEmpty   != b.base.isEmpty   { return !a.base.isEmpty }
+        switch sort {
+        case .artistAsc:
+            let c = a.artist.localizedCaseInsensitiveCompare(b.artist)
+            if c != .orderedSame { return c == .orderedAscending }
+            return a.base.localizedCaseInsensitiveCompare(b.base) == .orderedAscending
+        case .albumAsc:
+            let c = a.base.localizedCaseInsensitiveCompare(b.base)
+            if c != .orderedSame { return c == .orderedAscending }
+            return a.artist.localizedCaseInsensitiveCompare(b.artist) == .orderedAscending
+        case .artistDesc:
+            let c = a.artist.localizedCaseInsensitiveCompare(b.artist)
+            if c != .orderedSame { return c == .orderedDescending }
+            return a.base.localizedCaseInsensitiveCompare(b.base) == .orderedDescending
+        case .albumDesc:
+            let c = a.base.localizedCaseInsensitiveCompare(b.base)
+            if c != .orderedSame { return c == .orderedDescending }
+            return a.artist.localizedCaseInsensitiveCompare(b.artist) == .orderedDescending
+        }
+    }
+}
+
+/// Sort an artist list. Empty strings always sort last.
+nonisolated func sortedArtists(_ artists: [String], by sort: ArtistSort) -> [String] {
+    artists.sorted { a, b in
+        if a.isEmpty != b.isEmpty { return !a.isEmpty }
+        switch sort {
+        case .az: return a.localizedCaseInsensitiveCompare(b) == .orderedAscending
+        case .za: return a.localizedCaseInsensitiveCompare(b) == .orderedDescending
+        }
+    }
+}
+
 /// Album track order: disc first (tag or album-suffix derived), then track number.
 nonisolated func sortedByDiscAndTrack(_ songs: [MPDSong]) -> [MPDSong] {
     songs.sorted { ($0.effectiveDisc, $0.trackNumber) < ($1.effectiveDisc, $1.trackNumber) }

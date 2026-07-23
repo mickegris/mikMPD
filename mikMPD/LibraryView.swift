@@ -65,6 +65,7 @@ struct LibraryView: View {
 struct AlbumListView: View {
     @EnvironmentObject var store: MPDStore
     @State private var albums:[(artist: String, album: String)]=[];@State private var loading=true;@State private var filter=""
+    @AppStorage("librarySortAlbums") private var albumSort: AlbumSort = .artistAsc
     var shown:[(artist: String, album: String)]{
         filter.isEmpty ? albums : albums.filter{
             $0.album.localizedCaseInsensitiveContains(filter) || $0.artist.localizedCaseInsensitiveContains(filter)
@@ -74,9 +75,16 @@ struct AlbumListView: View {
         Group {
             if loading { ProgressView().frame(maxWidth:.infinity,maxHeight:.infinity) }
             else {
-                List(groupAlbumVariants(shown)){ g in
+                List(sortedAlbumGroups(groupAlbumVariants(shown), by: albumSort)){ g in
                     AlbumGroupRow(group: g)
                 }.listStyle(.plain).searchable(text:$filter,prompt:"Filter albums…")
+            }
+        }
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Menu { Picker("Sort", selection: $albumSort) {
+                    ForEach(AlbumSort.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                }} label: { Image(systemName: "arrow.up.arrow.down") }
             }
         }
         .onAppear{ guard albums.isEmpty else{return}; store.listAlbumsByArtist{albums=$0;loading=false} }
@@ -237,7 +245,11 @@ struct AlbumDetailView: View {
 struct ArtistListView: View {
     @EnvironmentObject var store: MPDStore
     @State private var artists:[String]=[];@State private var loading=true;@State private var filter=""
-    var shown:[String]{ filter.isEmpty ? artists : artists.filter{$0.localizedCaseInsensitiveContains(filter)} }
+    @AppStorage("librarySortArtists") private var artistSort: ArtistSort = .az
+    var shown:[String]{
+        let filtered = filter.isEmpty ? artists : artists.filter{$0.localizedCaseInsensitiveContains(filter)}
+        return sortedArtists(filtered, by: artistSort)
+    }
     var body: some View {
         Group {
             if loading { ProgressView().frame(maxWidth:.infinity,maxHeight:.infinity) }
@@ -247,6 +259,13 @@ struct ArtistListView: View {
                         Label(a.isEmpty ? "(unknown)" : a, systemImage:"person").lineLimit(2)
                     }
                 }.listStyle(.plain).searchable(text:$filter,prompt:"Filter artists…")
+            }
+        }
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Menu { Picker("Sort", selection: $artistSort) {
+                    ForEach(ArtistSort.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                }} label: { Image(systemName: "arrow.up.arrow.down") }
             }
         }
         .onAppear{ guard artists.isEmpty else{return}; store.listTag("artist"){artists=$0;loading=false} }

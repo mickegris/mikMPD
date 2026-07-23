@@ -1716,3 +1716,68 @@ nonisolated(unsafe) private let snapStatusFixture: [String: Any] = [
         #expect((p?["clients"] as? [String]) == clients)
     }
 }
+
+// MARK: - Library sorting
+
+@Suite struct LibrarySortTests {
+    private func g(artist: String, base: String) -> AlbumGroup {
+        AlbumGroup(artist: artist, base: base, variants: [base])
+    }
+
+    @Test func albumsByArtistAsc() {
+        let sorted = sortedAlbumGroups([g(artist: "Zzz", base: "A"), g(artist: "Aaa", base: "B")], by: .artistAsc)
+        #expect(sorted.map(\.artist) == ["Aaa", "Zzz"])
+    }
+
+    @Test func albumsByAlbumAsc() {
+        let sorted = sortedAlbumGroups([g(artist: "B", base: "Zoo"), g(artist: "A", base: "Alpha")], by: .albumAsc)
+        #expect(sorted.map(\.base) == ["Alpha", "Zoo"])
+    }
+
+    @Test func albumsByArtistDesc() {
+        let sorted = sortedAlbumGroups([g(artist: "Aaa", base: "X"), g(artist: "Zzz", base: "Y")], by: .artistDesc)
+        #expect(sorted.map(\.artist) == ["Zzz", "Aaa"])
+    }
+
+    @Test func albumsByAlbumDesc() {
+        let sorted = sortedAlbumGroups([g(artist: "A", base: "Alpha"), g(artist: "B", base: "Zoo")], by: .albumDesc)
+        #expect(sorted.map(\.base) == ["Zoo", "Alpha"])
+    }
+
+    @Test func emptyArtistSortsLast() {
+        let sorted = sortedAlbumGroups([g(artist: "", base: "Unknown"), g(artist: "Abba", base: "Gold")], by: .artistAsc)
+        #expect(sorted[0].artist == "Abba")
+        #expect(sorted[1].artist == "")
+    }
+
+    @Test func emptyBaseSortsLast() {
+        let sorted = sortedAlbumGroups([g(artist: "X", base: ""), g(artist: "X", base: "Gold")], by: .albumAsc)
+        #expect(sorted[0].base == "Gold")
+        #expect(sorted[1].base == "")
+    }
+
+    @Test func albumSortCaseInsensitive() {
+        let sorted = sortedAlbumGroups([g(artist: "B", base: "zoo"), g(artist: "B", base: "Album")], by: .albumAsc)
+        #expect(sorted.map(\.base) == ["Album", "zoo"])
+    }
+
+    @Test func artistsAZ() {
+        #expect(sortedArtists(["Zzz", "Aaa", "Mmm"], by: .az) == ["Aaa", "Mmm", "Zzz"])
+    }
+
+    @Test func artistsZA() {
+        #expect(sortedArtists(["Zzz", "Aaa", "Mmm"], by: .za) == ["Zzz", "Mmm", "Aaa"])
+    }
+
+    @Test func emptyArtistLastInList() {
+        #expect(sortedArtists(["", "Bob", "Alice"], by: .az) == ["Alice", "Bob", ""])
+    }
+
+    @Test func discVariantGroupSurvivesSorting() {
+        let groups = groupAlbumVariants([(artist: "PT", album: "Deadwing [Disc 1]"),
+                                         (artist: "PT", album: "Deadwing [Disc 2]")])
+        let sorted = sortedAlbumGroups(groups, by: .albumAsc)
+        #expect(sorted.count == 1)
+        #expect(sorted[0].variants.count == 2)
+    }
+}
