@@ -8,8 +8,8 @@ struct SnapcastView: View {
     // Local slider positions — synced from snap.groups, frozen per-client while dragging.
     @State private var localVolumes: [String: Double] = [:]
 
-    // Disconnected-client visibility filter (on by default)
-    @State private var showDisconnected = true
+    // Disconnected-client visibility filter (off by default — connected clients only)
+    @State private var showDisconnected = false
 
     // Rename alert state
     @State private var renameClientID: String? = nil
@@ -54,6 +54,9 @@ struct SnapcastView: View {
             }
 
             Section {
+                Toggle(isOn: $showDisconnected) {
+                    Label("Show disconnected clients", systemImage: "person.slash")
+                }
                 HStack {
                     Image(systemName: "network").foregroundStyle(.secondary)
                     Text(verbatim: "\(snapHost):\(snapPort)")
@@ -64,18 +67,6 @@ struct SnapcastView: View {
         .listStyle(.insetGrouped)
         .navigationTitle("Snapcast")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
-                Button {
-                    showDisconnected.toggle()
-                } label: {
-                    Image(systemName: showDisconnected
-                          ? "line.3.horizontal.decrease.circle"
-                          : "line.3.horizontal.decrease.circle.fill")
-                }
-                .help(showDisconnected ? "Hide disconnected clients" : "Show all clients")
-            }
-        }
         .onAppear { snap.connect(host: snapHost, port: snapPort) }
         .onDisappear { snap.disconnect() }
         .onChange(of: store.activeServerID) { _, _ in

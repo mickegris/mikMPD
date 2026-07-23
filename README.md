@@ -28,6 +28,8 @@ A lightweight iOS/iPadOS client for [Music Player Daemon](https://www.musicpd.or
 
 **Listen on Phone** — Stream audio from an MPD httpd output directly to the device via AVPlayer. Configure the stream URL per server, then toggle "Listen on phone" in Now Playing. Supports background playback with lock screen metadata (song title, artist, album art) and lock screen transport controls.
 
+**Snapcast** — Control a [Snapcast](https://github.com/badaix/snapcast) multiroom server from the More tab. Adjust per-client volume and latency, mute groups, move clients between groups, rename clients, switch stream sources, and remove disconnected clients. Real-time updates via Snapcast's JSON-RPC push notifications. Configure the Snapcast host/port per MPD server profile (defaults to the MPD host, port 1705).
+
 ## Requirements
 
 - iOS 26.2+
