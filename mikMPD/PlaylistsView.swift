@@ -158,9 +158,8 @@ struct PlaylistDetailView: View {
                     Text("Empty playlist").foregroundStyle(.secondary)
                 } else {
                     ForEach(songs) { s in
-                        SearchRow(song: s, selected: false)
-                            .contentShape(Rectangle())
-                            .onTapGesture { store.playPlaylist(name: name, at: s.pos) }
+                        SearchRow(song: s, selected: false, isCurrentlyPlaying: s.file == store.currentSong.file)
+                            .playableRow{ store.playPlaylist(name: name, at: s.pos) }
                             .swipeActions(edge: .leading) {
                                 Button { store.add(uri: s.file) } label: {
                                     Label("Queue", systemImage: "plus")

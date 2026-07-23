@@ -1386,3 +1386,398 @@ import Testing
         #expect(s.discNumber == 2)
     }
 }
+
+// MARK: - Snapcast tests
+
+nonisolated(unsafe) private let snapStatusFixture: [String: Any] = [
+    "groups": [
+        [
+            "id": "group-1",
+            "name": "Downstairs",
+            "muted": false,
+            "stream_id": "default",
+            "clients": [
+                [
+                    "id": "aa:bb:cc:dd:ee:ff",
+                    "connected": true,
+                    "host": ["name": "pi-living"],
+                    "config": [
+                        "name": "Living Room",
+                        "latency": 50,
+                        "volume": ["percent": 85, "muted": false]
+                    ]
+                ],
+                [
+                    "id": "11:22:33:44:55:66",
+                    "connected": false,
+                    "host": ["name": "desktop"],
+                    "config": [
+                        "name": "",     // falls back to hostName
+                        "volume": ["percent": 50, "muted": true]
+                    ]
+                ]
+            ]
+        ]
+    ],
+    "server": [:],
+    "streams": [
+        ["id": "default", "status": "playing"],
+        ["id": "optical", "status": "idle"]
+    ]
+]
+
+@Suite struct SnapcastModelTests {
+    @Test func decodeGroupsFromFixture() {
+        let groups = decodeSnapGroups(from: snapStatusFixture)
+        #expect(groups.count == 1)
+        let g = groups[0]
+        #expect(g.id == "group-1")
+        #expect(g.name == "Downstairs")
+        #expect(g.muted == false)
+        #expect(g.streamID == "default")
+        #expect(g.clients.count == 2)
+    }
+
+    @Test func connectedClientParsed() {
+        let client = decodeSnapGroups(from: snapStatusFixture)[0].clients[0]
+        #expect(client.id == "aa:bb:cc:dd:ee:ff")
+        #expect(client.connected == true)
+        #expect(client.name == "Living Room")
+        #expect(client.hostName == "pi-living")
+        #expect(client.displayName == "Living Room")   // name wins
+        #expect(client.volume.percent == 85)
+        #expect(client.volume.muted == false)
+        #expect(client.latency == 50)
+    }
+
+    @Test func clientLatencyDefaultsToZero() {
+        let client = decodeSnapGroups(from: snapStatusFixture)[0].clients[1]
+        #expect(client.latency == 0)    // no latency key in fixture for disconnected client
+    }
+
+    @Test func disconnectedClientDisplayNameFallsBackToHost() {
+        let client = decodeSnapGroups(from: snapStatusFixture)[0].clients[1]
+        #expect(client.connected == false)
+        #expect(client.name == "")
+        #expect(client.displayName == "desktop")       // hostName fallback
+        #expect(client.volume.muted == true)
+    }
+
+    @Test func emptyGroupsWhenKeyMissing() {
+        #expect(decodeSnapGroups(from: ["server": [:]]).isEmpty)
+    }
+
+    // Server.GetStatus returns {"server": {groups:[], streams:[]}}; poll() unwraps ["server"]
+    // before calling decode functions. This test guards against the regression where poll()
+    // passed the outer wrapper directly, causing decodeSnapGroups to always return [].
+    @Test func decodingFromWrappedGetStatusResult() {
+        let outerResult: Any = ["server": snapStatusFixture]
+        let serverObj = (outerResult as? [String: Any])?["server"] ?? outerResult
+        #expect(decodeSnapGroups(from: serverObj).count == 1)
+        #expect(decodeSnapStreams(from: serverObj).count == 2)
+    }
+
+    @Test func groupDisplayNameFallsBackToStreamID() {
+        let json: [String: Any] = ["groups": [
+            ["id": "g1", "name": "", "muted": false, "stream_id": "stream1", "clients": []]
+        ]]
+        let g = decodeSnapGroups(from: json)[0]
+        #expect(g.displayName == "stream1")
+    }
+}
+
+@Suite struct SnapcastWireTests {
+    @Test func requestDataIncludesMethod() throws {
+        let data = try snapcastRequestData(method: "Client.SetVolume",
+                                           params: ["id": "aa", "volume": ["percent": 80, "muted": false]],
+                                           id: 3)
+        let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        #expect(json["jsonrpc"] as? String == "2.0")
+        #expect(json["method"] as? String == "Client.SetVolume")
+        #expect(json["id"] as? Int == 3)
+        let volume = (json["params"] as? [String: Any])?["volume"] as? [String: Any]
+        #expect(volume?["percent"] as? Int == 80)
+    }
+
+    @Test func requestIDsIncrement() throws {
+        let d1 = try snapcastRequestData(method: "M", params: [:], id: 1)
+        let d2 = try snapcastRequestData(method: "M", params: [:], id: 2)
+        let j1 = try JSONSerialization.jsonObject(with: d1) as! [String: Any]
+        let j2 = try JSONSerialization.jsonObject(with: d2) as! [String: Any]
+        #expect(j1["id"] as? Int == 1)
+        #expect(j2["id"] as? Int == 2)
+    }
+
+    @Test func findResponseSkipsNotifications() {
+        let notification = #"{"jsonrpc":"2.0","method":"Client.OnVolumeChanged","params":{"id":"x","volume":{"percent":50,"muted":false}}}"#
+        let response     = #"{"jsonrpc":"2.0","id":3,"result":{"percent":80,"muted":false}}"#
+        let wrong        = #"{"jsonrpc":"2.0","id":2,"result":{}}"#
+        let lines = [notification, wrong, response]
+        let found = snapcastFindResponse(in: lines, id: 3)
+        #expect(found != nil)
+        #expect(found?["id"] as? Int == 3)
+    }
+
+    @Test func findResponseReturnsNilWhenAbsent() {
+        let notification = #"{"jsonrpc":"2.0","method":"Server.OnUpdate","params":{}}"#
+        #expect(snapcastFindResponse(in: [notification], id: 1) == nil)
+    }
+}
+
+@Suite struct SnapcastProfileCodableTests {
+    @Test func legacyProfileDecodesWithDefaults() throws {
+        let legacy = """
+        {"id":"00000000-0000-0000-0000-000000000001","name":"Home","host":"192.168.1.1","port":6600,"streamURL":"","lastPartition":""}
+        """
+        let profile = try JSONDecoder().decode(MPDServerProfile.self, from: Data(legacy.utf8))
+        #expect(profile.host == "192.168.1.1")
+        #expect(profile.snapcastHost == "")
+        #expect(profile.snapcastPort == 1705)
+    }
+
+    @Test func roundtripPreservesSnapcastFields() throws {
+        var p = MPDServerProfile(name: "Test", host: "10.0.0.1")
+        p.snapcastHost = "10.0.0.2"
+        p.snapcastPort = 1706
+        let data = try JSONEncoder().encode(p)
+        let p2 = try JSONDecoder().decode(MPDServerProfile.self, from: data)
+        #expect(p2.snapcastHost == "10.0.0.2")
+        #expect(p2.snapcastPort == 1706)
+    }
+}
+
+@Suite struct RelativeDayTests {
+    private func date(daysAgo: Int, now: Date = Date()) -> Date {
+        Calendar.current.date(byAdding: .day, value: -daysAgo, to: now)!
+    }
+
+    @Test func today() { #expect(relativeDay(date(daysAgo: 0)) == "Today") }
+    @Test func yesterday() { #expect(relativeDay(date(daysAgo: 1)) == "Yesterday") }
+    @Test func twoDaysAgo() { #expect(relativeDay(date(daysAgo: 2)) == "2 days ago") }
+    @Test func tenDaysAgo() { #expect(relativeDay(date(daysAgo: 10)) == "10 days ago") }
+    @Test func explicitNow() {
+        let now = Date()
+        let yesterday = Calendar.current.date(byAdding: .day, value: -1, to: now)!
+        #expect(relativeDay(yesterday, now: now) == "Yesterday")
+    }
+}
+
+@Suite struct RecentAlbumGroupTests {
+    private func entry(file: String = "f", title: String = "T", artist: String = "A",
+                       album: String = "X", ago: TimeInterval = 0) -> RecentlyPlayedEntry {
+        RecentlyPlayedEntry(file: file, title: title, artist: artist, album: album,
+                            playedAt: Date(timeIntervalSinceReferenceDate: 1000 - ago))
+    }
+
+    @Test func dedupesSameAlbum() {
+        let entries = [entry(title: "T1", ago: 0), entry(title: "T2", ago: 60)]
+        let result = recentAlbumGroups(entries)
+        #expect(result.count == 1)
+        #expect(result[0].album == "X")
+    }
+
+    @Test func newestEntryWins() {
+        let entries = [entry(title: "T1", ago: 0), entry(title: "T2", ago: 60)]
+        let result = recentAlbumGroups(entries)
+        // first entry in the input (newest) should be the representative
+        #expect(result[0].lastPlayed == entries[0].playedAt)
+    }
+
+    @Test func discVariantsCollapse() {
+        let entries = [entry(album: "X [Disc 1]", ago: 0), entry(album: "X [Disc 2]", ago: 60)]
+        let result = recentAlbumGroups(entries)
+        #expect(result.count == 1)
+    }
+
+    @Test func sameAlbumDifferentArtistsStaySeparate() {
+        let entries = [
+            entry(file: "f1", artist: "Artist A", album: "Hits", ago: 0),
+            entry(file: "f2", artist: "Artist B", album: "Hits", ago: 60),
+        ]
+        let result = recentAlbumGroups(entries)
+        #expect(result.count == 2)
+    }
+
+    @Test func albumlessTilesGroupByFile() {
+        let entries = [
+            entry(file: "http://radio.example.com/stream", title: "Radio", artist: "Station", album: "", ago: 0),
+            entry(file: "http://radio.example.com/stream", title: "Radio", artist: "Station", album: "", ago: 60),
+        ]
+        let result = recentAlbumGroups(entries)
+        #expect(result.count == 1)
+        #expect(result[0].albumless == true)
+        #expect(result[0].title == "Radio")
+    }
+
+    @Test func albumlessTilesPreserveTitle() {
+        let e = entry(file: "loose.flac", title: "Untitled", artist: "", album: "")
+        let result = recentAlbumGroups([e])
+        #expect(result[0].albumless == true)
+        #expect(result[0].title == "Untitled")
+    }
+
+    @Test func newestFirst() {
+        let entries = [
+            entry(file: "f1", album: "Alpha", ago: 0),
+            entry(file: "f2", album: "Beta", ago: 60),
+            entry(file: "f3", album: "Gamma", ago: 120),
+        ]
+        let result = recentAlbumGroups(entries)
+        #expect(result.map(\.album) == ["Alpha", "Beta", "Gamma"])
+    }
+
+    @Test func emptyInput() {
+        #expect(recentAlbumGroups([]).isEmpty)
+    }
+
+    @Test func idEqualsArtCacheKey() {
+        let e = entry(artist: "Artist", album: "Album")
+        let result = recentAlbumGroups([e])
+        #expect(result[0].id == artCacheKey(artist: "Artist", album: "Album"))
+    }
+}
+
+// MARK: - Snapcast stream tests
+
+@Suite struct SnapStreamTests {
+    @Test func decodeTwoStreamsFromFixture() {
+        let streams = decodeSnapStreams(from: snapStatusFixture)
+        #expect(streams.count == 2)
+        #expect(streams[0].id == "default")
+        #expect(streams[0].status == "playing")
+        #expect(streams[1].id == "optical")
+        #expect(streams[1].status == "idle")
+    }
+
+    @Test func emptyStreamsArray() {
+        let fixture: [String: Any] = ["groups": [], "streams": [], "server": [:]]
+        #expect(decodeSnapStreams(from: fixture).isEmpty)
+    }
+
+    @Test func missingStreamsKeyReturnsEmpty() {
+        #expect(decodeSnapStreams(from: ["groups": []]).isEmpty)
+    }
+
+    @Test func streamStatusDefaultsToUnknown() {
+        let fixture: [String: Any] = ["streams": [["id": "test"]]]
+        let s = decodeSnapStreams(from: fixture)
+        #expect(s[0].status == "unknown")
+    }
+}
+
+// MARK: - Snapcast command payload tests
+
+@Suite struct SnapcastCommandPayloadTests {
+    @Test func setLatencyPayload() throws {
+        let data = try snapcastRequestData(method: "Client.SetLatency",
+                                           params: ["id": "aa:bb", "latency": 100], id: 1)
+        let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        #expect(json["method"] as? String == "Client.SetLatency")
+        let p = json["params"] as? [String: Any]
+        #expect(p?["id"] as? String == "aa:bb")
+        #expect(p?["latency"] as? Int == 100)
+    }
+
+    @Test func setNamePayload() throws {
+        let data = try snapcastRequestData(method: "Client.SetName",
+                                           params: ["id": "aa:bb", "name": "Kitchen"], id: 2)
+        let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        #expect(json["method"] as? String == "Client.SetName")
+        let p = json["params"] as? [String: Any]
+        #expect(p?["name"] as? String == "Kitchen")
+    }
+
+    @Test func deleteClientPayload() throws {
+        let data = try snapcastRequestData(method: "Server.DeleteClient",
+                                           params: ["id": "aa:bb"], id: 3)
+        let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        #expect(json["method"] as? String == "Server.DeleteClient")
+        #expect((json["params"] as? [String: Any])?["id"] as? String == "aa:bb")
+    }
+
+    @Test func setGroupStreamPayload() throws {
+        let data = try snapcastRequestData(method: "Group.SetStream",
+                                           params: ["id": "group-1", "stream_id": "optical"], id: 4)
+        let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        #expect(json["method"] as? String == "Group.SetStream")
+        let p = json["params"] as? [String: Any]
+        #expect(p?["id"] as? String == "group-1")
+        #expect(p?["stream_id"] as? String == "optical")
+    }
+
+    @Test func setGroupClientsPayload() throws {
+        let clients = ["aa:bb:cc", "11:22:33"]
+        let data = try snapcastRequestData(method: "Group.SetClients",
+                                           params: ["id": "group-1", "clients": clients], id: 5)
+        let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        #expect(json["method"] as? String == "Group.SetClients")
+        let p = json["params"] as? [String: Any]
+        #expect(p?["id"] as? String == "group-1")
+        #expect((p?["clients"] as? [String]) == clients)
+    }
+}
+
+// MARK: - Library sorting
+
+@Suite struct LibrarySortTests {
+    private func g(artist: String, base: String) -> AlbumGroup {
+        AlbumGroup(artist: artist, base: base, variants: [base])
+    }
+
+    @Test func albumsByArtistAsc() {
+        let sorted = sortedAlbumGroups([g(artist: "Zzz", base: "A"), g(artist: "Aaa", base: "B")], by: .artistAsc)
+        #expect(sorted.map(\.artist) == ["Aaa", "Zzz"])
+    }
+
+    @Test func albumsByAlbumAsc() {
+        let sorted = sortedAlbumGroups([g(artist: "B", base: "Zoo"), g(artist: "A", base: "Alpha")], by: .albumAsc)
+        #expect(sorted.map(\.base) == ["Alpha", "Zoo"])
+    }
+
+    @Test func albumsByArtistDesc() {
+        let sorted = sortedAlbumGroups([g(artist: "Aaa", base: "X"), g(artist: "Zzz", base: "Y")], by: .artistDesc)
+        #expect(sorted.map(\.artist) == ["Zzz", "Aaa"])
+    }
+
+    @Test func albumsByAlbumDesc() {
+        let sorted = sortedAlbumGroups([g(artist: "A", base: "Alpha"), g(artist: "B", base: "Zoo")], by: .albumDesc)
+        #expect(sorted.map(\.base) == ["Zoo", "Alpha"])
+    }
+
+    @Test func emptyArtistSortsLast() {
+        let sorted = sortedAlbumGroups([g(artist: "", base: "Unknown"), g(artist: "Abba", base: "Gold")], by: .artistAsc)
+        #expect(sorted[0].artist == "Abba")
+        #expect(sorted[1].artist == "")
+    }
+
+    @Test func emptyBaseSortsLast() {
+        let sorted = sortedAlbumGroups([g(artist: "X", base: ""), g(artist: "X", base: "Gold")], by: .albumAsc)
+        #expect(sorted[0].base == "Gold")
+        #expect(sorted[1].base == "")
+    }
+
+    @Test func albumSortCaseInsensitive() {
+        let sorted = sortedAlbumGroups([g(artist: "B", base: "zoo"), g(artist: "B", base: "Album")], by: .albumAsc)
+        #expect(sorted.map(\.base) == ["Album", "zoo"])
+    }
+
+    @Test func artistsAZ() {
+        #expect(sortedArtists(["Zzz", "Aaa", "Mmm"], by: .az) == ["Aaa", "Mmm", "Zzz"])
+    }
+
+    @Test func artistsZA() {
+        #expect(sortedArtists(["Zzz", "Aaa", "Mmm"], by: .za) == ["Zzz", "Mmm", "Aaa"])
+    }
+
+    @Test func emptyArtistLastInList() {
+        #expect(sortedArtists(["", "Bob", "Alice"], by: .az) == ["Alice", "Bob", ""])
+    }
+
+    @Test func discVariantGroupSurvivesSorting() {
+        let groups = groupAlbumVariants([(artist: "PT", album: "Deadwing [Disc 1]"),
+                                         (artist: "PT", album: "Deadwing [Disc 2]")])
+        let sorted = sortedAlbumGroups(groups, by: .albumAsc)
+        #expect(sorted.count == 1)
+        #expect(sorted[0].variants.count == 2)
+    }
+}

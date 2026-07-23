@@ -229,8 +229,7 @@ struct NowPlayingView: View {
                     List {
                         ForEach(store.queue) { qSong in
                             QueueRow(song: qSong, isCurrent: qSong.pos == store.playlistPos)
-                                .contentShape(Rectangle())
-                                .onTapGesture { store.play(at: qSong.pos) }
+                                .playableRow{ store.play(at: qSong.pos) }
                                 .listRowBackground(qSong.pos == store.playlistPos
                                     ? Color.accentColor.opacity(0.12) : Color.clear)
                                 .id(qSong.pos)
@@ -338,6 +337,12 @@ struct NowPlayingView: View {
             if !song.album.isEmpty {
                 NavigationLink(destination: AlbumDetailView(album: song.album, artist: song.artist.isEmpty ? nil : song.artist)) {
                     MarqueeText(text: song.album, font: .caption, color: .secondary, underlined: true)
+                }
+            }
+            if let ctx = store.playbackContext {
+                NavigationLink(destination: PlaylistDetailView(name: ctx)) {
+                    Label("Playing from \(ctx)", systemImage: "music.note.list")
+                        .font(.caption2).foregroundStyle(.secondary)
                 }
             }
         }
@@ -468,12 +473,15 @@ struct ModeBtn: View {
 }
 
 /// Client-side listening history (MPD has no history command — only what
-/// played while the app was connected is captured). Tap plays, swipes add
-/// to queue or a stored playlist.
+/// played while the app was connected is captured). Albums tab: grid of album tiles;
+/// Tracks tab: per-track list with tap-to-play and swipe actions.
 struct RecentlyPlayedSheet: View {
     @EnvironmentObject var store: MPDStore
     @Environment(\.dismiss) var dismiss
     @State private var addRequest: AddToPlaylistRequest?
+    @State private var showAlbums = true
+
+    private var albums: [RecentAlbum] { recentAlbumGroups(store.recentlyPlayed) }
 
     var body: some View {
         NavigationStack {
@@ -482,48 +490,20 @@ struct RecentlyPlayedSheet: View {
                     ContentUnavailableView("Nothing Played Yet", systemImage: "clock.arrow.circlepath",
                         description: Text("Songs appear here after they've played for a while."))
                 } else {
-                    List(store.recentlyPlayed) { entry in
-                        HStack(spacing: 10) {
-                            ArtThumbByKey(artist: entry.artist, album: entry.album, size: 44).cornerRadius(4)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(entry.title).font(.subheadline).lineLimit(1)
-                                HStack(spacing: 4) {
-                                    if !entry.artist.isEmpty {
-                                        NavigationLink(destination: ArtistDetailView(artist: entry.artist)) {
-                                            Text(entry.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1).underline()
-                                        }.buttonStyle(.plain)
-                                    }
-                                    if !entry.artist.isEmpty && !entry.album.isEmpty {
-                                        Text("·").font(.caption).foregroundStyle(.secondary)
-                                    }
-                                    if !entry.album.isEmpty {
-                                        NavigationLink(destination: AlbumDetailView(album: entry.album, artist: entry.artist.isEmpty ? nil : entry.artist)) {
-                                            Text(entry.album).font(.caption).foregroundStyle(.secondary).lineLimit(1).underline()
-                                        }.buttonStyle(.plain)
-                                    }
-                                }
-                            }
-                            Spacer()
-                            Text(entry.playedAt, style: .relative)
-                                .font(.caption2).foregroundStyle(.secondary)
+                    VStack(spacing: 0) {
+                        Picker("", selection: $showAlbums) {
+                            Text("Albums").tag(true)
+                            Text("Tracks").tag(false)
                         }
-                        .contentShape(Rectangle())
-                        .onTapGesture { store.addAndPlay(uri: entry.file) }
-                        .swipeActions(edge: .trailing) {
-                            Button { store.add(uri: entry.file) } label: {
-                                Label("Add", systemImage: "plus")
-                            }.tint(.green)
-                        }
-                        .swipeActions(edge: .leading) {
-                            // CD tracks can't live in stored playlists
-                            if !entry.file.lowercased().hasPrefix("cdda") {
-                                Button { addRequest = AddToPlaylistRequest(uris: [entry.file]) } label: {
-                                    Label("Playlist", systemImage: "music.note.list")
-                                }.tint(.indigo)
-                            }
+                        .pickerStyle(.segmented)
+                        .padding([.horizontal, .top])
+
+                        if showAlbums {
+                            albumGridView
+                        } else {
+                            trackListView
                         }
                     }
-                    .listStyle(.plain)
                 }
             }
             .navigationTitle("Recently Played").navigationBarTitleDisplayMode(.inline)
@@ -539,6 +519,114 @@ struct RecentlyPlayedSheet: View {
             .sheet(item: $addRequest) { AddToPlaylistSheet(uris: $0.uris) }
         }
         .presentationDetents([.medium, .large])
+    }
+
+    private var albumGridView: some View {
+        ScrollView {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 110), spacing: 12)], spacing: 16) {
+                ForEach(albums) { ra in
+                    albumTile(ra)
+                }
+            }
+            .padding()
+            Text("Long press a tile for album options")
+                .font(.caption2).foregroundStyle(.tertiary)
+                .frame(maxWidth: .infinity)
+                .padding(.bottom, 8)
+        }
+    }
+
+    @ViewBuilder
+    private func albumTile(_ ra: RecentAlbum) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Group {
+                if ra.albumless {
+                    Button { store.addAndPlay(uri: ra.file) } label: {
+                        ArtThumbByKey(artist: ra.artist, album: ra.album, size: 110).cornerRadius(8)
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    NavigationLink(destination: AlbumDetailView(
+                        album: ra.album, artist: ra.artist.isEmpty ? nil : ra.artist)) {
+                        ArtThumbByKey(artist: ra.artist, album: ra.album, size: 110).cornerRadius(8)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            Text(ra.albumless ? ra.title : ra.album)
+                .font(.subheadline).lineLimit(2)
+            if !ra.artist.isEmpty {
+                Text(ra.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Text(relativeDay(ra.lastPlayed))
+                .font(.caption2).foregroundStyle(.secondary)
+        }
+        .contextMenu {
+            if !ra.albumless {
+                Button {
+                    store.albumSongs(album: ra.album, artist: ra.artist.isEmpty ? nil : ra.artist) { songs in
+                        store.enqueue(songs: songs, replace: true, playFirst: true)
+                    }
+                } label: { Label("Play Album", systemImage: "play.fill") }
+                Button {
+                    store.albumSongs(album: ra.album, artist: ra.artist.isEmpty ? nil : ra.artist) { songs in
+                        store.enqueue(songs: songs)
+                    }
+                } label: { Label("Add to Queue", systemImage: "plus") }
+                Button {
+                    store.albumSongs(album: ra.album, artist: ra.artist.isEmpty ? nil : ra.artist) { songs in
+                        addRequest = AddToPlaylistRequest(uris: songs.map(\.file))
+                    }
+                } label: { Label("Add to Playlist…", systemImage: "music.note.list") }
+            }
+        }
+    }
+
+    private var trackListView: some View {
+        List(store.recentlyPlayed) { entry in
+            HStack(spacing: 10) {
+                ArtThumbByKey(artist: entry.artist, album: entry.album, size: 44).cornerRadius(4)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(entry.title).font(.subheadline).lineLimit(1)
+                    HStack(spacing: 4) {
+                        if !entry.artist.isEmpty {
+                            NavigationLink(destination: ArtistDetailView(artist: entry.artist)) {
+                                Text(entry.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1).underline()
+                            }.buttonStyle(.plain)
+                        }
+                        if !entry.artist.isEmpty && !entry.album.isEmpty {
+                            Text("·").font(.caption).foregroundStyle(.secondary)
+                        }
+                        if !entry.album.isEmpty {
+                            NavigationLink(destination: AlbumDetailView(album: entry.album, artist: entry.artist.isEmpty ? nil : entry.artist)) {
+                                Text(entry.album).font(.caption).foregroundStyle(.secondary).lineLimit(1).underline()
+                            }.buttonStyle(.plain)
+                        }
+                    }
+                }
+                Spacer()
+                if entry.file == store.currentSong.file {
+                    Image(systemName: "speaker.wave.2.fill").font(.caption2).foregroundStyle(.tint)
+                }
+                Text(relativeDay(entry.playedAt))
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+            .playableRow{ store.addAndPlay(uri: entry.file) }
+            .swipeActions(edge: .trailing) {
+                Button { store.add(uri: entry.file) } label: {
+                    Label("Add", systemImage: "plus")
+                }.tint(.green)
+            }
+            .swipeActions(edge: .leading) {
+                // CD tracks can't live in stored playlists
+                if !entry.file.lowercased().hasPrefix("cdda") {
+                    Button { addRequest = AddToPlaylistRequest(uris: [entry.file]) } label: {
+                        Label("Playlist", systemImage: "music.note.list")
+                    }.tint(.indigo)
+                }
+            }
+        }
+        .listStyle(.plain)
     }
 }
 

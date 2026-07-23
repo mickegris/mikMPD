@@ -8,11 +8,16 @@ Open `mikMPD.xcodeproj` and build the `mikMPD` scheme. No external dependencies 
 
 Deployment target: iOS 26.2+. Swift 6 language mode with default actor isolation set to `MainActor` in build settings — data-race violations are compile errors. `MPDSocket` is `nonisolated` and `@unchecked Sendable` under the invariant that all access after init happens on the store's serial queue `Q`; pure value types and helpers are `nonisolated`; completion callbacks that cross the socket queue are `@MainActor`.
 
+**Adding source files**: `mikMPD/mikMPD/` is an Xcode synchronized group — write `.swift` files directly to that directory on disk and Xcode picks them up automatically. Do not use `XcodeWrite` or manually add file references in the project navigator.
+
 ## Tests
 
-Unit tests use the Swift Testing framework (`mikMPDTests` target). Run via **Product → Test** (Cmd+U) in Xcode.
+Unit tests use the Swift Testing framework (`mikMPDTests` target).
 
-Tests cover pure logic that doesn't need an MPD server: model init/computed properties, `formatTime`, `String.esc`, `Double.clamped`, `parseMPDRecords` (MPD protocol record parsing), `parseGroupedValues` (grouped `list` responses), `SavedStation`/`MPDServerProfile` Codable roundtrips, `parseStreamURL` validation, `artCacheKey`, `sourceKind` detection, `mpdMoveTarget` (onMove index conversion), `ackMessage` (ACK prefix stripping), playlist name validation and position assignment, discovery host formatting, Wikipedia album-match validation, and multi-disc/album-identity handling (`albumBaseAndDisc` marker parsing, `groupAlbumVariants` incl. the artist-aware overload, `sortedByDiscAndTrack`, `dedupedAlbumTracks`). One integration-style regression test (`PhoneStreamTests`) starts a phone stream and pumps the run loop to catch actor-isolation traps in SDK callbacks.
+- **Run all**: **Product → Test** (Cmd+U)
+- **Run a single test**: click the diamond button in the gutter next to the test function, or right-click it in the Test Navigator and choose **Run**.
+
+Tests cover pure logic that doesn't need an MPD server: MPD protocol parsing (`parseMPDRecords`, `parseGroupedValues`), all model helpers and computed properties, Codable roundtrips, album/disc grouping, Snapcast model decoding and wire helpers, Wikipedia/MusicBrainz match logic, recently-played derivation, and Bonjour host formatting. One integration-style regression test (`PhoneStreamTests`) pumps the run loop to catch actor-isolation traps in SDK callbacks.
 
 `parseMPDRecords` is an internal free function extracted from `MPDSocket` specifically for testability.
 
@@ -34,8 +39,9 @@ This is an MPD (Music Player Daemon) client for iOS/iPadOS.
 
 ### Dual-timer design
 
-- **Poll timer (1s)**: fetches ground truth from MPD (`status`, `currentsong`, `outputs`).
-- **Display timer (0.1s)**: smoothly advances `elapsed` during playback without waiting for the next poll.
+- **Poll timer**: fetches ground truth from MPD (`status`, `outputs`, and `currentsong` only when `songid` changed). Runs at 1s while playing, throttled to 3s while paused/stopped (`setPollingInterval`) to cut connections and main-thread dispatches.
+- **Display timer (0.1s)**: smoothly advances `elapsed` during playback without waiting for the next poll. Stopped entirely while paused/stopped (`setDisplayTimerActive`) for zero CPU wakes, restarted on resume.
+- `elapsed` is only reassigned on poll when the value actually changed, and `currentsong` is skipped when `songid` is unchanged from `lastSongID` (cached in `lastSong`) — both avoid redundant `@Published` churn during steady-state playback/pause.
 
 ### Optimistic UI with locking
 
@@ -67,7 +73,29 @@ Multiple server profiles (`MPDServerProfile`: name, host, port, stream URL, last
 
 ### Recently played
 
-MPD has no history command, so history is client-side: `RecentlyPlayedRecorder` (Models.swift, pure) is ticked from the poll's main-thread block and commits a song after ~30 s of accumulated wall-clock play (half-duration for short tracks; per-tick delta capped at 5 s so suspended-app gaps don't count; pause freezes the clock; a file change resets, so skips never register; repeat-one logs once per continuous play). One list per server — deliberately partition-agnostic, since the poll only observes the currently tuned partition. Stored in UserDefaults under `recentlyPlayed_<serverID>`, pruned via `prunedRecentHistory` (30 days / 100 entries) on insert and load, reloaded on `switchToServer` (which also resets the recorder), and deleted with the profile. UI: `RecentlyPlayedSheet` (NowPlayingView.swift) from the clock button in the Now Playing header.
+MPD has no history command, so history is client-side: `RecentlyPlayedRecorder` (Models.swift, pure) is ticked from the poll's main-thread block and commits a song after ~30 s of accumulated wall-clock play (half-duration for short tracks; per-tick delta capped at 5 s so suspended-app gaps don't count; pause freezes the clock; a file change resets, so skips never register; repeat-one logs once per continuous play). One list per server — deliberately partition-agnostic, since the poll only observes the currently tuned partition. Stored in UserDefaults under `recentlyPlayed_<serverID>`, pruned via `prunedRecentHistory` (30 days / 100 entries) on insert and load, reloaded on `switchToServer` (which also resets the recorder), and deleted with the profile. UI: `RecentlyPlayedSheet` (NowPlayingView.swift) from the clock button in the Now Playing header; shows an Albums/Tracks segmented picker — album tiles via `recentAlbumGroups` (pure derivation), track list below. Timestamps shown as "Today / Yesterday / N days ago" via `relativeDay`.
+
+**Scope limitation:** recording only happens while the app is active. The foreground poll (RunLoop timer) drives the recorder normally. The background `DispatchSourceTimer` on `Q` also runs — but only when phone streaming is active. Songs played on the MPD device while the app is backgrounded *without* phone streaming are never captured.
+
+### Snapcast multiroom control
+
+`SnapcastView` (More tab) connects to a Snapcast server's JSON-RPC 2.0 control port (default 1705, TCP, newline-delimited). The Snapcast host/port are per-server-profile (`snapcastHost`/`snapcastPort` on `MPDServerProfile`); host defaults to the MPD host when blank.
+
+**Transport** — `SnapcastSocket` (`nonisolated @unchecked Sendable`, same pattern as MPDSocket) owns the raw Darwin POSIX TCP socket. Access invariant: `connect()` and `request()` only from `SnapcastStore`'s serial queue `Q`; `disconnect()` is thread-safe (callable from any thread). A dedicated reader Thread (started inside `connect()`) runs continuously, reading newline-delimited JSON lines and routing them:
+- Lines with a matching `"id"` → fulfill the `DispatchSemaphore` in the waiting `request()` call on Q.
+- Lines with a `"method"` but no `"id"` → Snapcast push notifications; dispatched via `onNotification: (@Sendable (String, Data) -> Void)?` (params serialized to `Data` for Sendable compliance).
+- `disconnect()` calls `Darwin.shutdown(fd, SHUT_RDWR)` to unblock any blocking `recv()` in the reader Thread, then closes the fd and fails all pending semaphores.
+- A per-request `DispatchSemaphore` (not a loop polling lines) delivers responses; the reader Thread delivers via `pendingCallbacks: [Int: (Result<Any,Error>)->Void]` protected by `NSLock`.
+
+**State** — `SnapcastStore` (view-scoped `ObservableObject`, `@StateObject`): `@Published var groups: [SnapGroup]`, `@Published var streams: [SnapStream]`. A 2s `DispatchSourceTimer` on Q polls `Server.GetStatus` for ground-truth; notifications update state immediately between polls.
+
+**Notification handling** — `SnapcastStore.handleNotification(method:paramsData:)` runs on main actor (via `DispatchQueue.main.async`). Handled events: `Client.OnVolumeChanged` → `applyClientVolume`; `Client.OnConnect` → `refreshStatus()` (re-poll); `Client.OnDisconnect` → `applyClientConnected`; `Client.OnLatencyChanged` → `applyClientLatency`; `Client.OnNameChanged` → `applyClientName`; `Group.OnMute` → `applyGroupMute`; `Group.OnStreamChanged` → `applyGroupStream`; `Server.OnUpdate` → decode full state from params (no extra request needed).
+
+**Commands** — optimistic-then-RPC pattern (same as MPDStore): `Client.SetVolume`, `Client.SetLatency`, `Client.SetName`, `Group.SetMute`, `Group.SetStream`, `Server.DeleteClient`, `Group.SetClients` (used by `moveClient(clientID:fromGroupID:toGroupID:)` which calls SetClients on both source and destination groups).
+
+**Models** — `SnapClient` (id, connected, hostName, name, volume, latency), `SnapGroup` (id, name, muted, streamID, clients), `SnapStream` (id, status). Decoded by `decodeSnapGroups`/`decodeSnapStreams` (pure `nonisolated` functions, testable). `displayName` on clients falls back to `hostName`; on groups falls back to `streamID`.
+
+**UI** — group sections: stream picker row (shown only when `streams.count > 1`, `Picker(.menu)` calling `setGroupStream`); group mute toggle; per-client rows with connected dot, display name, latency badge ("+Xms", hidden when 0), mute button, volume slider with drag-lock. Context menu (using `Section {}` groupings for separators — `Divider()` is ignored in contextMenu on iOS): Full Volume, Mute/Unmute, Rename (alert + `setClientName`), Set Latency (alert + `setLatency`), Move to Group submenu (ForEach otherGroups → `moveClient`), Remove from Server (disconnected only → `deleteClient`). Swipe-left on disconnected clients also removes. A "Show disconnected clients" toggle at the bottom of the list (default off, state in `showDisconnected`) hides groups and clients with no connected member; groups with no visible clients are suppressed entirely. Drag-lock: `draggingClients: Set<String>` prevents the 2s poll from snapping sliders mid-drag. `decodeSnapGroups`/`decodeSnapStreams` expect the inner server object (`result["server"]`); `poll()` and `refreshStatus()` unwrap this key before decoding.
 
 ### Connection lifecycle
 

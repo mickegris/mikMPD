@@ -65,6 +65,7 @@ struct LibraryView: View {
 struct AlbumListView: View {
     @EnvironmentObject var store: MPDStore
     @State private var albums:[(artist: String, album: String)]=[];@State private var loading=true;@State private var filter=""
+    @AppStorage("librarySortAlbums") private var albumSort: AlbumSort = .artistAsc
     var shown:[(artist: String, album: String)]{
         filter.isEmpty ? albums : albums.filter{
             $0.album.localizedCaseInsensitiveContains(filter) || $0.artist.localizedCaseInsensitiveContains(filter)
@@ -74,9 +75,21 @@ struct AlbumListView: View {
         Group {
             if loading { ProgressView().frame(maxWidth:.infinity,maxHeight:.infinity) }
             else {
-                List(groupAlbumVariants(shown)){ g in
+                List(sortedAlbumGroups(groupAlbumVariants(shown), by: albumSort)){ g in
                     AlbumGroupRow(group: g)
                 }.listStyle(.plain).searchable(text:$filter,prompt:"Filter albums…")
+            }
+        }
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Menu {
+                    ForEach(AlbumSort.allCases, id: \.self) { sort in
+                        Button { albumSort = sort } label: {
+                            if albumSort == sort { Label(sort.rawValue, systemImage: "checkmark") }
+                            else { Text(sort.rawValue) }
+                        }
+                    }
+                } label: { Image(systemName: "arrow.up.arrow.down") }
             }
         }
         .onAppear{ guard albums.isEmpty else{return}; store.listAlbumsByArtist{albums=$0;loading=false} }
@@ -184,7 +197,8 @@ struct AlbumDetailView: View {
     @ViewBuilder
     func trackRows(_ list:[MPDSong]) -> some View {
         ForEach(list){ s in
-            SongRow(song:s).contentShape(Rectangle()).onTapGesture{ store.addAndPlay(uri:s.file) }
+            SongRow(song:s, isCurrentlyPlaying: s.file == store.currentSong.file)
+                .playableRow{ store.addAndPlay(uri:s.file) }
                 .swipeActions(edge:.trailing){ Button{store.add(uri:s.file)} label:{Label("Add",systemImage:"plus")}.tint(.green) }
                 .swipeActions(edge:.leading){ Button{addRequest=AddToPlaylistRequest(uris:[s.file])} label:{Label("Playlist",systemImage:"music.note.list")}.tint(.indigo) }
         }
@@ -237,7 +251,11 @@ struct AlbumDetailView: View {
 struct ArtistListView: View {
     @EnvironmentObject var store: MPDStore
     @State private var artists:[String]=[];@State private var loading=true;@State private var filter=""
-    var shown:[String]{ filter.isEmpty ? artists : artists.filter{$0.localizedCaseInsensitiveContains(filter)} }
+    @AppStorage("librarySortArtists") private var artistSort: ArtistSort = .az
+    var shown:[String]{
+        let filtered = filter.isEmpty ? artists : artists.filter{$0.localizedCaseInsensitiveContains(filter)}
+        return sortedArtists(filtered, by: artistSort)
+    }
     var body: some View {
         Group {
             if loading { ProgressView().frame(maxWidth:.infinity,maxHeight:.infinity) }
@@ -247,6 +265,18 @@ struct ArtistListView: View {
                         Label(a.isEmpty ? "(unknown)" : a, systemImage:"person").lineLimit(2)
                     }
                 }.listStyle(.plain).searchable(text:$filter,prompt:"Filter artists…")
+            }
+        }
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Menu {
+                    ForEach(ArtistSort.allCases, id: \.self) { sort in
+                        Button { artistSort = sort } label: {
+                            if artistSort == sort { Label(sort.rawValue, systemImage: "checkmark") }
+                            else { Text(sort.rawValue) }
+                        }
+                    }
+                } label: { Image(systemName: "arrow.up.arrow.down") }
             }
         }
         .onAppear{ guard artists.isEmpty else{return}; store.listTag("artist"){artists=$0;loading=false} }
@@ -526,8 +556,43 @@ struct CDView: View {
 }
 
 // MARK: - Shared helpers
+
+enum Haptics {
+    static func tap() { UIImpactFeedbackGenerator(style: .light).impactOccurred() }
+}
+
+private struct PlayableRowModifier: ViewModifier {
+    let action: () -> Void
+    @State private var flashing = false
+    func body(content: Content) -> some View {
+        content
+            .contentShape(Rectangle())
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color.accentColor.opacity(flashing ? 0.25 : 0))
+                    .animation(.easeOut(duration: 0.35), value: flashing)
+            )
+            .onTapGesture {
+                Haptics.tap()
+                action()
+                flashing = true
+                Task {
+                    try? await Task.sleep(for: .milliseconds(350))
+                    flashing = false
+                }
+            }
+    }
+}
+
+extension View {
+    func playableRow(action: @escaping () -> Void) -> some View {
+        modifier(PlayableRowModifier(action: action))
+    }
+}
+
 struct SongRow: View {
-    let song:MPDSong
+    let song: MPDSong
+    var isCurrentlyPlaying: Bool = false
     var body: some View {
         HStack(spacing:10){
             if !song.track.isEmpty { Text(song.track.components(separatedBy:"/").first ?? song.track).font(.caption2).foregroundStyle(.secondary).frame(minWidth:24,alignment:.trailing) }
@@ -536,6 +601,9 @@ struct SongRow: View {
                 if !song.artist.isEmpty { Text(song.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
             }
             Spacer()
+            if isCurrentlyPlaying {
+                Image(systemName: "speaker.wave.2.fill").font(.caption2).foregroundStyle(.tint)
+            }
             Text(formatTime(song.duration)).font(.caption2).foregroundStyle(.secondary)
         }.padding(.vertical,2)
     }

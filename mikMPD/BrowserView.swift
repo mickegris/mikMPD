@@ -34,7 +34,11 @@ struct BrowserView: View {
         }
     }
     func doubleTap(_ i: MPDBrowseItem) {
-        switch i.kind { case .directory: store.browse(i.path); case .file: store.addAndPlay(uri:i.path); case .playlist: store.loadPlaylist(i.path) }
+        switch i.kind {
+        case .directory: store.browse(i.path)
+        case .file: Haptics.tap(); store.addAndPlay(uri:i.path)
+        case .playlist: store.loadPlaylist(i.path)
+        }
     }
     func addItem(_ i: MPDBrowseItem) {
         switch i.kind { case .directory,.file: store.add(uri:i.path); case .playlist: store.loadPlaylist(i.path) }

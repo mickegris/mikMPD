@@ -52,6 +52,17 @@ struct MoreView: View {
                         Text("Outputs & Partitions")
                     }
                 }
+
+                NavigationLink {
+                    SnapcastView()
+                } label: {
+                    HStack {
+                        Image(systemName: "hifispeaker.2.fill")
+                            .foregroundColor(.accentColor)
+                            .frame(width: 28)
+                        Text("Snapcast")
+                    }
+                }
                 
                 Section("About") {
                     HStack {

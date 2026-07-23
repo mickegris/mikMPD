@@ -47,6 +47,7 @@ final class MPDStore: ObservableObject {
     @Published var partitions:     [String]        = []
     @Published var browseItems:    [MPDBrowseItem] = []
     @Published var searchResults:  [MPDSong]       = []
+    @Published var playbackContext: String?        = nil  // stored-playlist name; nil = unknown/other
     @Published var albumArtCache:  [String: UIImage] = [:]
     private var artAccessOrder: [String] = []
     private let artCacheLimit = 100
@@ -103,10 +104,13 @@ final class MPDStore: ObservableObject {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }()
-    nonisolated(unsafe) private var lastSongID = ""  // only meaningfully touched on Q (poll)
+    nonisolated(unsafe) private var lastSongID = ""   // only touched on Q (poll)
+    nonisolated(unsafe) private var lastSong   = MPDSong() // Q-side cache; skip currentsong when unchanged
+    private var currentPollInterval: TimeInterval = 1.0   // tracks active poll rate for throttle logic
     private var lyricsToken   = UUID()   // invalidates in-flight lyric fetches on song change
     private var isReconnecting = false
     private var isRestoringPartition = false
+    private var isMovingOutput = false   // prevents stacking a second move onto Q
     private var partitionToRestore: String?
 
     // Seek lock: elapsed from poll is ignored until this date passes
@@ -209,8 +213,23 @@ final class MPDStore: ObservableObject {
         if !currentPartition.isEmpty {
             partitionToRestore = currentPartition
         }
+        // Synchronous — eliminates the stale-flag race where .active fires before
+        // a deferred DispatchQueue.main.async block runs, causing connect() to be skipped.
+        isConnected = false
         Q.async { self.socket.disconnect() }
-        DispatchQueue.main.async { self.isConnected = false }
+    }
+
+    /// Called on every foreground transition. Reconnects if the socket is gone;
+    /// otherwise forces an immediate poll so elapsed/isPlaying snap to ground
+    /// truth within one frame instead of waiting up to 3 s for the next timer tick.
+    func refreshOnForeground() {
+        guard !host.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        if !isConnected {
+            connect()
+        } else {
+            seekLockUntil = .distantPast   // nothing is mid-seek on resume
+            Q.async { [weak self] in self?.poll() }
+        }
     }
 
     // MARK: - Saved servers
@@ -317,15 +336,16 @@ final class MPDStore: ObservableObject {
         searchResults = []; browseItems = []; playlists = []
         elapsed = 0; duration = 0; isPlaying = false; isPaused = false
         playlistPos = -1; bitrate = ""; audioFmt = ""; currentPartition = ""
-        lyricsState = .unavailable
+        lyricsState = .unavailable; playbackContext = nil
     }
 
     // MARK: - Timers
 
     private func startTimers() {
         stopTimers()
+        currentPollInterval = 1.0
 
-        // Poll: every 1s, fetches ground truth from MPD
+        // Poll: every 1s playing / 3s paused — adjusted by setPollingInterval() each poll cycle
         let p = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
             guard let self else { return }
             self.Q.async { self.poll() }
@@ -333,20 +353,51 @@ final class MPDStore: ObservableObject {
         RunLoop.main.add(p, forMode: .common)
         pollTimer = p
 
-        // Display: every 0.1s, smoothly advances elapsed on main thread
+        // Display timer starts running; first poll (≤1s away) calls setDisplayTimerActive
+        // to stop it immediately if MPD is paused/stopped.
         let d = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
             guard let self else { return }
-            Task { @MainActor in
-                self.tickElapsed()
-            }
+            Task { @MainActor in self.tickElapsed() }
         }
         RunLoop.main.add(d, forMode: .common)
         displayTimer = d
     }
 
     private func stopTimers() {
-        pollTimer?.invalidate(); pollTimer = nil
+        pollTimer?.invalidate();    pollTimer    = nil
         displayTimer?.invalidate(); displayTimer = nil
+        currentPollInterval = 1.0
+    }
+
+    /// Start or stop the 10 Hz display timer based on whether we are actively playing.
+    /// Stopping it eliminates 10 CPU wakes/second when paused or stopped.
+    private func setDisplayTimerActive(_ active: Bool) {
+        if active {
+            guard displayTimer == nil else { return }
+            let d = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
+                guard let self else { return }
+                Task { @MainActor in self.tickElapsed() }
+            }
+            RunLoop.main.add(d, forMode: .common)
+            displayTimer = d
+        } else {
+            displayTimer?.invalidate()
+            displayTimer = nil
+        }
+    }
+
+    /// Adjust the poll interval without restarting when rate is already correct.
+    /// Playing → 1 s; paused/stopped → 3 s.
+    private func setPollingInterval(_ interval: TimeInterval) {
+        guard currentPollInterval != interval else { return }
+        currentPollInterval = interval
+        pollTimer?.invalidate()
+        let p = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            self.Q.async { self.poll() }
+        }
+        RunLoop.main.add(p, forMode: .common)
+        pollTimer = p
     }
 
     /// GCD timer on Q that keeps polling while streaming in background.
@@ -390,11 +441,11 @@ final class MPDStore: ObservableObject {
             return
         }
         do {
-            // Two separate commands — simple and correct
+            // Fetch status first; only send currentsong when the song actually changed —
+            // saves one MPD round-trip per poll during normal playback.
             let sRecs = try socket.command("status")
-            let cRecs = try socket.command("currentsong")
 
-            // MPD returns multiple records - merge them all
+            // MPD returns multiple records — merge them all
             var s: MPDRecord = [:]
             for rec in sRecs {
                 s.merge(rec) { _, new in new }
@@ -419,13 +470,20 @@ final class MPDStore: ObservableObject {
             let con  = s["consume"] == "1"
             let curPartition = s["partition"] ?? ""
 
-            let song        = cRecs.first.map { MPDSong($0) } ?? MPDSong()
-            let songChanged = song.songID != self.lastSongID
-            if songChanged { self.lastSongID = song.songID }
+            let songChanged = sid != self.lastSongID
+            let song: MPDSong
+            if songChanged {
+                let cRecs = try socket.command("currentsong")
+                song = cRecs.first.map { MPDSong($0) } ?? MPDSong()
+                self.lastSongID = sid
+                self.lastSong   = song
+            } else {
+                song = self.lastSong
+            }
 
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
-                
+
                 // Only update play/pause state if not locked
                 if Date() >= self.stateLockUntil {
                     let newPlaying = (state == "play")
@@ -433,6 +491,11 @@ final class MPDStore: ObservableObject {
                     if self.isPlaying != newPlaying { self.isPlaying = newPlaying }
                     if self.isPaused  != newPaused  { self.isPaused  = newPaused }
                 }
+
+                // Stop 10 Hz display timer while paused/stopped; restart when playing.
+                // Throttle poll from 1s → 3s when not playing.
+                self.setDisplayTimerActive(self.isPlaying)
+                self.setPollingInterval(self.isPlaying ? 1.0 : 3.0)
 
                 // Only fire @Published setters when values actually change
                 // to avoid unnecessary SwiftUI view re-evaluations
@@ -457,8 +520,8 @@ final class MPDStore: ObservableObject {
                 if self.singleMode   != sin { self.singleMode   = sin }
                 if self.consumeMode  != con { self.consumeMode  = con }
                 if self.currentSong  != song { self.currentSong = song }
-                // Only update elapsed from poll when not seek-locked
-                if Date() >= self.seekLockUntil {
+                // Only update elapsed from poll when not seek-locked and value differs
+                if Date() >= self.seekLockUntil, self.elapsed != elapsed {
                     self.elapsed = elapsed
                 }
                 if songChanged { self.fetchArt(for: song); self.fetchLyrics(for: song) }
@@ -757,7 +820,7 @@ final class MPDStore: ObservableObject {
             _ = try? self.socket.command("add \"\(uri.esc)\"")
             _ = try? self.socket.command("play 0")
             self.poll()
-            DispatchQueue.main.async { self.loadQueue() }
+            DispatchQueue.main.async { self.playbackContext = nil; self.loadQueue() }
         }
     }
 
@@ -812,11 +875,17 @@ final class MPDStore: ObservableObject {
     // MARK: - Queue management
 
     func clearQueue() {
-        Q.async { [weak self] in _ = try? self?.socket.command("clear"); DispatchQueue.main.async { self?.loadQueue() } }
+        Q.async { [weak self] in
+            _ = try? self?.socket.command("clear")
+            DispatchQueue.main.async { self?.playbackContext = nil; self?.loadQueue() }
+        }
     }
 
     func add(uri: String) {
-        Q.async { [weak self] in _ = try? self?.socket.command("add \"\(uri.esc)\""); DispatchQueue.main.async { self?.loadQueue() } }
+        Q.async { [weak self] in
+            _ = try? self?.socket.command("add \"\(uri.esc)\"")
+            DispatchQueue.main.async { self?.playbackContext = nil; self?.loadQueue() }
+        }
     }
 
     func addAndPlay(uri: String) {
@@ -826,7 +895,7 @@ final class MPDStore: ObservableObject {
             _ = try? self.socket.command("add \"\(uri.esc)\"")
             _ = try? self.socket.command("play \(before)")
             self.poll()
-            DispatchQueue.main.async { self.loadQueue() }
+            DispatchQueue.main.async { self.playbackContext = nil; self.loadQueue() }
         }
     }
 
@@ -864,7 +933,10 @@ final class MPDStore: ObservableObject {
                 _ = try? self.socket.command("play 0")
                 self.poll()
             }
-            DispatchQueue.main.async { self.loadQueue() }
+            DispatchQueue.main.async {
+                self.playbackContext = (replace || play) ? name : nil
+                self.loadQueue()
+            }
         }
     }
 
@@ -876,7 +948,10 @@ final class MPDStore: ObservableObject {
             for s in songs { _ = try? self.socket.command("add \"\(s.file.esc)\"") }
             if playFirst || replace { _ = try? self.socket.command("play \(before)") }
             if playFirst || replace { self.poll() }
-            DispatchQueue.main.async { self.loadQueue() }
+            DispatchQueue.main.async {
+                if replace { self.playbackContext = nil }
+                self.loadQueue()
+            }
         }
     }
 
@@ -977,7 +1052,7 @@ final class MPDStore: ObservableObject {
             _ = try? self.socket.command("load \"\(name.esc)\"")
             _ = try? self.socket.command("play \(index)")
             self.poll()
-            DispatchQueue.main.async { self.loadQueue() }
+            DispatchQueue.main.async { self.playbackContext = name; self.loadQueue() }
         }
     }
 
@@ -991,41 +1066,54 @@ final class MPDStore: ObservableObject {
         }
     }
 
-    func moveOutputToCurrentPartition(_ id: String) {
-        moveOutputToPartition(id, targetPartition: currentPartition)
+    func moveOutputToCurrentPartition(_ id: String, completion: @escaping @MainActor (String?) -> Void = { _ in }) {
+        moveOutputToPartition(id, targetPartition: currentPartition, completion: completion)
     }
-    
-    func moveOutputToPartition(_ id: String, targetPartition: String) {
-        let originalPartition = currentPartition
-        
+
+    func moveOutputToPartition(_ id: String, targetPartition: String, completion: @escaping @MainActor (String?) -> Void) {
+        guard !isMovingOutput else { completion("A move is already in progress — please wait"); return }
         guard !targetPartition.isEmpty else { return }
-        guard let outputName = outputs.first(where: { $0.outputID == id })?.name else { return }
-        
+        guard let output = outputs.first(where: { $0.outputID == id }) else { return }
+        let outputName  = output.name
+        let wasEnabled  = output.enabled
+        let originalPartition = currentPartition
+        isMovingOutput = true
+
         Q.async { [weak self] in
             guard let self else { return }
+            var failure: String? = nil
             do {
-                let partCmd = "partition \"\(targetPartition.esc)\""
-                _ = try self.socket.command(partCmd)
+                // Disable before moving so moveoutput never operates on an open,
+                // actively-rendering output — avoids the MPD server deadlock.
+                if wasEnabled {
+                    _ = try self.socket.command("disableoutput \(id)")
+                    Thread.sleep(forTimeInterval: 0.1)
+                }
+                _ = try self.socket.command("partition \"\(targetPartition.esc)\"")
                 Thread.sleep(forTimeInterval: 0.1)
-                
-                let moveCmd = "moveoutput \"\(outputName.esc)\""
-                _ = try self.socket.command(moveCmd)
-                
-                if !originalPartition.isEmpty {
-                    _ = try? self.socket.command("partition \"\(originalPartition.esc)\"")
+                _ = try self.socket.command("moveoutput \"\(outputName.esc)\"")
+                // Re-enable in the target partition so the move is seamless.
+                // Locate the new outputid by name (MPD may assign a fresh id after move).
+                if wasEnabled {
+                    let recs = (try? self.socket.command("outputs")) ?? []
+                    if let newID = recs.first(where: {
+                        $0["outputname"] == outputName && $0["plugin"] != "dummy"
+                    })?["outputid"] {
+                        _ = try? self.socket.command("enableoutput \(newID)")
+                    }
                 }
-
-                DispatchQueue.main.async {
-                    self.outputNameToPartition[outputName] = targetPartition
-                }
+                DispatchQueue.main.async { self.outputNameToPartition[outputName] = targetPartition }
             } catch {
-                if !originalPartition.isEmpty {
-                    _ = try? self.socket.command("partition \"\(originalPartition.esc)\"")
-                }
+                failure = Self.ackMessage(error.localizedDescription)
             }
-            Thread.sleep(forTimeInterval: 0.2)
+            if !originalPartition.isEmpty {
+                _ = try? self.socket.command("partition \"\(originalPartition.esc)\"")
+            }
+            Thread.sleep(forTimeInterval: 0.1)
             DispatchQueue.main.async {
+                self.isMovingOutput = false
                 self.loadOutputs()
+                completion(failure)
             }
         }
     }

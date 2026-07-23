@@ -142,13 +142,15 @@ struct ServerFormView: View {
     @State private var port = "6600"
     @State private var pw = ""
     @State private var streamURL = ""
+    @State private var snapcastHost = ""
+    @State private var snapcastPort = "1705"
 
     private var isEdit: Bool { if case .edit = mode { true } else { false } }
 
     var body: some View {
         NavigationStack {
             Form {
-                Section("MPD Server") {
+                Section {
                     LabeledContent("Name") {
                         TextField("Living room", text: $name)
                             .multilineTextAlignment(.trailing)
@@ -165,15 +167,32 @@ struct ServerFormView: View {
                     LabeledContent("Password") {
                         SecureField("optional", text: $pw).multilineTextAlignment(.trailing)
                     }
+                } header: {
+                    Text("MPD Server")
+                } footer: {
+                    Text("Required. Host and port must be filled in to connect.")
                 }
-                Section("Phone Streaming") {
+                Section("Phone Streaming (Optional)") {
                     LabeledContent("Stream URL") {
                         TextField("http://host:port/", text: $streamURL)
                             .multilineTextAlignment(.trailing)
                             .keyboardType(.URL).autocorrectionDisabled()
                             .textInputAutocapitalization(.never)
                     }
-                    Text("URL of an MPD httpd output on this server. Enable \u{201C}Listen on phone\u{201D} in Now Playing to stream it to this device.")
+                    Text("URL of an MPD httpd output on this server. Enable \u{201C}Listen on phone\u{201D} in Now Playing to stream audio to this device.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Section("Snapcast (Optional)") {
+                    LabeledContent("Host") {
+                        TextField("same as MPD", text: $snapcastHost)
+                            .multilineTextAlignment(.trailing).keyboardType(.asciiCapable)
+                            .autocorrectionDisabled().textInputAutocapitalization(.never)
+                    }
+                    LabeledContent("Port") {
+                        TextField("1705", text: $snapcastPort)
+                            .multilineTextAlignment(.trailing).keyboardType(.numberPad)
+                    }
+                    Text("Leave host empty to use the same host as the MPD server. Default port is 1705. Required only if you use Snapcast for multiroom audio.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
@@ -199,6 +218,8 @@ struct ServerFormView: View {
                     host = profile.host
                     port = String(profile.port)
                     streamURL = profile.streamURL
+                    snapcastHost = profile.snapcastHost
+                    snapcastPort = String(profile.snapcastPort)
                     pw = store.password(forServer: profile.id)
                 }
             }
@@ -210,16 +231,21 @@ struct ServerFormView: View {
         let trimmedName = name.trimmingCharacters(in: .whitespaces)
         let displayName = trimmedName.isEmpty ? trimmedHost : trimmedName
         let trimmedStream = streamURL.trimmingCharacters(in: .whitespaces)
+        let trimmedSnapHost = snapcastHost.trimmingCharacters(in: .whitespaces)
+        let snapPort = Int(snapcastPort) ?? 1705
         switch mode {
         case .add, .discovered:
             let profile = MPDServerProfile(name: displayName, host: trimmedHost,
-                                           port: Int(port) ?? 6600, streamURL: trimmedStream)
+                                           port: Int(port) ?? 6600, streamURL: trimmedStream,
+                                           snapcastHost: trimmedSnapHost, snapcastPort: snapPort)
             store.addServer(profile, password: pw)
         case .edit(var profile):
             profile.name = displayName
             profile.host = trimmedHost
             profile.port = Int(port) ?? 6600
             profile.streamURL = trimmedStream
+            profile.snapcastHost = trimmedSnapHost
+            profile.snapcastPort = snapPort
             store.setPassword(pw, forServer: profile.id)
             store.updateServer(profile)
         }

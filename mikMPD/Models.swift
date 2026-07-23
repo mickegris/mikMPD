@@ -122,6 +122,57 @@ nonisolated func groupAlbumVariants(_ pairs: [(artist: String, album: String)]) 
     return order.map { groups[$0]! }
 }
 
+// MARK: - Library sort options
+
+enum AlbumSort: String, CaseIterable {
+    case artistAsc  = "Artist A–Z"
+    case albumAsc   = "Album A–Z"
+    case artistDesc = "Artist Z–A"
+    case albumDesc  = "Album Z–A"
+}
+
+enum ArtistSort: String, CaseIterable {
+    case az = "A–Z"
+    case za = "Z–A"
+}
+
+/// Sort a grouped album list. Empty artist/base always sort last regardless of direction.
+nonisolated func sortedAlbumGroups(_ groups: [AlbumGroup], by sort: AlbumSort) -> [AlbumGroup] {
+    groups.sorted { a, b in
+        if a.artist.isEmpty != b.artist.isEmpty { return !a.artist.isEmpty }
+        if a.base.isEmpty   != b.base.isEmpty   { return !a.base.isEmpty }
+        switch sort {
+        case .artistAsc:
+            let c = a.artist.localizedCaseInsensitiveCompare(b.artist)
+            if c != .orderedSame { return c == .orderedAscending }
+            return a.base.localizedCaseInsensitiveCompare(b.base) == .orderedAscending
+        case .albumAsc:
+            let c = a.base.localizedCaseInsensitiveCompare(b.base)
+            if c != .orderedSame { return c == .orderedAscending }
+            return a.artist.localizedCaseInsensitiveCompare(b.artist) == .orderedAscending
+        case .artistDesc:
+            let c = a.artist.localizedCaseInsensitiveCompare(b.artist)
+            if c != .orderedSame { return c == .orderedDescending }
+            return a.base.localizedCaseInsensitiveCompare(b.base) == .orderedDescending
+        case .albumDesc:
+            let c = a.base.localizedCaseInsensitiveCompare(b.base)
+            if c != .orderedSame { return c == .orderedDescending }
+            return a.artist.localizedCaseInsensitiveCompare(b.artist) == .orderedDescending
+        }
+    }
+}
+
+/// Sort an artist list. Empty strings always sort last.
+nonisolated func sortedArtists(_ artists: [String], by sort: ArtistSort) -> [String] {
+    artists.sorted { a, b in
+        if a.isEmpty != b.isEmpty { return !a.isEmpty }
+        switch sort {
+        case .az: return a.localizedCaseInsensitiveCompare(b) == .orderedAscending
+        case .za: return a.localizedCaseInsensitiveCompare(b) == .orderedDescending
+        }
+    }
+}
+
 /// Album track order: disc first (tag or album-suffix derived), then track number.
 nonisolated func sortedByDiscAndTrack(_ songs: [MPDSong]) -> [MPDSong] {
     songs.sorted { ($0.effectiveDisc, $0.trackNumber) < ($1.effectiveDisc, $1.trackNumber) }
@@ -250,6 +301,24 @@ nonisolated struct MPDServerProfile: Codable, Identifiable, Equatable {
     var port: Int = 6600
     var streamURL: String = ""      // per-server httpd output URL
     var lastPartition: String = ""  // per-server "remember partitions" value
+    var snapcastHost: String = ""   // empty = use MPD host
+    var snapcastPort: Int = 1705
+}
+
+// Custom decoder for back-compat: legacy profiles lack snapcastHost/Port.
+// encode(to:) remains synthesized — it includes all properties.
+extension MPDServerProfile {
+    nonisolated init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id            = try c.decodeIfPresent(UUID.self,   forKey: .id)            ?? UUID()
+        name          = try c.decode(          String.self, forKey: .name)
+        host          = try c.decode(          String.self, forKey: .host)
+        port          = try c.decodeIfPresent(Int.self,     forKey: .port)          ?? 6600
+        streamURL     = try c.decodeIfPresent(String.self,  forKey: .streamURL)     ?? ""
+        lastPartition = try c.decodeIfPresent(String.self,  forKey: .lastPartition) ?? ""
+        snapcastHost  = try c.decodeIfPresent(String.self,  forKey: .snapcastHost)  ?? ""
+        snapcastPort  = try c.decodeIfPresent(Int.self,     forKey: .snapcastPort)  ?? 1705
+    }
 }
 
 /// Build the initial profile from pre-multi-server settings (one-time migration).
@@ -344,6 +413,39 @@ nonisolated func prunedRecentHistory(_ entries: [RecentlyPlayedEntry], now: Date
     Array(entries.filter { now.timeIntervalSince($0.playedAt) <= maxAge }.prefix(cap))
 }
 
+nonisolated struct RecentAlbum: Identifiable, Equatable {
+    var artist: String
+    var album: String        // raw tag from the newest entry; empty for album-less tiles
+    var file: String         // representative file (album-less replay target)
+    var title: String        // display title for album-less tiles (radio/loose files)
+    var lastPlayed: Date
+    var albumless: Bool      // true when keyed on file, not album
+    var id: String { albumless ? file : artCacheKey(artist: artist, album: album) }
+}
+
+/// Derives album groups from track history (expects newest-first input), returning newest-first.
+/// Disc variants with the same artCacheKey collapse into one tile. Entries without an album
+/// tag group by file so radio/loose files still appear as tiles.
+nonisolated func recentAlbumGroups(_ entries: [RecentlyPlayedEntry]) -> [RecentAlbum] {
+    var seen: Set<String> = []
+    var result: [RecentAlbum] = []
+    for entry in entries {
+        let albumless = entry.album.isEmpty
+        let key = albumless ? entry.file : artCacheKey(artist: entry.artist, album: entry.album)
+        guard !seen.contains(key) else { continue }
+        seen.insert(key)
+        result.append(RecentAlbum(
+            artist: entry.artist,
+            album: entry.album,
+            file: entry.file,
+            title: entry.title,
+            lastPlayed: entry.playedAt,
+            albumless: albumless
+        ))
+    }
+    return result
+}
+
 nonisolated struct MPDBrowseItem: Identifiable {
     enum Kind { case directory, file, playlist }
     var kind: Kind
@@ -369,4 +471,16 @@ func formatTime(_ s: Double) -> String {
     guard s > 0, s.isFinite else { return "0:00" }
     let t = Int(s)
     return "\(t / 60):\(String(format: "%02d", t % 60))"
+}
+
+nonisolated func relativeDay(_ date: Date, now: Date = Date()) -> String {
+    let cal = Calendar.current
+    let days = cal.dateComponents([.day],
+        from: cal.startOfDay(for: date),
+        to: cal.startOfDay(for: now)).day ?? 0
+    switch days {
+    case 0: return "Today"
+    case 1: return "Yesterday"
+    default: return "\(days) days ago"
+    }
 }
