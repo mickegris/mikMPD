@@ -32,6 +32,8 @@ final class MPDStore: ObservableObject {
     @Published var randomMode:  Bool   = false
     @Published var singleMode:  Bool   = false
     @Published var consumeMode: Bool   = false
+    @Published var replayGainMode: String = "off"
+    @Published var crossfadeSeconds: Int  = 0
     @Published var playlistPos: Int    = -1
     @Published var currentSongID: String = ""
     @Published var bitrate:     String = ""
@@ -464,11 +466,18 @@ final class MPDStore: ObservableObject {
             let sid  = s["songid"]  ?? ""
             let br   = s["bitrate"] ?? ""
             let af   = s["audio"]   ?? ""
-            let rep  = s["repeat"]  == "1"
-            let ran  = s["random"]  == "1"
-            let sin  = s["single"]  == "1"
-            let con  = s["consume"] == "1"
+            let rep   = s["repeat"]  == "1"
+            let ran   = s["random"]  == "1"
+            let sin   = s["single"]  == "1"
+            let con   = s["consume"] == "1"
+            let xfade = Int(s["xfade"] ?? "0") ?? 0
             let curPartition = s["partition"] ?? ""
+
+            var rgRec: MPDRecord = [:]
+            if let recs = try? socket.command("replay_gain_status") {
+                for r in recs { rgRec.merge(r) { _, new in new } }
+            }
+            let rgMode = rgRec["replay_gain_mode"] ?? "off"
 
             let songChanged = sid != self.lastSongID
             let song: MPDSong
@@ -515,10 +524,12 @@ final class MPDStore: ObservableObject {
                     self.lastUsedPartitionName = curPartition
                 }
 
-                if self.repeatMode   != rep { self.repeatMode   = rep }
-                if self.randomMode   != ran { self.randomMode   = ran }
-                if self.singleMode   != sin { self.singleMode   = sin }
-                if self.consumeMode  != con { self.consumeMode  = con }
+                if self.repeatMode      != rep    { self.repeatMode      = rep }
+                if self.randomMode      != ran    { self.randomMode      = ran }
+                if self.singleMode      != sin    { self.singleMode      = sin }
+                if self.consumeMode     != con    { self.consumeMode     = con }
+                if self.replayGainMode  != rgMode { self.replayGainMode  = rgMode }
+                if self.crossfadeSeconds != xfade { self.crossfadeSeconds = xfade }
                 if self.currentSong  != song { self.currentSong = song }
                 // Only update elapsed from poll when not seek-locked and value differs
                 if Date() >= self.seekLockUntil, self.elapsed != elapsed {
@@ -871,6 +882,8 @@ final class MPDStore: ObservableObject {
     func toggleRandom()  { let v = randomMode;  Q.async { [weak self] in _ = try? self?.socket.command("random \(v ? 0:1)");  self?.poll() } }
     func toggleSingle()  { let v = singleMode;  Q.async { [weak self] in _ = try? self?.socket.command("single \(v ? 0:1)");  self?.poll() } }
     func toggleConsume() { let v = consumeMode; Q.async { [weak self] in _ = try? self?.socket.command("consume \(v ? 0:1)"); self?.poll() } }
+    func setReplayGainMode(_ mode: String) { Q.async { [weak self] in _ = try? self?.socket.command("replay_gain_mode \(mode)"); self?.poll() } }
+    func setCrossfade(_ seconds: Int)      { Q.async { [weak self] in _ = try? self?.socket.command("crossfade \(seconds)");     self?.poll() } }
 
     // MARK: - Queue management
 

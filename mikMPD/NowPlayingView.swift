@@ -87,6 +87,9 @@ struct NowPlayingView: View {
                 transportButtons
                 volumeSlider
                 modeButtons
+                if song.sourceKind != .radio {
+                    playbackOptionsRow
+                }
                 audioInfo
                 phoneStreamToggle
             }
@@ -416,6 +419,45 @@ struct NowPlayingView: View {
             ModeBtn("Shuffle", "shuffle",               "shuffle",            store.randomMode)  { store.toggleRandom()  }
             ModeBtn("Single",  "1.circle.fill",         "1.circle",           store.singleMode)  { store.toggleSingle()  }
             ModeBtn("Consume", "fork.knife.circle.fill","fork.knife.circle",  store.consumeMode) { store.toggleConsume() }
+        }
+    }
+
+    var playbackOptionsRow: some View {
+        HStack(spacing: 10) {
+            // Cycles off → track → album → auto → off
+            let rgOrder = ["off", "track", "album", "auto"]
+            let rgActive = store.replayGainMode != "off"
+            let rgLabel = store.replayGainMode == "off" ? "Gain: Off" :
+                          store.replayGainMode == "track" ? "Gain: Track" :
+                          store.replayGainMode == "album" ? "Gain: Album" : "Gain: Auto"
+            Button {
+                let idx = rgOrder.firstIndex(of: store.replayGainMode) ?? 0
+                store.setReplayGainMode(rgOrder[(idx + 1) % rgOrder.count])
+            } label: {
+                VStack(spacing: 3) {
+                    Image(systemName: "waveform").font(.title3)
+                    Text(rgLabel).font(.caption2)
+                }
+                .foregroundStyle(rgActive ? Color.accentColor : Color.secondary)
+                .frame(minWidth: 90, minHeight: 40)
+                .background(RoundedRectangle(cornerRadius: 10)
+                    .fill(rgActive ? Color.accentColor.opacity(0.15) : Color(.systemGray6)))
+            }
+
+            let xfadeOn = store.crossfadeSeconds > 0
+            let xfadeLabel = xfadeOn ? "X-Fade: \(store.crossfadeSeconds)s" : "X-Fade: Off"
+            Button {
+                store.setCrossfade(xfadeOn ? 0 : 5)
+            } label: {
+                VStack(spacing: 3) {
+                    Image(systemName: "arrow.left.arrow.right").font(.title3)
+                    Text(xfadeLabel).font(.caption2)
+                }
+                .foregroundStyle(xfadeOn ? Color.accentColor : Color.secondary)
+                .frame(minWidth: 90, minHeight: 40)
+                .background(RoundedRectangle(cornerRadius: 10)
+                    .fill(xfadeOn ? Color.accentColor.opacity(0.15) : Color(.systemGray6)))
+            }
         }
     }
 
