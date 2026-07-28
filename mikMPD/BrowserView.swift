@@ -7,7 +7,7 @@ struct BrowserView: View {
                 if store.browseItems.isEmpty { ContentUnavailableView("Empty", systemImage:"folder") }
                 else {
                     List(store.browseItems) { item in
-                        BrowserRow(item:item).contentShape(Rectangle())
+                        BrowserRow(item:item, isCurrentlyPlaying: item.kind == .file && item.path == store.currentSong.file).contentShape(Rectangle())
                             .onTapGesture(count:2) { doubleTap(item) }
                             .onTapGesture { if item.kind == .directory { store.browse(item.path) } }
                             .swipeActions(edge:.trailing) {
@@ -46,12 +46,17 @@ struct BrowserView: View {
 }
 struct BrowserRow: View {
     let item: MPDBrowseItem
+    var isCurrentlyPlaying: Bool = false
     var color: Color { item.kind == .directory ? .blue : item.kind == .playlist ? .purple : .primary }
     var body: some View {
         HStack(spacing:12) {
             Image(systemName:item.sfSymbol).foregroundColor(color).frame(width:24)
             Text(item.displayName).lineLimit(2).font(.subheadline)
-            if item.kind == .directory { Spacer(); Image(systemName:"chevron.right").font(.caption).foregroundColor(.secondary) }
+            Spacer()
+            if isCurrentlyPlaying {
+                Image(systemName: "speaker.wave.2.fill").font(.caption2).foregroundStyle(.tint)
+            }
+            if item.kind == .directory { Image(systemName:"chevron.right").font(.caption).foregroundColor(.secondary) }
         }.padding(.vertical,2)
     }
 }
