@@ -425,11 +425,8 @@ struct RadioView: View {
         List {
             Section("Stations") {
                 ForEach(builtInStations) { station in
-                    Button {
-                        store.addAndPlay(uri: station.url)
-                    } label: {
-                        Label(station.name, systemImage: "antenna.radiowaves.left.and.right")
-                    }
+                    stationRow(station)
+                        .playableRow { store.addAndPlay(uri: station.url) }
                 }
             }
             Section("Saved Stations") {
@@ -437,11 +434,8 @@ struct RadioView: View {
                     Text("No saved stations").foregroundStyle(.secondary).font(.subheadline)
                 } else {
                     ForEach(savedStations) { station in
-                        Button {
-                            store.addAndPlay(uri: station.url)
-                        } label: {
-                            Label(station.name, systemImage: "antenna.radiowaves.left.and.right")
-                        }
+                        stationRow(station)
+                            .playableRow { store.addAndPlay(uri: station.url) }
                     }
                     .onDelete { offsets in
                         var stations = savedStations
@@ -478,6 +472,20 @@ struct RadioView: View {
             }
         }
         .listStyle(.insetGrouped)
+    }
+
+    @ViewBuilder
+    private func stationRow(_ station: SavedStation) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: "antenna.radiowaves.left.and.right")
+                .frame(width: 24)
+            Text(station.name).font(.subheadline)
+            Spacer()
+            if station.url == store.currentSong.file {
+                Image(systemName: "speaker.wave.2.fill").font(.caption2).foregroundStyle(.tint)
+            }
+        }
+        .padding(.vertical, 2)
     }
 }
 
