@@ -96,12 +96,21 @@ nonisolated func groupAlbumVariants(_ albums: [String]) -> [(base: String, varia
     return order.map { ($0, groups[$0]!) }
 }
 
+/// Disc count for display from a list of album-name variants.
+/// Uses the highest disc number found in the names; falls back to variants.count
+/// when none carry a disc marker. Avoids "3 discs" when disc 1 is tagged both
+/// with and without a marker (e.g. "Album", "Album [Disc 1]", "Album [Disc 2]" → 2).
+nonisolated func discCountFromVariants(_ variants: [String]) -> Int {
+    variants.compactMap { albumBaseAndDisc($0).disc }.max() ?? variants.count
+}
+
 /// One row in an artist-aware album list: disc variants merged per artist.
 nonisolated struct AlbumGroup: Identifiable, Equatable {
     var artist: String
     var base: String
     var variants: [String]
     var id: String { "\(artist.lowercased())|\(base)" }
+    var discCount: Int { discCountFromVariants(variants) }
 }
 
 /// Artist-aware variant of groupAlbumVariants for (artist, album) pairs from

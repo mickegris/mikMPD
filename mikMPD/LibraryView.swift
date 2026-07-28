@@ -117,7 +117,7 @@ struct AlbumGroupRow: View {
                 }
                 if group.variants.count > 1 {
                     Spacer()
-                    Text("\(group.variants.count) discs").font(.caption).foregroundStyle(.secondary)
+                    Text("\(group.discCount) discs").font(.caption).foregroundStyle(.secondary)
                 }
             }
         }
@@ -328,7 +328,7 @@ struct ArtistDetailView: View {
                                 Text(g.base.isEmpty ? "(no title)" : g.base)
                                 if g.variants.count > 1 {
                                     Spacer()
-                                    Text("\(g.variants.count) discs").font(.caption).foregroundStyle(.secondary)
+                                    Text("\(discCountFromVariants(g.variants)) discs").font(.caption).foregroundStyle(.secondary)
                                 }
                             }
                         }

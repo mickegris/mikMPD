@@ -1336,6 +1336,38 @@ import Testing
     }
 }
 
+// MARK: - discCountFromVariants
+
+@Suite struct DiscCountFromVariantsTests {
+    // The reported bug: disc 1 tagged both with and without marker creates
+    // 3 variants but only 2 physical discs.
+    @Test func mixedMarkerAndBareVariant() {
+        #expect(discCountFromVariants(["Album", "Album [Disc 1]", "Album [Disc 2]"]) == 2)
+    }
+
+    @Test func normalTwoDiscAlbum() {
+        #expect(discCountFromVariants(["Album [Disc 1]", "Album [Disc 2]"]) == 2)
+    }
+
+    @Test func singleVariantNoMarker() {
+        #expect(discCountFromVariants(["Album"]) == 1)
+    }
+
+    @Test func gapInDiscNumbers() {
+        // Disc 2 missing: shows max disc number (3), not variant count (2).
+        #expect(discCountFromVariants(["Album [Disc 1]", "Album [Disc 3]"]) == 3)
+    }
+
+    @Test func noDiscMarkersAtAllFallsBackToCount() {
+        // Two un-marked variants: falls back to variant count.
+        #expect(discCountFromVariants(["Album Bonus", "Album"]) == 2)
+    }
+
+    @Test func letteredDiscs() {
+        #expect(discCountFromVariants(["101 [Disc A]", "101 [Disc B]"]) == 2)
+    }
+}
+
 // MARK: - Disc-aware sorting
 
 @Suite struct DiscSortTests {
