@@ -21,6 +21,11 @@ Tests cover pure logic that doesn't need an MPD server: MPD protocol parsing (`p
 
 `parseMPDRecords` is an internal free function extracted from `MPDSocket` specifically for testability.
 
+## References
+
+**MPD protocol**: https://mpd.readthedocs.io/en/stable/protocol.html#command-reference  
+Full command reference for all MPD text commands. Consult before adding new MPD operations — covers filters, tags, binary commands (`albumart`, `readpicture`), partition commands, stickers, channels, and more.
+
 ## Architecture
 
 This is an MPD (Music Player Daemon) client for iOS/iPadOS.
