@@ -196,6 +196,12 @@ struct PlaylistDetailView: View {
             ToolbarItem(placement: .navigationBarTrailing) {
                 EditButton().disabled(songs.isEmpty)
             }
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button { store.shufflePlayPlaylist(name) } label: {
+                    Image(systemName: "shuffle")
+                }
+                .disabled(loading || songs.isEmpty)
+            }
         }
         .sheet(item: $addRequest) { AddToPlaylistSheet(uris: $0.uris, excluding: name) }
         .onAppear { reload() }

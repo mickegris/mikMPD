@@ -940,6 +940,29 @@ final class MPDStore: ObservableObject {
         }
     }
 
+    /// Load playlist, physically shuffle the queue, then play from position 0.
+    /// Uses `shuffle` (reorders in place) — distinct from `random` mode toggle.
+    func shufflePlayPlaylist(_ name: String) {
+        Q.async { [weak self] in
+            guard let self else { return }
+            _ = try? self.socket.command("clear")
+            _ = try? self.socket.command("load \"\(name.esc)\"")
+            _ = try? self.socket.command("shuffle")
+            _ = try? self.socket.command("play 0")
+            self.poll()
+            DispatchQueue.main.async { self.playbackContext = name; self.loadQueue() }
+        }
+    }
+
+    /// Physically reorder the current queue in place (`shuffle` command).
+    func shuffleQueue() {
+        Q.async { [weak self] in
+            guard let self else { return }
+            _ = try? self.socket.command("shuffle")
+            DispatchQueue.main.async { self.loadQueue() }
+        }
+    }
+
     func enqueue(songs: [MPDSong], replace: Bool = false, playFirst: Bool = false) {
         Q.async { [weak self] in
             guard let self else { return }

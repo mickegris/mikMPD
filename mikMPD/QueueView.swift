@@ -53,6 +53,10 @@ struct QueueView: View {
                         Button { store.loadQueue() } label: {
                             Label("Refresh", systemImage: "arrow.clockwise")
                         }
+                        Button { store.shuffleQueue() } label: {
+                            Label("Shuffle Queue", systemImage: "shuffle")
+                        }
+                        .disabled(store.queue.isEmpty)
                         Divider()
                         Button(role: .destructive) { store.clearQueue() } label: {
                             Label("Clear Queue", systemImage: "trash")
