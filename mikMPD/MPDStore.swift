@@ -726,6 +726,16 @@ final class MPDStore: ObservableObject {
         }
     }
 
+    func loadRecentlyAdded(days: Int = 30, completion: @escaping @MainActor ([MPDSong]) -> Void) {
+        let cutoff = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-Double(days) * 86400))
+        Q.async { [weak self] in
+            guard let self else { return }
+            let records = (try? self.socket.command("find \"(modified-since '\(cutoff)')\"")) ?? []
+            let songs = records.map { MPDSong($0) }.filter { !$0.file.isEmpty }
+            DispatchQueue.main.async { completion(songs) }
+        }
+    }
+
     func search(field: String, query: String) {
         guard !query.trimmingCharacters(in: .whitespaces).isEmpty else { return }
         DispatchQueue.main.async { self.isSearching = true }

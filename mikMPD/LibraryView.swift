@@ -1,16 +1,17 @@
 import SwiftUI
 
-enum LibTab: String, CaseIterable { case albums="Albums"; case artists="Artists"; case genres="Genres"; case playlists="Playlists"; case radio="Radio"; case cd="CD" }
+enum LibTab: String, CaseIterable { case albums="Albums"; case artists="Artists"; case genres="Genres"; case playlists="Playlists"; case radio="Radio"; case cd="CD"; case recentlyAdded="Recent" }
 
 extension LibTab {
     var sfSymbol: String {
         switch self {
-        case .albums:    "square.stack"
-        case .artists:   "person"
-        case .genres:    "tag"
-        case .playlists: "music.note.list"
-        case .radio:     "antenna.radiowaves.left.and.right"
-        case .cd:        "opticaldisc"
+        case .albums:        "square.stack"
+        case .artists:       "person"
+        case .genres:        "tag"
+        case .playlists:     "music.note.list"
+        case .radio:         "antenna.radiowaves.left.and.right"
+        case .cd:            "opticaldisc"
+        case .recentlyAdded: "sparkles"
         }
     }
 }
@@ -27,8 +28,9 @@ struct LibraryView: View {
                 case .artists:   ArtistListView()
                 case .genres:    GenreListView()
                 case .playlists: PlaylistListView()
-                case .radio:     RadioView()
-                case .cd:        CDView()
+                case .radio:         RadioView()
+                case .cd:            CDView()
+                case .recentlyAdded: RecentlyAddedView()
                 }
             }
             .navigationTitle("Library").navigationBarTitleDisplayMode(.inline)
@@ -486,6 +488,64 @@ struct RadioView: View {
             }
         }
         .padding(.vertical, 2)
+    }
+}
+
+// MARK: - Recently Added
+
+private struct AddedAlbum: Identifiable {
+    let artist: String
+    let album: String
+    var id: String { artCacheKey(artist: artist, album: album) }
+}
+
+struct RecentlyAddedView: View {
+    @EnvironmentObject var store: MPDStore
+    @State private var songs: [MPDSong] = []
+    @State private var loading = true
+
+    private var albums: [AddedAlbum] {
+        var seen: Set<String> = []
+        var result: [AddedAlbum] = []
+        for song in songs {
+            guard !song.album.isEmpty else { continue }
+            let key = artCacheKey(artist: song.groupingArtist, album: song.album)
+            guard seen.insert(key).inserted else { continue }
+            result.append(AddedAlbum(artist: song.groupingArtist, album: song.album))
+            if result.count >= 50 { break }
+        }
+        return result
+    }
+
+    var body: some View {
+        Group {
+            if loading {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if albums.isEmpty {
+                ContentUnavailableView("Nothing Recently Added", systemImage: "sparkles",
+                    description: Text("No tracks added or modified in the last 30 days."))
+            } else {
+                List(albums) { g in
+                    NavigationLink(destination: AlbumDetailView(album: g.album,
+                                                                artist: g.artist.isEmpty ? nil : g.artist,
+                                                                artistTag: "albumartist")) {
+                        HStack(spacing: 10) {
+                            ArtThumbByKey(artist: g.artist, album: g.album, size: 44).cornerRadius(4)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(g.album).lineLimit(2)
+                                if !g.artist.isEmpty {
+                                    Text(g.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                }
+                            }
+                        }
+                    }
+                }.listStyle(.plain)
+            }
+        }
+        .onAppear {
+            guard songs.isEmpty else { return }
+            store.loadRecentlyAdded { songs = $0; loading = false }
+        }
     }
 }
 
