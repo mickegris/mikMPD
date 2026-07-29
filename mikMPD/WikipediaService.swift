@@ -41,6 +41,11 @@ actor WikipediaService {
         let key = "album:\(album)|\(artist)"
         if let c = cache[key] { return c.isEmpty ? nil : c }
         let artist = artist.normalizedForLookup
+        // Short/generic album names (≤3 tokens: "Greatest Hits", "Gold", "Live")
+        // need tighter matching — a generic Wikipedia article about any "Greatest
+        // Hits" compilation easily passes albumResultMatches when the artist's
+        // name appears anywhere in the extract.
+        let isGenericTitle = !artist.isEmpty && album.split(separator: " ").count <= 3
         // Try direct title with common Wikipedia album naming patterns
         let queries = artist.isEmpty ? ["\(album) (album)"] :
             ["\(album) (\(artist) album)", "\(album) (album)"]
@@ -51,19 +56,26 @@ actor WikipediaService {
         }
         // Plain exact title — distinctive album names ("An Acoustic Evening at
         // the Vienna Opera House") are articles without any "(album)" suffix.
-        // Validated hard: must read as music and pass the artist check, so an
-        // album named after a city/person doesn't pick up the wrong article.
+        // Skip this path for generic album names: a plain "Greatest Hits" page
+        // is rarely about this specific artist's release.
         if let r = await summaryData(title: album), !r.extract.isEmpty, isMusicRelated(r.extract),
-           Self.albumResultMatches(title: album, extract: r.extract, album: album, artist: artist) {
+           Self.albumResultMatches(title: album, extract: r.extract, album: album, artist: artist),
+           !isGenericTitle || album.lowercased().contains(artist.lowercased()) {
             cache[key] = r.extract; return r.extract
         }
         // Search with progressively looser queries. A hit whose *title* names the
         // album wins immediately; extract-only matches are kept as fallback —
         // a sequel's article often cites the album by full name in its extract
         // ("Live at Carnegie Hall…" mentions the Vienna Opera House album).
-        let searches = artist.isEmpty
-            ? ["\(album) album"]
-            : ["\(album) \(artist) album", "\(album) album"]
+        // For generic titles, omit the artist-free fallback query to stay focused.
+        let searches: [String]
+        if artist.isEmpty {
+            searches = ["\(album) album"]
+        } else if isGenericTitle {
+            searches = ["\(album) \(artist) album"]
+        } else {
+            searches = ["\(album) \(artist) album", "\(album) album"]
+        }
         var extractOnlyMatch: String? = nil
         for searchQ in searches {
             for ttl in await searchTitles(searchQ) {
@@ -76,7 +88,9 @@ actor WikipediaService {
                 if extractOnlyMatch == nil { extractOnlyMatch = r.extract }
             }
         }
-        if let e = extractOnlyMatch { cache[key] = e; return e }
+        // Suppress extract-only fallback for generic album names — a matching
+        // extract is too weak a signal when the title could be anything.
+        if let e = extractOnlyMatch, !isGenericTitle { cache[key] = e; return e }
         cache[key] = ""; return nil
     }
 

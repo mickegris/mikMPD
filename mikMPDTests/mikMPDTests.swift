@@ -588,6 +588,17 @@ import Testing
             album: "Greatest Hits",
             artist: "Queen"))
     }
+
+    // albumResultMatches alone cannot distinguish a real artist-specific article
+    // from a generic compilation page that mentions the artist in passing.
+    // fetchAlbum uses isGenericTitle (≤3 tokens) to suppress these paths.
+    @Test func genericAlbumPassesMatchWhenArtistMentioned() {
+        #expect(WikipediaService.albumResultMatches(
+            title: "Greatest Hits",
+            extract: "Greatest Hits is a common name for compilation albums. Artists such as Bob Dylan and Neil Young have each released albums with this title.",
+            album: "Greatest Hits",
+            artist: "Bob Dylan"))
+    }
 }
 
 // MARK: - Stored playlists
