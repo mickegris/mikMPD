@@ -911,6 +911,15 @@ final class MPDStore: ObservableObject {
         }
     }
 
+    func addNext(uri: String) {
+        let pos = playlistPos + 1
+        Q.async { [weak self] in
+            guard let self else { return }
+            _ = try? self.socket.command("addid \"\(uri.esc)\" \(pos)")
+            DispatchQueue.main.async { self.loadQueue() }
+        }
+    }
+
     func addAndPlay(uri: String) {
         Q.async { [weak self] in
             guard let self else { return }

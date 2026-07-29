@@ -188,6 +188,11 @@ struct AlbumDetailView: View {
             } else {
                 Section("Tracks"){ trackRows(songs) }
             }
+            if !loading && !songs.isEmpty {
+                Section {} footer: {
+                    Text("Long press or swipe trailing to add to queue, play next, or add to a playlist.")
+                }
+            }
         }
         .listStyle(.insetGrouped)
         // The inline bar title truncates long names — that's fine, the header
@@ -201,8 +206,15 @@ struct AlbumDetailView: View {
         ForEach(list){ s in
             SongRow(song:s, isCurrentlyPlaying: s.file == store.currentSong.file)
                 .playableRow{ store.addAndPlay(uri:s.file) }
-                .swipeActions(edge:.trailing){ Button{store.add(uri:s.file)} label:{Label("Add",systemImage:"plus")}.tint(.green) }
+                .swipeActions(edge:.trailing){
+                    Button{store.add(uri:s.file)} label:{Label("Add",systemImage:"plus")}.tint(.green)
+                    Button{store.addNext(uri:s.file)} label:{Label("Add Next",systemImage:"text.line.first.and.arrowtriangle.forward")}.tint(.orange)
+                }
                 .swipeActions(edge:.leading){ Button{addRequest=AddToPlaylistRequest(uris:[s.file])} label:{Label("Playlist",systemImage:"music.note.list")}.tint(.indigo) }
+                .contextMenu {
+                    Button{store.addNext(uri:s.file)} label:{Label("Add Next",systemImage:"text.line.first.and.arrowtriangle.forward")}
+                    Button{addRequest=AddToPlaylistRequest(uris:[s.file])} label:{Label("Add to Playlist…",systemImage:"music.note.list")}
+                }
         }
     }
     // Merge sibling disc variants ("X [Disc 1]" + "X [Disc 2]") into one page,
