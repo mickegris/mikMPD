@@ -437,6 +437,28 @@ import Testing
     }
 }
 
+// MARK: - MPDSong.lastModified
+
+@Suite struct MPDSongLastModifiedTests {
+    @Test func parsesISO8601Date() {
+        let song = MPDSong(["file": "test.flac", "last-modified": "2026-07-29T09:12:33Z"])
+        let expected = ISO8601DateFormatter().date(from: "2026-07-29T09:12:33Z")
+        #expect(song.lastModified == expected)
+    }
+
+    @Test func missingFieldGivesNil() {
+        let song = MPDSong(["file": "test.flac"])
+        #expect(song.lastModified == nil)
+    }
+
+    @Test func newerSongSortsFirst() {
+        let older = MPDSong(["file": "a.flac", "last-modified": "2026-01-01T00:00:00Z"])
+        let newer = MPDSong(["file": "b.flac", "last-modified": "2026-07-01T00:00:00Z"])
+        let sorted = [older, newer].sorted { ($0.lastModified ?? .distantPast) > ($1.lastModified ?? .distantPast) }
+        #expect(sorted.first?.file == "b.flac")
+    }
+}
+
 // MARK: - parseStreamURL
 
 @Suite struct ParseStreamURLTests {
@@ -591,13 +613,37 @@ import Testing
 
     // albumResultMatches alone cannot distinguish a real artist-specific article
     // from a generic compilation page that mentions the artist in passing.
-    // fetchAlbum uses isGenericTitle (≤3 tokens) to suppress these paths.
+    // fetchAlbum uses isGenericAlbumTitle to suppress these paths.
     @Test func genericAlbumPassesMatchWhenArtistMentioned() {
         #expect(WikipediaService.albumResultMatches(
             title: "Greatest Hits",
             extract: "Greatest Hits is a common name for compilation albums. Artists such as Bob Dylan and Neil Young have each released albums with this title.",
             album: "Greatest Hits",
             artist: "Bob Dylan"))
+    }
+}
+
+// MARK: - Wikipedia generic album title guard
+
+@Suite struct WikipediaGenericTitleTests {
+    @Test func knownGenericTitlesAreClassified() {
+        for title in ["Greatest Hits", "Gold", "Live", "The Best Of", "Best Of",
+                      "Hits", "Anthology", "Collection", "The Collection",
+                      "Essential", "The Essential", "Platinum", "Compilation",
+                      "Singles", "The Singles"] {
+            #expect(WikipediaService.isGenericAlbumTitle(title), "Expected \(title) to be generic")
+        }
+    }
+
+    @Test func distinctiveAlbumsAreNotGeneric() {
+        for title in ["101", "Abbey Road", "The Wall", "Kind of Blue", "Rumours", "OK Computer"] {
+            #expect(!WikipediaService.isGenericAlbumTitle(title), "Expected \(title) to be non-generic")
+        }
+    }
+
+    @Test func caseInsensitiveMatch() {
+        #expect(WikipediaService.isGenericAlbumTitle("GREATEST HITS"))
+        #expect(WikipediaService.isGenericAlbumTitle("greatest hits"))
     }
 }
 
@@ -1376,6 +1422,12 @@ import Testing
 
     @Test func letteredDiscs() {
         #expect(discCountFromVariants(["101 [Disc A]", "101 [Disc B]"]) == 2)
+    }
+
+    // Two variants but only one marked disc — discCount is 1, so the
+    // "N discs" caption should be suppressed (not show "1 discs").
+    @Test func untaggedPlusTaggedDiscOneReturnsOne() {
+        #expect(discCountFromVariants(["Album", "Album [Disc 1]"]) == 1)
     }
 }
 

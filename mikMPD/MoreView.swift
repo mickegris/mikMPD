@@ -127,6 +127,10 @@ struct ServerStatsView: View {
                     }
                 }
                 .listStyle(.insetGrouped)
+            } else if let err = store.statsError {
+                ContentUnavailableView("Statistics Unavailable",
+                    systemImage: "exclamationmark.triangle",
+                    description: Text(err))
             } else {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             }

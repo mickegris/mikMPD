@@ -339,6 +339,8 @@ final class MPDStore: ObservableObject {
         elapsed = 0; duration = 0; isPlaying = false; isPaused = false
         playlistPos = -1; bitrate = ""; audioFmt = ""; currentPartition = ""
         lyricsState = .unavailable; playbackContext = nil
+        replayGainMode = "off"; crossfadeSeconds = 0
+        serverStats = nil; statsError = nil
     }
 
     // MARK: - Timers
@@ -473,12 +475,6 @@ final class MPDStore: ObservableObject {
             let xfade = Int(s["xfade"] ?? "0") ?? 0
             let curPartition = s["partition"] ?? ""
 
-            var rgRec: MPDRecord = [:]
-            if let recs = try? socket.command("replay_gain_status") {
-                for r in recs { rgRec.merge(r) { _, new in new } }
-            }
-            let rgMode = rgRec["replay_gain_mode"] ?? "off"
-
             let songChanged = sid != self.lastSongID
             let song: MPDSong
             if songChanged {
@@ -524,11 +520,10 @@ final class MPDStore: ObservableObject {
                     self.lastUsedPartitionName = curPartition
                 }
 
-                if self.repeatMode      != rep    { self.repeatMode      = rep }
-                if self.randomMode      != ran    { self.randomMode      = ran }
-                if self.singleMode      != sin    { self.singleMode      = sin }
-                if self.consumeMode     != con    { self.consumeMode     = con }
-                if self.replayGainMode  != rgMode { self.replayGainMode  = rgMode }
+                if self.repeatMode       != rep   { self.repeatMode       = rep }
+                if self.randomMode       != ran   { self.randomMode       = ran }
+                if self.singleMode       != sin   { self.singleMode       = sin }
+                if self.consumeMode      != con   { self.consumeMode      = con }
                 if self.crossfadeSeconds != xfade { self.crossfadeSeconds = xfade }
                 if self.currentSong  != song { self.currentSong = song }
                 // Only update elapsed from poll when not seek-locked and value differs
@@ -569,7 +564,7 @@ final class MPDStore: ObservableObject {
 
     // MARK: - Load
 
-    func loadAll() { loadQueue(); loadOutputs(); loadPartitions(); browse("") }
+    func loadAll() { loadQueue(); loadOutputs(); loadPartitions(); browse(""); loadReplayGainStatus() }
 
     func loadQueue() {
         Q.async { [weak self] in
@@ -731,7 +726,9 @@ final class MPDStore: ObservableObject {
         Q.async { [weak self] in
             guard let self else { return }
             let records = (try? self.socket.command("find \"(modified-since '\(cutoff)')\"")) ?? []
-            let songs = records.map { MPDSong($0) }.filter { !$0.file.isEmpty }
+            let songs = records.map { MPDSong($0) }
+                .filter { !$0.file.isEmpty }
+                .sorted { ($0.lastModified ?? .distantPast) > ($1.lastModified ?? .distantPast) }
             DispatchQueue.main.async { completion(songs) }
         }
     }
@@ -892,8 +889,29 @@ final class MPDStore: ObservableObject {
     func toggleRandom()  { let v = randomMode;  Q.async { [weak self] in _ = try? self?.socket.command("random \(v ? 0:1)");  self?.poll() } }
     func toggleSingle()  { let v = singleMode;  Q.async { [weak self] in _ = try? self?.socket.command("single \(v ? 0:1)");  self?.poll() } }
     func toggleConsume() { let v = consumeMode; Q.async { [weak self] in _ = try? self?.socket.command("consume \(v ? 0:1)"); self?.poll() } }
-    func setReplayGainMode(_ mode: String) { Q.async { [weak self] in _ = try? self?.socket.command("replay_gain_mode \(mode)"); self?.poll() } }
-    func setCrossfade(_ seconds: Int)      { Q.async { [weak self] in _ = try? self?.socket.command("crossfade \(seconds)");     self?.poll() } }
+    func setReplayGainMode(_ mode: String) {
+        Q.async { [weak self] in
+            guard let self else { return }
+            _ = try? socket.command("replay_gain_mode \(mode.esc)")
+            guard let recs = try? socket.command("replay_gain_status") else { return }
+            var r: MPDRecord = [:]
+            for rec in recs { r.merge(rec) { _, new in new } }
+            let newMode = r["replay_gain_mode"] ?? mode
+            DispatchQueue.main.async { self.replayGainMode = newMode }
+        }
+    }
+    func setCrossfade(_ seconds: Int) { Q.async { [weak self] in _ = try? self?.socket.command("crossfade \(seconds)"); self?.poll() } }
+
+    func loadReplayGainStatus() {
+        Q.async { [weak self] in
+            guard let self else { return }
+            guard let recs = try? socket.command("replay_gain_status") else { return }
+            var r: MPDRecord = [:]
+            for rec in recs { r.merge(rec) { _, new in new } }
+            guard let mode = r["replay_gain_mode"] else { return }
+            DispatchQueue.main.async { self.replayGainMode = mode }
+        }
+    }
 
     // MARK: - Queue management
 
@@ -1013,14 +1031,26 @@ final class MPDStore: ObservableObject {
     // MARK: - Server statistics
 
     @Published var serverStats: MPDStats? = nil
+    @Published var statsError: String? = nil
 
     func loadStats() {
+        serverStats = nil
+        statsError = nil
         Q.async { [weak self] in
             guard let self else { return }
-            let records = (try? self.socket.command("stats")) ?? []
+            let records: [MPDRecord]
+            do {
+                records = try socket.command("stats")
+            } catch {
+                DispatchQueue.main.async { self.statsError = "Could not load statistics." }
+                return
+            }
             var r: MPDRecord = [:]
             for rec in records { r.merge(rec) { _, new in new } }
-            guard !r.isEmpty else { return }
+            guard !r.isEmpty else {
+                DispatchQueue.main.async { self.statsError = "No statistics returned." }
+                return
+            }
             var s = MPDStats()
             s.artists    = Int(r["artists"]     ?? "") ?? 0
             s.albums     = Int(r["albums"]      ?? "") ?? 0
@@ -1031,7 +1061,7 @@ final class MPDStore: ObservableObject {
             if let ts = Int(r["db_update"] ?? "") {
                 s.dbUpdate = Date(timeIntervalSince1970: TimeInterval(ts))
             }
-            DispatchQueue.main.async { self.serverStats = s }
+            DispatchQueue.main.async { self.serverStats = s; self.statsError = nil }
         }
     }
 

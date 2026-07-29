@@ -21,6 +21,19 @@ actor WikipediaService {
         guard let data = image.jpegData(compressionQuality: 0.85) else { return }
         try? data.write(to: imageDiskPath(key: key), options: .atomic)
     }
+    // Album titles that have generic Wikipedia articles unrelated to any single
+    // artist's release (e.g. a "Greatest Hits" disambiguation page). Matched
+    // on the fully-cleaned, normalised album string from albumLookupTitle.
+    nonisolated static let genericAlbumTitles: Set<String> = [
+        "greatest hits", "gold", "live", "the best of", "best of", "hits",
+        "anthology", "collection", "the collection", "essential", "the essential",
+        "platinum", "compilation", "singles", "the singles"
+    ]
+
+    nonisolated static func isGenericAlbumTitle(_ album: String) -> Bool {
+        genericAlbumTitles.contains(album.lowercased().trimmingCharacters(in: .whitespaces))
+    }
+
     private static let musicKeywords = ["band", "musician", "singer", "rapper", "songwriter",
         "musical", "album", "discography", "genre", "record label", "vocalist", "guitarist",
         "drummer", "bassist", "hip hop", "rock", "pop", "jazz", "metal", "punk", "solo artist",
@@ -41,11 +54,10 @@ actor WikipediaService {
         let key = "album:\(album)|\(artist)"
         if let c = cache[key] { return c.isEmpty ? nil : c }
         let artist = artist.normalizedForLookup
-        // Short/generic album names (≤3 tokens: "Greatest Hits", "Gold", "Live")
-        // need tighter matching — a generic Wikipedia article about any "Greatest
-        // Hits" compilation easily passes albumResultMatches when the artist's
-        // name appears anywhere in the extract.
-        let isGenericTitle = !artist.isEmpty && album.split(separator: " ").count <= 3
+        // Curated set of known-ambiguous compilation/live titles that share a
+        // Wikipedia article with no artist specificity. Token count is too broad —
+        // it catches distinctive single-word albums like "101" (Depeche Mode).
+        let isGenericTitle = !artist.isEmpty && Self.isGenericAlbumTitle(album)
         // Try direct title with common Wikipedia album naming patterns
         let queries = artist.isEmpty ? ["\(album) (album)"] :
             ["\(album) (\(artist) album)", "\(album) (album)"]

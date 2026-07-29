@@ -233,6 +233,7 @@ nonisolated struct MPDSong: Identifiable, Equatable {
     var duration: Double = 0
     var pos:      Int    = 0
     var songID:   String = ""
+    var lastModified: Date? = nil
 
     var id: String { songID.isEmpty ? "\(pos):\(file)" : songID }
     var displayTitle: String { title.isEmpty ? URL(fileURLWithPath: file).lastPathComponent : title }
@@ -277,6 +278,7 @@ nonisolated struct MPDSong: Identifiable, Equatable {
         duration = Double(r["duration"] ?? "0") ?? 0
         pos      = Int(r["pos"]  ?? "0") ?? 0
         songID   = r["id"]       ?? ""
+        if let lm = r["last-modified"] { lastModified = ISO8601DateFormatter().date(from: lm) }
     }
 }
 

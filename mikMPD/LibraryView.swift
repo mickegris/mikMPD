@@ -94,9 +94,9 @@ struct AlbumListView: View {
             } else {
                 List(groups) { g in AlbumGroupRow(group: g) }
                     .listStyle(.plain)
-                    .searchable(text: $filter, prompt: "Filter albums…")
             }
         }
+        .searchable(text: $filter, prompt: "Filter albums…")
         .sheet(item: $addRequest) { AddToPlaylistSheet(uris: $0.uris) }
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
@@ -172,7 +172,7 @@ struct AlbumGroupRow: View {
                 } icon: {
                     Image(systemName:"square.stack")
                 }
-                if group.variants.count > 1 {
+                if group.discCount > 1 {
                     Spacer()
                     Text("\(group.discCount) discs").font(.caption).foregroundStyle(.secondary)
                 }
@@ -395,7 +395,7 @@ struct ArtistDetailView: View {
                             HStack(spacing:10){
                                 ArtThumbByKey(artist:artist,album:g.variants[0],size:44).cornerRadius(4)
                                 Text(g.base.isEmpty ? "(no title)" : g.base)
-                                if g.variants.count > 1 {
+                                if discCountFromVariants(g.variants) > 1 {
                                     Spacer()
                                     Text("\(discCountFromVariants(g.variants)) discs").font(.caption).foregroundStyle(.secondary)
                                 }
@@ -561,26 +561,32 @@ struct RadioView: View {
 // MARK: - Recently Added
 
 private struct AddedAlbum: Identifiable {
-    let artist: String
+    let artist: String       // song.groupingArtist
     let album: String
+    let hasAlbumArtist: Bool // whether the albumArtist tag was present
+    var artistTag: String { hasAlbumArtist ? "albumartist" : "artist" }
     var id: String { artCacheKey(artist: artist, album: album) }
 }
 
 struct RecentlyAddedView: View {
     @EnvironmentObject var store: MPDStore
-    @State private var songs: [MPDSong] = []
+    @State private var albums: [AddedAlbum] = []
     @State private var loading = true
     @State private var addRequest: AddToPlaylistRequest?
     @AppStorage("libraryAlbumLayout") private var useGrid: Bool = false
 
-    private var albums: [AddedAlbum] {
+    // Derive and cap once on load so the dedup loop doesn't re-run on every
+    // body evaluation. Songs are sorted newest-first by the store before this.
+    private static func deriveAlbums(from songs: [MPDSong]) -> [AddedAlbum] {
         var seen: Set<String> = []
         var result: [AddedAlbum] = []
         for song in songs {
             guard !song.album.isEmpty else { continue }
             let key = artCacheKey(artist: song.groupingArtist, album: song.album)
             guard seen.insert(key).inserted else { continue }
-            result.append(AddedAlbum(artist: song.groupingArtist, album: song.album))
+            result.append(AddedAlbum(artist: song.groupingArtist,
+                                     album: song.album,
+                                     hasAlbumArtist: !song.albumArtist.isEmpty))
             if result.count >= 50 { break }
         }
         return result
@@ -604,7 +610,7 @@ struct RecentlyAddedView: View {
                 List(albums) { g in
                     NavigationLink(destination: AlbumDetailView(album: g.album,
                                                                 artist: g.artist.isEmpty ? nil : g.artist,
-                                                                artistTag: "albumartist")) {
+                                                                artistTag: g.artistTag)) {
                         HStack(spacing: 10) {
                             ArtThumbByKey(artist: g.artist, album: g.album, size: 44).cornerRadius(4)
                             VStack(alignment: .leading, spacing: 2) {
@@ -627,8 +633,11 @@ struct RecentlyAddedView: View {
             }
         }
         .onAppear {
-            guard songs.isEmpty else { return }
-            store.loadRecentlyAdded { songs = $0; loading = false }
+            guard loading else { return }
+            store.loadRecentlyAdded { songs in
+                albums = Self.deriveAlbums(from: songs)
+                loading = false
+            }
         }
     }
 
@@ -637,7 +646,7 @@ struct RecentlyAddedView: View {
         VStack(alignment: .leading, spacing: 4) {
             NavigationLink(destination: AlbumDetailView(album: g.album,
                                                         artist: g.artist.isEmpty ? nil : g.artist,
-                                                        artistTag: "albumartist")) {
+                                                        artistTag: g.artistTag)) {
                 ArtThumbByKey(artist: g.artist, album: g.album, size: 130)
                     .cornerRadius(8)
             }
@@ -649,17 +658,17 @@ struct RecentlyAddedView: View {
         }
         .contextMenu {
             Button {
-                store.albumSongs(album: g.album, artist: g.artist.isEmpty ? nil : g.artist, artistTag: "albumartist") {
+                store.albumSongs(album: g.album, artist: g.artist.isEmpty ? nil : g.artist, artistTag: g.artistTag) {
                     store.enqueue(songs: $0, replace: true, playFirst: true)
                 }
             } label: { Label("Play Album", systemImage: "play.fill") }
             Button {
-                store.albumSongs(album: g.album, artist: g.artist.isEmpty ? nil : g.artist, artistTag: "albumartist") {
+                store.albumSongs(album: g.album, artist: g.artist.isEmpty ? nil : g.artist, artistTag: g.artistTag) {
                     store.enqueue(songs: $0)
                 }
             } label: { Label("Add to Queue", systemImage: "plus") }
             Button {
-                store.albumSongs(album: g.album, artist: g.artist.isEmpty ? nil : g.artist, artistTag: "albumartist") {
+                store.albumSongs(album: g.album, artist: g.artist.isEmpty ? nil : g.artist, artistTag: g.artistTag) {
                     addRequest = AddToPlaylistRequest(uris: $0.map(\.file))
                 }
             } label: { Label("Add to Playlist…", systemImage: "music.note.list") }
