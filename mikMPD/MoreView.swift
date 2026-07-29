@@ -63,7 +63,18 @@ struct MoreView: View {
                         Text("Snapcast")
                     }
                 }
-                
+
+                NavigationLink {
+                    ServerStatsView()
+                } label: {
+                    HStack {
+                        Image(systemName: "chart.bar")
+                            .foregroundColor(.accentColor)
+                            .frame(width: 28)
+                        Text("Server Statistics")
+                    }
+                }
+
                 Section("About") {
                     HStack {
                         Text("Version")
@@ -83,6 +94,58 @@ struct MoreView: View {
         }
         .sheet(isPresented: $showConnection) {
             ConnectionView()
+        }
+    }
+}
+
+struct ServerStatsView: View {
+    @EnvironmentObject var store: MPDStore
+
+    private static let dateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .medium
+        f.timeStyle = .short
+        return f
+    }()
+
+    var body: some View {
+        Group {
+            if let s = store.serverStats {
+                List {
+                    Section("Library") {
+                        statRow("Songs",      value: s.songs.formatted())
+                        statRow("Albums",     value: s.albums.formatted())
+                        statRow("Artists",    value: s.artists.formatted())
+                        statRow("Total time", value: formatDuration(s.dbPlaytime))
+                    }
+                    Section("Server") {
+                        statRow("Uptime",          value: formatDuration(s.uptime))
+                        statRow("Total playtime",  value: formatDuration(s.playtime))
+                        if let updated = s.dbUpdate {
+                            statRow("Last DB update", value: Self.dateFormatter.string(from: updated))
+                        }
+                    }
+                }
+                .listStyle(.insetGrouped)
+            } else {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .navigationTitle("Server Statistics")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button { store.loadStats() } label: { Image(systemName: "arrow.clockwise") }
+            }
+        }
+        .onAppear { store.loadStats() }
+    }
+
+    private func statRow(_ label: String, value: String) -> some View {
+        HStack {
+            Text(label)
+            Spacer()
+            Text(value).foregroundStyle(.secondary)
         }
     }
 }

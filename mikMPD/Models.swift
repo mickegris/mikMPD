@@ -476,6 +476,29 @@ nonisolated func mpdMoveTarget(from: Int, to destination: Int) -> Int {
     destination > from ? destination - 1 : destination
 }
 
+nonisolated struct MPDStats {
+    var artists: Int = 0
+    var albums: Int = 0
+    var songs: Int = 0
+    var uptime: Int = 0
+    var dbPlaytime: Int = 0
+    var dbUpdate: Date? = nil
+    var playtime: Int = 0
+}
+
+/// Formats a duration in seconds as "Nd Nh Nm", omitting zero components except minutes.
+nonisolated func formatDuration(_ seconds: Int) -> String {
+    guard seconds > 0 else { return "0 min" }
+    let days  = seconds / 86400
+    let hours = (seconds % 86400) / 3600
+    let mins  = (seconds % 3600) / 60
+    var parts: [String] = []
+    if days  > 0 { parts.append("\(days)d") }
+    if hours > 0 { parts.append("\(hours)h") }
+    if mins  > 0 || parts.isEmpty { parts.append("\(mins)m") }
+    return parts.joined(separator: " ")
+}
+
 func formatTime(_ s: Double) -> String {
     guard s > 0, s.isFinite else { return "0:00" }
     let t = Int(s)

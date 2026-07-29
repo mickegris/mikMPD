@@ -1010,6 +1010,31 @@ final class MPDStore: ObservableObject {
         }
     }
 
+    // MARK: - Server statistics
+
+    @Published var serverStats: MPDStats? = nil
+
+    func loadStats() {
+        Q.async { [weak self] in
+            guard let self else { return }
+            let records = (try? self.socket.command("stats")) ?? []
+            var r: MPDRecord = [:]
+            for rec in records { r.merge(rec) { _, new in new } }
+            guard !r.isEmpty else { return }
+            var s = MPDStats()
+            s.artists    = Int(r["artists"]     ?? "") ?? 0
+            s.albums     = Int(r["albums"]      ?? "") ?? 0
+            s.songs      = Int(r["songs"]       ?? "") ?? 0
+            s.uptime     = Int(r["uptime"]      ?? "") ?? 0
+            s.dbPlaytime = Int(r["db_playtime"] ?? "") ?? 0
+            s.playtime   = Int(r["playtime"]    ?? "") ?? 0
+            if let ts = Int(r["db_update"] ?? "") {
+                s.dbUpdate = Date(timeIntervalSince1970: TimeInterval(ts))
+            }
+            DispatchQueue.main.async { self.serverStats = s }
+        }
+    }
+
     // MARK: - Stored playlists
 
     @Published var playlists: [MPDPlaylist] = []
