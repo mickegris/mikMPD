@@ -26,6 +26,22 @@ Tests cover pure logic that doesn't need an MPD server: MPD protocol parsing (`p
 **MPD protocol**: https://mpd.readthedocs.io/en/stable/protocol.html#command-reference  
 Full command reference for all MPD text commands. Consult before adding new MPD operations — covers filters, tags, binary commands (`albumart`, `readpicture`), partition commands, stickers, channels, and more.
 
+### MPD stickers (v1.5 candidate)
+
+Per-song metadata stored by MPD clients on the server. `<type>` is always `"song"` in practice.
+
+| Command | Purpose |
+|---|---|
+| `sticker get song <uri> <name>` | Read one sticker value |
+| `sticker set song <uri> <name> <value>` | Write one sticker value |
+| `sticker delete song <uri> <name>` | Remove a sticker |
+| `sticker list song <uri>` | List all stickers on a song |
+| `sticker find song <base> <name>` | Find all songs under a path with a given sticker |
+
+**Planned use**: star ratings (1–5) stored as sticker name `rating`. Requires `sticker_file` set in mpd.conf — probe availability on connect with `sticker list song ""` and check for non-ACK (set `stickersAvailable: Bool` on `MPDStore`).
+
+**Not planned**: MPD channels (`subscribe`/`sendmessage`/`readmessages`) — low value for a single-client setup; document only.
+
 ## Architecture
 
 This is an MPD (Music Player Daemon) client for iOS/iPadOS.
