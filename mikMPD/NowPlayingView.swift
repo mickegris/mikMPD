@@ -26,6 +26,10 @@ struct NowPlayingView: View {
     // Presents the Recently Played sheet
     @State private var showHistory = false
 
+    // Presents the Outputs sheet and partition picker
+    @State private var showOutputs    = false
+    @State private var showPartitions = false
+
     var song: MPDSong { store.currentSong }
 
     // What fraction to show in the slider
@@ -56,6 +60,9 @@ struct NowPlayingView: View {
                 VStack(spacing: 18) {
                     addToPlaylistButton
                     historyButton
+                    if !store.outputs.isEmpty {
+                        outputsButton
+                    }
                 }
                 .frame(width: 30)
 
@@ -75,6 +82,9 @@ struct NowPlayingView: View {
                 VStack(spacing: 18) {
                     queueToggle
                     lyricsToggle
+                    if store.partitions.count > 1 {
+                        partitionButton
+                    }
                 }
                 .frame(width: 30)
             }
@@ -119,6 +129,34 @@ struct NowPlayingView: View {
         }
         .accessibilityLabel("Recently played")
         .sheet(isPresented: $showHistory) { RecentlyPlayedSheet() }
+    }
+
+    var outputsButton: some View {
+        Button { showOutputs = true } label: {
+            Image(systemName: "hifispeaker.2")
+                .font(.body)
+                .foregroundStyle(Color.secondary)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Outputs")
+        .sheet(isPresented: $showOutputs) { OutputsView() }
+    }
+
+    var partitionButton: some View {
+        Button { showPartitions = true } label: {
+            Image(systemName: "rectangle.3.group")
+                .font(.body)
+                .foregroundStyle(Color.secondary)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Switch partition")
+        .confirmationDialog("Switch Partition", isPresented: $showPartitions) {
+            ForEach(store.partitions, id: \.self) { part in
+                Button(part == store.currentPartition ? "✓ \(part)" : part) {
+                    if part != store.currentPartition { store.switchPartition(part) }
+                }
+            }
+        }
     }
 
     // MARK: - Subviews
