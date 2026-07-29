@@ -66,23 +66,44 @@ struct LibraryView: View {
 // MARK: - Albums
 struct AlbumListView: View {
     @EnvironmentObject var store: MPDStore
-    @State private var albums:[(artist: String, album: String)]=[];@State private var loading=true;@State private var filter=""
+    @State private var albums: [(artist: String, album: String)] = []
+    @State private var loading = true
+    @State private var filter = ""
+    @State private var addRequest: AddToPlaylistRequest?
     @AppStorage("librarySortAlbums") private var albumSort: AlbumSort = .artistAsc
-    var shown:[(artist: String, album: String)]{
-        filter.isEmpty ? albums : albums.filter{
+    @AppStorage("libraryAlbumLayout") private var useGrid: Bool = false
+
+    var shown: [(artist: String, album: String)] {
+        filter.isEmpty ? albums : albums.filter {
             $0.album.localizedCaseInsensitiveContains(filter) || $0.artist.localizedCaseInsensitiveContains(filter)
         }
     }
+    var groups: [AlbumGroup] { sortedAlbumGroups(groupAlbumVariants(shown), by: albumSort) }
+
     var body: some View {
         Group {
-            if loading { ProgressView().frame(maxWidth:.infinity,maxHeight:.infinity) }
-            else {
-                List(sortedAlbumGroups(groupAlbumVariants(shown), by: albumSort)){ g in
-                    AlbumGroupRow(group: g)
-                }.listStyle(.plain).searchable(text:$filter,prompt:"Filter albums…")
+            if loading {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if useGrid {
+                ScrollView {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 130), spacing: 12)], spacing: 16) {
+                        ForEach(groups) { g in albumGridTile(g) }
+                    }
+                    .padding()
+                }
+            } else {
+                List(groups) { g in AlbumGroupRow(group: g) }
+                    .listStyle(.plain)
+                    .searchable(text: $filter, prompt: "Filter albums…")
             }
         }
+        .sheet(item: $addRequest) { AddToPlaylistSheet(uris: $0.uris) }
         .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button { useGrid.toggle() } label: {
+                    Image(systemName: useGrid ? "list.bullet" : "square.grid.2x2")
+                }
+            }
             ToolbarItem(placement: .navigationBarTrailing) {
                 Menu {
                     ForEach(AlbumSort.allCases, id: \.self) { sort in
@@ -94,7 +115,41 @@ struct AlbumListView: View {
                 } label: { Image(systemName: "arrow.up.arrow.down") }
             }
         }
-        .onAppear{ guard albums.isEmpty else{return}; store.listAlbumsByArtist{albums=$0;loading=false} }
+        .onAppear { guard albums.isEmpty else { return }; store.listAlbumsByArtist { albums = $0; loading = false } }
+    }
+
+    @ViewBuilder
+    private func albumGridTile(_ g: AlbumGroup) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            NavigationLink(destination: AlbumDetailView(album: g.variants[0],
+                                                        artist: g.artist.isEmpty ? nil : g.artist,
+                                                        artistTag: "albumartist")) {
+                ArtThumbByKey(artist: g.artist, album: g.variants[0], size: 130)
+                    .cornerRadius(8)
+            }
+            .buttonStyle(.plain)
+            Text(g.base.isEmpty ? "(no title)" : g.base).font(.subheadline).lineLimit(2)
+            if !g.artist.isEmpty {
+                Text(g.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+        }
+        .contextMenu {
+            Button {
+                store.albumSongs(album: g.variants[0], artist: g.artist.isEmpty ? nil : g.artist, artistTag: "albumartist") {
+                    store.enqueue(songs: $0, replace: true, playFirst: true)
+                }
+            } label: { Label("Play Album", systemImage: "play.fill") }
+            Button {
+                store.albumSongs(album: g.variants[0], artist: g.artist.isEmpty ? nil : g.artist, artistTag: "albumartist") {
+                    store.enqueue(songs: $0)
+                }
+            } label: { Label("Add to Queue", systemImage: "plus") }
+            Button {
+                store.albumSongs(album: g.variants[0], artist: g.artist.isEmpty ? nil : g.artist, artistTag: "albumartist") {
+                    addRequest = AddToPlaylistRequest(uris: $0.map(\.file))
+                }
+            } label: { Label("Add to Playlist…", systemImage: "music.note.list") }
+        }
     }
 }
 
@@ -515,6 +570,8 @@ struct RecentlyAddedView: View {
     @EnvironmentObject var store: MPDStore
     @State private var songs: [MPDSong] = []
     @State private var loading = true
+    @State private var addRequest: AddToPlaylistRequest?
+    @AppStorage("libraryAlbumLayout") private var useGrid: Bool = false
 
     private var albums: [AddedAlbum] {
         var seen: Set<String> = []
@@ -536,6 +593,13 @@ struct RecentlyAddedView: View {
             } else if albums.isEmpty {
                 ContentUnavailableView("Nothing Recently Added", systemImage: "sparkles",
                     description: Text("No tracks added or modified in the last 30 days."))
+            } else if useGrid {
+                ScrollView {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 130), spacing: 12)], spacing: 16) {
+                        ForEach(albums) { g in albumGridTile(g) }
+                    }
+                    .padding()
+                }
             } else {
                 List(albums) { g in
                     NavigationLink(destination: AlbumDetailView(album: g.album,
@@ -554,9 +618,51 @@ struct RecentlyAddedView: View {
                 }.listStyle(.plain)
             }
         }
+        .sheet(item: $addRequest) { AddToPlaylistSheet(uris: $0.uris) }
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button { useGrid.toggle() } label: {
+                    Image(systemName: useGrid ? "list.bullet" : "square.grid.2x2")
+                }
+            }
+        }
         .onAppear {
             guard songs.isEmpty else { return }
             store.loadRecentlyAdded { songs = $0; loading = false }
+        }
+    }
+
+    @ViewBuilder
+    private func albumGridTile(_ g: AddedAlbum) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            NavigationLink(destination: AlbumDetailView(album: g.album,
+                                                        artist: g.artist.isEmpty ? nil : g.artist,
+                                                        artistTag: "albumartist")) {
+                ArtThumbByKey(artist: g.artist, album: g.album, size: 130)
+                    .cornerRadius(8)
+            }
+            .buttonStyle(.plain)
+            Text(g.album.isEmpty ? "(no title)" : g.album).font(.subheadline).lineLimit(2)
+            if !g.artist.isEmpty {
+                Text(g.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+        }
+        .contextMenu {
+            Button {
+                store.albumSongs(album: g.album, artist: g.artist.isEmpty ? nil : g.artist, artistTag: "albumartist") {
+                    store.enqueue(songs: $0, replace: true, playFirst: true)
+                }
+            } label: { Label("Play Album", systemImage: "play.fill") }
+            Button {
+                store.albumSongs(album: g.album, artist: g.artist.isEmpty ? nil : g.artist, artistTag: "albumartist") {
+                    store.enqueue(songs: $0)
+                }
+            } label: { Label("Add to Queue", systemImage: "plus") }
+            Button {
+                store.albumSongs(album: g.album, artist: g.artist.isEmpty ? nil : g.artist, artistTag: "albumartist") {
+                    addRequest = AddToPlaylistRequest(uris: $0.map(\.file))
+                }
+            } label: { Label("Add to Playlist…", systemImage: "music.note.list") }
         }
     }
 }
