@@ -740,7 +740,7 @@ final class MPDStore: ObservableObject {
     }
 
     /// Highest disc number per album from the `disc` tag ("list disc [FILTER] group album").
-    /// Key is the album base name lowercased (disc markers stripped). Values < 2 are omitted.
+    /// Key is `albumGroupingKey(album)` (disc markers stripped, punctuation folded). Values < 2 are omitted.
     /// Falls back to an empty map on ACK (older MPD) — callers treat missing as single-disc.
     func listDiscCounts(filter: String? = nil, value: String? = nil,
                         completion: @escaping @MainActor ([String: Int]) -> Void) {
@@ -755,7 +755,7 @@ final class MPDStore: ObservableObject {
             var out: [String: Int] = [:]
             for (album, disc) in parseGroupedValues(lines, groupKey: "album", valueKey: "disc") {
                 guard let n = discTagValue(disc), n > 0 else { continue }
-                let key = albumBaseAndDisc(album).base.lowercased()
+                let key = albumGroupingKey(album)
                 out[key] = max(out[key] ?? 0, n)
             }
             let result = out.filter { $0.value > 1 }

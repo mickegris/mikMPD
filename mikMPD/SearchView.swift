@@ -246,7 +246,7 @@ struct SearchView: View {
                 var seen: [String: Int] = [:]
                 var grouped: [(artist: String, album: String, discCount: Int)] = []
                 for p in sorted {
-                    let key = "\(p.artist)|\(albumBaseAndDisc(p.album).base)"
+                    let key = "\(p.artist.lowercased())|\(albumGroupingKey(p.album))"
                     if let i = seen[key] {
                         grouped[i].discCount += 1
                     } else {

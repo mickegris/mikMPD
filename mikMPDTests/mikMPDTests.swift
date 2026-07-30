@@ -1431,6 +1431,76 @@ import Testing
     }
 }
 
+// MARK: - albumGroupingKey (punctuation-folded album identity)
+
+@Suite struct AlbumGroupingKeyTests {
+    // The reported bug: The Beatles' 2-disc set is tagged "1967-1970" (ASCII hyphen,
+    // disc 2) and "1967\u{2013}1970" (en dash, disc 1) — two directories, two album
+    // tags, one album. Exact-string grouping split it into two single-disc rows.
+    @Test func enDashAndHyphenFoldTogether() {
+        #expect(albumGroupingKey("1967-1970") == albumGroupingKey("1967\u{2013}1970"))
+    }
+
+    @Test func emDashAndMinusSignFoldToo() {
+        #expect(albumGroupingKey("A\u{2014}B") == albumGroupingKey("A-B"))
+        #expect(albumGroupingKey("A\u{2212}B") == albumGroupingKey("A-B"))
+    }
+
+    @Test func smartQuotesAndEllipsisFold() {
+        #expect(albumGroupingKey("Sgt. Pepper\u{2019}s") == albumGroupingKey("Sgt. Pepper's"))
+        #expect(albumGroupingKey("Wait\u{2026}") == albumGroupingKey("Wait..."))
+    }
+
+    @Test func caseAndWhitespaceFold() {
+        #expect(albumGroupingKey("  Abbey Road ") == albumGroupingKey("abbey road"))
+    }
+
+    @Test func discMarkersStillStripped() {
+        #expect(albumGroupingKey("Quadrophenia [Disc 1]") == albumGroupingKey("Quadrophenia [Disc 2]"))
+    }
+
+    @Test func genuinelyDifferentAlbumsStayApart() {
+        #expect(albumGroupingKey("Revolver") != albumGroupingKey("Revolution"))
+        #expect(albumGroupingKey("1962-1966") != albumGroupingKey("1967-1970"))
+    }
+}
+
+@Suite struct AlbumGroupingMergeTests {
+    @Test func dashVariantsMergeIntoOneRow() {
+        let groups = groupAlbumVariants(["1967-1970", "1967\u{2013}1970"])
+        #expect(groups.count == 1, "dash variants must be one album, got \(groups.count)")
+        #expect(groups[0].variants.count == 2)
+        // No disc markers in either name, so the count falls back to the variant count.
+        #expect(discCountFromVariants(groups[0].variants) == 2)
+    }
+
+    @Test func artistAwareOverloadMergesDashVariants() {
+        let groups = groupAlbumVariants([
+            (artist: "The Beatles", album: "1967-1970"),
+            (artist: "The Beatles", album: "1967\u{2013}1970"),
+        ])
+        #expect(groups.count == 1)
+        #expect(groups[0].variants.count == 2)
+        #expect(groups[0].discCount == 2)
+    }
+
+    @Test func sameTitleDifferentArtistsStaySeparate() {
+        let groups = groupAlbumVariants([
+            (artist: "The Beatles", album: "1967-1970"),
+            (artist: "Someone Else", album: "1967\u{2013}1970"),
+        ])
+        #expect(groups.count == 2, "punctuation folding must not merge across artists")
+    }
+
+    @Test func tagDiscsLookupUsesFoldedKey() {
+        // listDiscCounts keys on albumGroupingKey; the row must find its entry even
+        // though its display base uses the other dash.
+        let group = groupAlbumVariants([(artist: "The Beatles", album: "1967\u{2013}1970")])[0]
+        let discMap = [albumGroupingKey("1967-1970"): 2]
+        #expect(discMap[group.groupingKey] == 2)
+    }
+}
+
 // MARK: - discTagValue
 
 @Suite struct DiscTagValueTests {

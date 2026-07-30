@@ -86,9 +86,9 @@ struct AlbumListView: View {
             // artist in the current view), so "Greatest Hits" by two artists never gets
             // the disc count from the other artist's multi-disc release.
             var byBase: [String: Set<String>] = [:]
-            for g in gs { byBase[g.base.lowercased(), default: []].insert(g.artist.lowercased()) }
-            for i in gs.indices where byBase[gs[i].base.lowercased()]?.count == 1 {
-                gs[i].tagDiscs = discMap[gs[i].base.lowercased()]
+            for g in gs { byBase[g.groupingKey, default: []].insert(g.artist.lowercased()) }
+            for i in gs.indices where byBase[gs[i].groupingKey]?.count == 1 {
+                gs[i].tagDiscs = discMap[gs[i].groupingKey]
             }
         }
         return gs
@@ -302,9 +302,9 @@ struct AlbumDetailView: View {
             loadSongs(tags: [album])
             return
         }
-        let base = albumBaseAndDisc(album).base
+        let key = albumGroupingKey(album)
         store.listTag("album", filter: artistTag, value: artist){ all in
-            let sibs = all.filter{ albumBaseAndDisc($0).base == base }
+            let sibs = all.filter{ albumGroupingKey($0) == key }
             let tags = sibs.count > 1 ? sibs : [album]
             mergedTags = tags
             loadSongs(tags: tags)
@@ -416,7 +416,7 @@ struct ArtistDetailView: View {
                             HStack(spacing:10){
                                 ArtThumbByKey(artist:artist,album:g.variants[0],size:44).cornerRadius(4)
                                 Text(g.base.isEmpty ? "(no title)" : g.base)
-                                let nd = albumDiscCount(variants: g.variants, tagDiscs: tagDiscs[g.base.lowercased()])
+                                let nd = albumDiscCount(variants: g.variants, tagDiscs: tagDiscs[albumGroupingKey(g.base)])
                                 if nd > 1 {
                                     Spacer()
                                     Text("\(nd) discs").font(.caption).foregroundStyle(.secondary)
@@ -474,9 +474,9 @@ struct GenreDetailView: View {
         var gs=groupAlbumVariants(albums)
         if !discMap.isEmpty {
             var byBase:[String:Set<String>]=[:]
-            for g in gs { byBase[g.base.lowercased(), default:[]].insert(g.artist.lowercased()) }
-            for i in gs.indices where byBase[gs[i].base.lowercased()]?.count==1 {
-                gs[i].tagDiscs=discMap[gs[i].base.lowercased()]
+            for g in gs { byBase[g.groupingKey, default:[]].insert(g.artist.lowercased()) }
+            for i in gs.indices where byBase[gs[i].groupingKey]?.count==1 {
+                gs[i].tagDiscs=discMap[gs[i].groupingKey]
             }
         }
         return gs

@@ -83,17 +83,46 @@ nonisolated func albumLookupTitle(_ album: String) -> String {
     return s
 }
 
+/// Grouping key for an album tag: disc markers stripped, then the punctuation that
+/// taggers disagree about folded (en/em dash and minus sign → hyphen, smart quotes →
+/// straight, ellipsis → "..."), trimmed and lowercased.
+///
+/// This is only ever a *key* — display always uses the raw tag. It exists because two
+/// rips of the same album can differ by exactly one character: The Beatles' "1967-1970"
+/// (ASCII hyphen, disc 2) and "1967–1970" (en dash, disc 1) are separate directories and
+/// separate album tags, which split one 2-disc set into two single-disc albums with a
+/// wrong disc caption on each. Folding only punctuation and case keeps this safe — the
+/// artist is still part of every key that uses it, so distinct albums never merge.
+nonisolated func albumGroupingKey(_ album: String) -> String {
+    let base = albumBaseAndDisc(album).base
+        .replacingOccurrences(of: "\u{2013}", with: "-")   // en dash
+        .replacingOccurrences(of: "\u{2014}", with: "-")   // em dash
+        .replacingOccurrences(of: "\u{2212}", with: "-")   // minus sign
+        .replacingOccurrences(of: "\u{2018}", with: "'")   // left single quote
+        .replacingOccurrences(of: "\u{2019}", with: "'")   // right single quote
+        .replacingOccurrences(of: "\u{201C}", with: "\"")  // left double quote
+        .replacingOccurrences(of: "\u{201D}", with: "\"")  // right double quote
+        .replacingOccurrences(of: "\u{2026}", with: "...") // ellipsis
+    return base.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+}
+
 /// Collapse disc variants of the same album into one entry, preserving the
 /// order of first appearance: ["X [Disc 1]", "X [Disc 2]", "Y"] → [("X", 2 variants), ("Y", 1)].
+/// Variants that differ only by punctuation style merge too (see `albumGroupingKey`);
+/// the displayed base comes from the first variant seen.
 nonisolated func groupAlbumVariants(_ albums: [String]) -> [(base: String, variants: [String])] {
     var order: [String] = []
+    var displayBase: [String: String] = [:]
     var groups: [String: [String]] = [:]
     for album in albums {
-        let base = albumBaseAndDisc(album).base
-        if groups[base] == nil { order.append(base) }
-        groups[base, default: []].append(album)
+        let key = albumGroupingKey(album)
+        if groups[key] == nil {
+            order.append(key)
+            displayBase[key] = albumBaseAndDisc(album).base
+        }
+        groups[key, default: []].append(album)
     }
-    return order.map { ($0, groups[$0]!) }
+    return order.map { (displayBase[$0]!, groups[$0]!) }
 }
 
 /// Disc count for display from a list of album-name variants.
@@ -128,6 +157,8 @@ nonisolated struct AlbumGroup: Identifiable, Equatable {
     var variants: [String]
     var tagDiscs: Int? = nil          // from listDiscCounts; nil = not yet fetched
     var id: String { "\(artist.lowercased())|\(base)" }
+    /// Punctuation-folded key; use this to look up disc maps, never `base` directly.
+    var groupingKey: String { albumGroupingKey(base) }
     var discCount: Int { albumDiscCount(variants: variants, tagDiscs: tagDiscs) }
 }
 
@@ -138,11 +169,12 @@ nonisolated func groupAlbumVariants(_ pairs: [(artist: String, album: String)]) 
     var order: [String] = []
     var groups: [String: AlbumGroup] = [:]
     for p in pairs {
-        let base = albumBaseAndDisc(p.album).base
-        let key = "\(p.artist.lowercased())|\(base)"
+        let key = "\(p.artist.lowercased())|\(albumGroupingKey(p.album))"
         if groups[key] == nil {
             order.append(key)
-            groups[key] = AlbumGroup(artist: p.artist, base: base, variants: [])
+            groups[key] = AlbumGroup(artist: p.artist,
+                                     base: albumBaseAndDisc(p.album).base,
+                                     variants: [])
         }
         groups[key]!.variants.append(p.album)
     }
