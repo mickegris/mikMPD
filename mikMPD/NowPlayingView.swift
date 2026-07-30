@@ -97,9 +97,6 @@ struct NowPlayingView: View {
                 transportButtons
                 volumeSlider
                 modeButtons
-                if song.sourceKind != .radio {
-                    playbackOptionsRow
-                }
                 audioInfo
                 phoneStreamToggle
             }
@@ -465,45 +462,23 @@ struct NowPlayingView: View {
     }
 
     var modeButtons: some View {
-        HStack(spacing: 10) {
+        // Replay gain and crossfade are global MPD settings like the other four, so
+        // they sit in the same row and use ModeBtn for identical sizing. Six buttons
+        // only fit because ModeBtn expands to share the width rather than claiming a
+        // fixed minimum. Each shows its value when set and its name when off.
+        let rg = store.replayGain
+        let xfadeOn = store.crossfadeSeconds > 0
+        return HStack(spacing: 6) {
             ModeBtn("Repeat",  "repeat",                "repeat",             store.repeatMode)  { store.toggleRepeat()  }
             ModeBtn("Shuffle", "shuffle",               "shuffle",            store.randomMode)  { store.toggleRandom()  }
             ModeBtn("Single",  "1.circle.fill",         "1.circle",           store.singleMode)  { store.toggleSingle()  }
             ModeBtn("Consume", "fork.knife.circle.fill","fork.knife.circle",  store.consumeMode) { store.toggleConsume() }
-        }
-    }
-
-    var playbackOptionsRow: some View {
-        HStack(spacing: 10) {
-            // Cycle order and display names live on ReplayGainMode (Models.swift)
-            let rg = store.replayGain
-            let rgActive = rg != .off
-            Button {
+            ModeBtn(rg == .off ? "Gain" : rg.label, "waveform", "waveform", rg != .off) {
                 store.setReplayGainMode(rg.next)
-            } label: {
-                VStack(spacing: 3) {
-                    Image(systemName: "waveform").font(.title3)
-                    Text("Gain: \(rg.label)").font(.caption2)
-                }
-                .foregroundStyle(rgActive ? Color.accentColor : Color.secondary)
-                .frame(minWidth: 90, minHeight: 40)
-                .background(RoundedRectangle(cornerRadius: 10)
-                    .fill(rgActive ? Color.accentColor.opacity(0.15) : Color(.systemGray6)))
             }
-
-            let xfadeOn = store.crossfadeSeconds > 0
-            let xfadeLabel = xfadeOn ? "X-Fade: \(store.crossfadeSeconds)s" : "X-Fade: Off"
-            Button {
+            ModeBtn(xfadeOn ? "\(store.crossfadeSeconds)s" : "Fade",
+                    "arrow.left.arrow.right", "arrow.left.arrow.right", xfadeOn) {
                 store.setCrossfade(xfadeOn ? 0 : 5)
-            } label: {
-                VStack(spacing: 3) {
-                    Image(systemName: "arrow.left.arrow.right").font(.title3)
-                    Text(xfadeLabel).font(.caption2)
-                }
-                .foregroundStyle(xfadeOn ? Color.accentColor : Color.secondary)
-                .frame(minWidth: 90, minHeight: 40)
-                .background(RoundedRectangle(cornerRadius: 10)
-                    .fill(xfadeOn ? Color.accentColor.opacity(0.15) : Color(.systemGray6)))
             }
         }
     }
@@ -552,9 +527,11 @@ struct ModeBtn: View {
             VStack(spacing: 3) {
                 Image(systemName: active ? sfOn : sfOff).font(.title3)
                 Text(label).font(.caption2)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
             }
             .foregroundStyle(active ? Color.accentColor : Color.secondary)
-            .frame(minWidth: 60, minHeight: 40)
+            .frame(maxWidth: .infinity, minHeight: 40)
             .background(RoundedRectangle(cornerRadius: 10)
                 .fill(active ? Color.accentColor.opacity(0.15) : Color(.systemGray6)))
         }
