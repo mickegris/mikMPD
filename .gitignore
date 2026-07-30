@@ -23,3 +23,6 @@ Package.resolved
 
 # Implementation plans
 plans/
+
+# Local-only integration tests (require a real MPD server — must not be committed)
+mikMPDTests/Local/
