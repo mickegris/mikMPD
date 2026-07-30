@@ -26,6 +26,29 @@ Tests cover pure logic that doesn't need an MPD server: MPD protocol parsing (`p
 **MPD protocol**: https://mpd.readthedocs.io/en/stable/protocol.html#command-reference  
 Full command reference for all MPD text commands. Consult before adding new MPD operations — covers filters, tags, binary commands (`albumart`, `readpicture`), partition commands, stickers, channels, and more.
 
+### Verified server behavior (checked against MPD 0.24.0)
+
+Facts confirmed by querying a real server, each of which cost debugging time to learn:
+
+- **Filter values are case-sensitive.** `list disc album "Live at Leeds"` returns nothing;
+  `list disc album "Live At Leeds"` returns all four discs. When an exact-name query comes back
+  empty, suspect capitalisation before concluding the tag is missing or differently shaped —
+  a mis-cased probe was once misdiagnosed as "the album uses disc markers in its name".
+  Prefer scoping by artist/albumartist and matching case-insensitively in Swift.
+- **`xfade` is omitted from `status` when crossfade is 0** (not reported as `xfade: 0`).
+  `poll()` handles this with `Int(s["xfade"] ?? "0") ?? 0`; any new status field may be absent
+  when it holds its default.
+- **ACK does not always keep the connection alive.** A bad *argument* on a *known* command
+  ACKs and leaves the socket usable (`setvol 9999`). Some builds close the TCP connection
+  outright for an *unknown* command, which surfaces as a non-ACK I/O error and disconnects.
+  Capability probes that fall back on failure must check `socket.connected` before retrying —
+  see the caveat comment in `MPDSocket.command`.
+- **Multiple `group` keys are supported**: `list disc group albumartist group album` works and
+  interleaves `Album:` / `AlbumArtist:` / `Disc:` lines (empty `Disc:` for untagged albums).
+  `listDiscCounts` currently uses the single-key form plus a base-name-uniqueness guard;
+  the two-key form would make disc counts artist-aware and remove that limitation, but needs a
+  two-key variant of `parseGroupedValues`.
+
 ### MPD stickers (v1.5 candidate)
 
 Per-song metadata stored by MPD clients on the server. `<type>` is always `"song"` in practice.
@@ -132,6 +155,7 @@ Disconnects on background, reconnects on foreground resume — **unless phone st
 - Password stored in Keychain via `KeychainHelper`; legacy migration from UserDefaults runs on init.
 - Album art keyed by `artist|album` (lowercased) with an LRU cache (100 items). Fetch order: MPD-local (`albumart`/`readpicture` binary commands) → MusicBrainz/CoverArtArchive. Both in-memory and disk-cached (`Caches/albumart/`).
 - **Multi-disc albums**: `albumBaseAndDisc` (Models.swift) strips trailing disc markers (`[Disc 1]`, `(CD 2)`, `Disk 3`, bare `CD2`; a delimiter must precede the keyword so titles like "ABCD2" survive). Applied in `artCacheKey` (disc variants share one cover), MusicBrainz queries, and `WikipediaService.fetchAlbum`. `MPDSong` parses the `disc` tag; `effectiveDisc` falls back to the album-suffix disc; album tracks sort via `sortedByDiscAndTrack`. Album lists collapse variants into one row via `groupAlbumVariants` ("N discs" caption); `AlbumDetailView.loadSongs` re-expands to sibling variants (one `listTag` probe) and renders "Disc N" sections when tracks span multiple discs. The stripped base title is shown only when variants actually merged.
+- **Disc count comes from two independent signals, and both are needed.** Real libraries mix the conventions: "Live At Leeds" is *one* album tag with `disc` tags 1–4, "Quadrophenia [Disc 1]/[Disc 2]" puts the marker in the album name, "'98 Live Meltdown (disc 1)" uses lowercase parens. Name markers alone (`discCountFromVariants`) report a properly-tagged multi-disc album as single-disc — the better the tagging, the worse the display. So `listDiscCounts` issues `list disc [FILTER] group album` alongside each album list and maps *lowercased base name* → highest disc number, `discTagValue` parses the tag (`"1/4"` → 4, the denominator wins when present), and `albumDiscCount(variants:tagDiscs:)` takes the **max** of both signals so agreeing signals don't double-count. `AlbumGroup.tagDiscs` carries the tag value; views fill it in after the query returns. Captions gate on `discCount > 1`, never `variants.count > 1` — a mixed-tagged album ("X" + "X [Disc 1]") has 2 variants but 1 disc and must not render "1 discs". `AlbumDetailView` uses `isMultiDisc` (`songsByDisc.count > 1 && maxDiscNumber > 1`) for both its header prefix and its "Disc N" section split. Because `list disc group album` groups by name only, `AlbumListView`/`GenreDetailView` apply `tagDiscs` **only when the base name is owned by exactly one artist in the current list**, so a multi-disc "Greatest Hits" can't stamp its count onto another artist's single-disc album of the same name. `SearchView` still counts name variants only — a known, deliberate gap.
 - **Album identity includes the artist.** Albums/Genre lists use `listAlbumsByArtist` (`list album [FILTER] group albumartist`, MPD 0.21+, flat name-only fallback on ACK) and show one `AlbumGroup` row per (albumartist, base) with an artist caption — same-named albums by different artists are separate rows. Grouped responses need `MPDSocket.rawLines` + `parseGroupedValues` (a `list … group …` response has no record-starter keys, so `parseMPDRecords` collapses it and `listValues` drops the group). `AlbumDetailView` takes `artistTag` ("albumartist" from grouped lists, "artist" from song links — different tags for compilations); sibling merging and `find` are always artist-filtered, and **merging is skipped when no artist is known**. `dedupedAlbumTracks` collapses duplicate library copies keyed `groupingArtist|disc|track|title` — the artist in the key is what makes it safe (a key without it merged same-titled tracks across artists and had to be reverted once).
 - Artist/album names are clickable `NavigationLink`s across NowPlaying, Queue, Search, and Library detail views.
 - No command batching — each MPD operation is a separate `send`/`receive` cycle ("No command_list, no dual sockets").
