@@ -24,7 +24,7 @@ A lightweight iOS/iPadOS client for [Music Player Daemon](https://www.musicpd.or
 
 **Queue** — View and manage the current playlist. Double-tap to jump to a song, drag to reorder, swipe to delete, shuffle the queue in place, clear all, toggle consume mode. "Add Next" (from album, search and playlist rows) queues a track right after the one playing.
 
-**Outputs & Partitions** — Toggle audio outputs on/off, switch between MPD partitions, create and delete partitions, move outputs between partitions via long-press context menu. Optional partition memory across reconnects.
+**Outputs & Partitions** — Toggle audio outputs on/off and switch partitions straight from Now Playing. The Outputs tab adds creating and deleting partitions and moving outputs between them (outputs are disabled before a move, which avoids a server-side stall). Optional partition memory across reconnects.
 
 **Multiple Servers** — Save any number of MPD servers and switch between them with one tap. Nearby servers advertising over Bonjour/Zeroconf are discovered automatically and can be added directly. Passwords are stored in the Keychain, and the last-used partition is remembered per server.
 
@@ -32,7 +32,9 @@ A lightweight iOS/iPadOS client for [Music Player Daemon](https://www.musicpd.or
 
 **Snapcast** — Control a [Snapcast](https://github.com/badaix/snapcast) multiroom server from the More tab. Adjust per-client volume and latency, mute groups, move clients between groups, rename clients, switch stream sources, and remove disconnected clients. Real-time updates via Snapcast's JSON-RPC push notifications. Configure the Snapcast host/port per MPD server profile (defaults to the MPD host, port 1705).
 
-**Server Statistics** — Library totals (songs, albums, artists, total playing time) and server uptime, playtime and last database update, from the More tab.
+**Server Statistics** — Library totals (songs, albums, artists, total playing time) and server uptime, playtime and last database update, from the More tab. Trigger a database update or a full rescan from the same screen; the figures refresh themselves when the scan finishes.
+
+**Diagnostics** — A rolling log of recent MPD commands with timings, under More. Slow commands are highlighted and the whole log can be copied, which makes a stalled or unresponsive server far easier to pin down.
 
 ## Requirements
 

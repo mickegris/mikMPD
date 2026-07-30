@@ -131,15 +131,28 @@ struct NowPlayingView: View {
         .sheet(isPresented: $showHistory) { RecentlyPlayedSheet() }
     }
 
+    /// Enable/disable outputs inline, mirroring `partitionButton`. Deliberately does
+    /// *not* open OutputsView: that screen also offers moving outputs between
+    /// partitions, which must not be two taps from the main screen (see
+    /// plans/move-active-output-hang.md). Partition management stays in the Outputs tab.
     var outputsButton: some View {
-        Button { showOutputs = true } label: {
+        Button {
+            store.loadOutputs()   // refresh enabled flags; the poll doesn't re-read outputs
+            showOutputs = true
+        } label: {
             Image(systemName: "hifispeaker.2")
                 .font(.body)
                 .foregroundStyle(Color.secondary)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Outputs")
-        .sheet(isPresented: $showOutputs) { OutputsView() }
+        .accessibilityLabel("Audio outputs")
+        .confirmationDialog("Audio Outputs", isPresented: $showOutputs, titleVisibility: .visible) {
+            ForEach(store.outputs) { out in
+                Button(out.enabled ? "✓ \(out.name)" : out.name) {
+                    store.toggleOutput(out.outputID)
+                }
+            }
+        }
     }
 
     var partitionButton: some View {

@@ -55,10 +55,18 @@ nonisolated final class MPDSocket: @unchecked Sendable {
     @discardableResult
     func command(_ cmd: String) throws -> [MPDRecord] {
         guard connected else { throw MPDError.notConnected }
+        let started = Date()
         do {
             try send(cmd + "\n")
-            return try readRecords()
+            let records = try readRecords()
+            MPDCommandLog.shared.record(command: cmd,
+                                        duration: Date().timeIntervalSince(started),
+                                        outcome: "ok (\(records.count) records)")
+            return records
         } catch {
+            MPDCommandLog.shared.record(command: cmd,
+                                        duration: Date().timeIntervalSince(started),
+                                        outcome: error.localizedDescription)
             // ACK is a protocol-level rejection — the connection is still valid.
             // Caveat: this holds for a bad argument on a *known* command. Some MPD
             // builds close the TCP connection for an *unknown* command; that surfaces
@@ -75,12 +83,19 @@ nonisolated final class MPDSocket: @unchecked Sendable {
     /// record-starter keys) preserves.
     func rawLines(_ cmd: String) throws -> [String] {
         guard connected else { throw MPDError.notConnected }
+        let started = Date()
         do {
             try send(cmd + "\n")
             let lines = try readUntilOK()
             if lines.first?.hasPrefix("ACK") == true { throw MPDError.ack(lines[0]) }
+            MPDCommandLog.shared.record(command: cmd,
+                                        duration: Date().timeIntervalSince(started),
+                                        outcome: "ok (\(lines.count) lines)")
             return lines
         } catch {
+            MPDCommandLog.shared.record(command: cmd,
+                                        duration: Date().timeIntervalSince(started),
+                                        outcome: error.localizedDescription)
             if case MPDError.ack = error { throw error }
             disconnect(); throw error
         }

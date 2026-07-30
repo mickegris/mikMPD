@@ -75,6 +75,17 @@ struct MoreView: View {
                     }
                 }
 
+                NavigationLink {
+                    DiagnosticsView()
+                } label: {
+                    HStack {
+                        Image(systemName: "stethoscope")
+                            .foregroundColor(.accentColor)
+                            .frame(width: 28)
+                        Text("Diagnostics")
+                    }
+                }
+
                 Section("About") {
                     HStack {
                         Text("Version")
@@ -100,6 +111,7 @@ struct MoreView: View {
 
 struct ServerStatsView: View {
     @EnvironmentObject var store: MPDStore
+    @State private var confirmRescan = false
 
     private static let dateFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -125,6 +137,7 @@ struct ServerStatsView: View {
                             statRow("Last DB update", value: Self.dateFormatter.string(from: updated))
                         }
                     }
+                    databaseSection
                 }
                 .listStyle(.insetGrouped)
             } else if let err = store.statsError {
@@ -142,7 +155,38 @@ struct ServerStatsView: View {
                 Button { store.loadStats() } label: { Image(systemName: "arrow.clockwise") }
             }
         }
+        .alert("Full Rescan?", isPresented: $confirmRescan) {
+            Button("Rescan", role: .destructive) { store.updateDatabase(rescan: true) }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Re-reads every file in the library, ignoring timestamps. This can take a long time on a large library.")
+        }
         .onAppear { store.loadStats() }
+    }
+
+    @ViewBuilder
+    private var databaseSection: some View {
+        Section {
+            Button { store.updateDatabase() } label: {
+                HStack {
+                    Label(store.isUpdatingDB ? "Updating…" : "Update Database",
+                          systemImage: "arrow.triangle.2.circlepath")
+                    if store.isUpdatingDB { Spacer(); ProgressView() }
+                }
+            }
+            .disabled(store.isUpdatingDB)
+
+            Button(role: .destructive) { confirmRescan = true } label: {
+                Label("Full Rescan…", systemImage: "arrow.clockwise.circle")
+            }
+            .disabled(store.isUpdatingDB)
+        } header: {
+            Text("Database")
+        } footer: {
+            Text(store.isUpdatingDB
+                 ? "MPD is scanning. Statistics refresh automatically when it finishes."
+                 : "Update scans for new and changed files. A full rescan re-reads every file and can take a long time.")
+        }
     }
 
     private func statRow(_ label: String, value: String) -> some View {

@@ -405,8 +405,8 @@ struct ArtistDetailView: View {
                 }
             }
             Section{
-                Button{ store.findSongs(tag:"artist",value:artist){store.enqueue(songs:$0,replace:true,playFirst:true)} } label:{Label("Play All",systemImage:"play.fill").frame(maxWidth:.infinity)}.buttonStyle(.borderedProminent)
-                Button{ store.findSongs(tag:"artist",value:artist){store.enqueue(songs:$0)} } label:{Label("Add All",systemImage:"plus").frame(maxWidth:.infinity)}.buttonStyle(.bordered)
+                Button{ store.enqueueMatching(tag:"artist",value:artist,replace:true,playFirst:true) } label:{Label("Play All",systemImage:"play.fill").frame(maxWidth:.infinity)}.buttonStyle(.borderedProminent)
+                Button{ store.enqueueMatching(tag:"artist",value:artist) } label:{Label("Add All",systemImage:"plus").frame(maxWidth:.infinity)}.buttonStyle(.bordered)
             }
             Section("Albums"){
                 if loading { HStack{Spacer();ProgressView();Spacer()} }
@@ -484,7 +484,7 @@ struct GenreDetailView: View {
     var body: some View {
         List {
             Section{
-                Button{ store.findSongs(tag:"genre",value:genre){store.enqueue(songs:$0,replace:true,playFirst:true)} } label:{Label("Play All",systemImage:"play.fill").frame(maxWidth:.infinity)}.buttonStyle(.borderedProminent)
+                Button{ store.enqueueMatching(tag:"genre",value:genre,replace:true,playFirst:true) } label:{Label("Play All",systemImage:"play.fill").frame(maxWidth:.infinity)}.buttonStyle(.borderedProminent)
             }
             Section("Albums"){
                 if loading { HStack{Spacer();ProgressView();Spacer()} }
@@ -877,7 +877,7 @@ struct ArtThumbByKey: View {
                 ZStack{Color(.systemGray5);Image("MikMPDLogo").resizable().scaledToFit().padding(size * 0.18)}.frame(width:size,height:size)
             }
         }
-        .onAppear{ store.fetchArtIfNeeded(artist:artist,album:album) }
+        .task(id: artKey) { store.fetchArtIfNeeded(artist: artist, album: album) }
     }
 }
 struct ArtThumb: View {
@@ -891,6 +891,6 @@ struct ArtThumb: View {
                 ZStack{Color(.systemGray5);Image(song?.fallbackArtAssetName ?? "MikMPDLogo").resizable().scaledToFit().padding(size * 0.18)}.frame(width:size,height:size)
             }
         }
-        .onAppear{ if let s=song { store.fetchArtIfNeeded(for:s) } }
+        .task(id: song?.artKey ?? "") { if let s = song { store.fetchArtIfNeeded(for: s) } }
     }
 }
