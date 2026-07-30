@@ -26,6 +26,7 @@
 		C8203DEB2F55CD88008D17BA /* LICENSE.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = LICENSE.md; sourceTree = "<group>"; };
 		C8203DF42F55CD88008D17BA /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		C84691192FCEAC8600AD5E70 /* mikMPDTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = mikMPDTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		C84BD007301B5978000FF2A4 /* mikMPD.xctestplan */ = {isa = PBXFileReference; lastKnownFileType = text; path = mikMPD.xctestplan; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -75,6 +76,7 @@
 		C81F37E42F51D1C000DE5EB1 = {
 			isa = PBXGroup;
 			children = (
+				C84BD007301B5978000FF2A4 /* mikMPD.xctestplan */,
 				C81F37EF2F51D1C000DE5EB1 /* mikMPD */,
 				C846911A2FCEAC8600AD5E70 /* mikMPDTests */,
 				C81F37EE2F51D1C000DE5EB1 /* Products */,

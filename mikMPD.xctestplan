@@ -1,0 +1,40 @@
+{
+  "configurations" : [
+    {
+      "id" : "7E0BC5A6-0859-4D2B-8F58-64DA7DD45D6B",
+      "name" : "Test Scheme Action",
+      "options" : {
+
+      }
+    }
+  ],
+  "defaultOptions" : {
+    "environmentVariableEntries" : [
+      {
+        "key" : "WIKI_INTEGRATION",
+        "value" : "1"
+      },
+      {
+        "key" : "MPD_INTEGRATION",
+        "value" : "1"
+      }
+    ],
+    "performanceAntipatternCheckerEnabled" : true,
+    "targetForVariableExpansion" : {
+      "containerPath" : "container:mikMPD.xcodeproj",
+      "identifier" : "C81F37EC2F51D1C000DE5EB1",
+      "name" : "mikMPD"
+    }
+  },
+  "testTargets" : [
+    {
+      "parallelizable" : true,
+      "target" : {
+        "containerPath" : "container:mikMPD.xcodeproj",
+        "identifier" : "C84691182FCEAC8600AD5E70",
+        "name" : "mikMPDTests"
+      }
+    }
+  ],
+  "version" : 1
+}
