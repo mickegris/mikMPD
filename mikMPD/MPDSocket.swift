@@ -59,7 +59,11 @@ nonisolated final class MPDSocket: @unchecked Sendable {
             try send(cmd + "\n")
             return try readRecords()
         } catch {
-            // ACK is a protocol-level rejection — the connection is still valid
+            // ACK is a protocol-level rejection — the connection is still valid.
+            // Caveat: this holds for a bad argument on a *known* command. Some MPD
+            // builds close the TCP connection for an *unknown* command; that surfaces
+            // as a non-ACK I/O error here. Callers that fall back on failure must
+            // check socket.connected before retrying.
             if case MPDError.ack = error { throw error }
             disconnect(); throw error
         }
