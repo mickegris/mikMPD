@@ -72,13 +72,20 @@ struct AlbumListView: View {
     @State private var addRequest: AddToPlaylistRequest?
     @AppStorage("librarySortAlbums") private var albumSort: AlbumSort = .artistAsc
     @AppStorage("libraryAlbumLayout") private var useGrid: Bool = false
+    @State private var discMap: [String: Int] = [:]
 
     var shown: [(artist: String, album: String)] {
         filter.isEmpty ? albums : albums.filter {
             $0.album.localizedCaseInsensitiveContains(filter) || $0.artist.localizedCaseInsensitiveContains(filter)
         }
     }
-    var groups: [AlbumGroup] { sortedAlbumGroups(groupAlbumVariants(shown), by: albumSort) }
+    var groups: [AlbumGroup] {
+        var gs = sortedAlbumGroups(groupAlbumVariants(shown), by: albumSort)
+        if !discMap.isEmpty {
+            for i in gs.indices { gs[i].tagDiscs = discMap[gs[i].base.lowercased()] }
+        }
+        return gs
+    }
 
     var body: some View {
         Group {
@@ -115,7 +122,11 @@ struct AlbumListView: View {
                 } label: { Image(systemName: "arrow.up.arrow.down") }
             }
         }
-        .onAppear { guard albums.isEmpty else { return }; store.listAlbumsByArtist { albums = $0; loading = false } }
+        .onAppear {
+            guard albums.isEmpty else { return }
+            store.listAlbumsByArtist { albums = $0; loading = false }
+            store.listDiscCounts { discMap = $0 }
+        }
     }
 
     @ViewBuilder
@@ -212,7 +223,8 @@ struct AlbumDetailView: View {
                                 }
                             }
                             if !loading {
-                                let discPrefix = songsByDisc.count > 1 ? "\(songsByDisc.count) discs · " : ""
+                                let discMax = songsByDisc.map(\.disc).max() ?? songsByDisc.count
+                                let discPrefix = songsByDisc.count > 1 ? "\(discMax) discs · " : ""
                                 Text(discPrefix + "\(songs.count) tracks · \(formatTime(songs.map(\.duration).reduce(0,+)))").font(.caption).foregroundStyle(.secondary)
                             }
                         }
@@ -357,6 +369,7 @@ struct ArtistDetailView: View {
     @State private var albums:[String]=[];@State private var loading=true
     @State private var wiki:String?=nil;@State private var wikiLoading=false;@State private var expanded=false
     @State private var artistImage:UIImage?=nil
+    @State private var tagDiscs:[String:Int]=[:]
     var albumGroups:[(base:String,variants:[String])]{ groupAlbumVariants(albums) }
     var body: some View {
         List {
@@ -395,9 +408,10 @@ struct ArtistDetailView: View {
                             HStack(spacing:10){
                                 ArtThumbByKey(artist:artist,album:g.variants[0],size:44).cornerRadius(4)
                                 Text(g.base.isEmpty ? "(no title)" : g.base)
-                                if discCountFromVariants(g.variants) > 1 {
+                                let nd = albumDiscCount(variants: g.variants, tagDiscs: tagDiscs[g.base.lowercased()])
+                                if nd > 1 {
                                     Spacer()
-                                    Text("\(discCountFromVariants(g.variants)) discs").font(.caption).foregroundStyle(.secondary)
+                                    Text("\(nd) discs").font(.caption).foregroundStyle(.secondary)
                                 }
                             }
                         }
@@ -409,7 +423,10 @@ struct ArtistDetailView: View {
         .navigationTitle(artist.isEmpty ? "(unknown)" : artist).navigationBarTitleDisplayMode(.inline)
         .onAppear{ loadAlbums(); loadWiki(); loadArtistImage() }
     }
-    func loadAlbums(){ store.listTag("album",filter:"artist",value:artist){albums=$0;loading=false} }
+    func loadAlbums(){
+        store.listTag("album",filter:"artist",value:artist){albums=$0;loading=false}
+        store.listDiscCounts(filter:"artist",value:artist){tagDiscs=$0}
+    }
     func loadWiki(){
         guard wiki==nil,!wikiLoading else{return}; wikiLoading=true
         Task{ let t=await WikipediaService.shared.fetchArtist(query:artist); await MainActor.run{wiki=t;wikiLoading=false} }
@@ -443,6 +460,12 @@ struct GenreDetailView: View {
     @EnvironmentObject var store: MPDStore
     let genre:String
     @State private var albums:[(artist: String, album: String)]=[];@State private var loading=true
+    @State private var discMap:[String:Int]=[:]
+    var groups:[AlbumGroup]{
+        var gs=groupAlbumVariants(albums)
+        if !discMap.isEmpty { for i in gs.indices { gs[i].tagDiscs=discMap[gs[i].base.lowercased()] } }
+        return gs
+    }
     var body: some View {
         List {
             Section{
@@ -451,13 +474,16 @@ struct GenreDetailView: View {
             Section("Albums"){
                 if loading { HStack{Spacer();ProgressView();Spacer()} }
                 else {
-                    ForEach(groupAlbumVariants(albums)){ g in AlbumGroupRow(group: g) }
+                    ForEach(groups){ g in AlbumGroupRow(group: g) }
                 }
             }
         }
         .listStyle(.insetGrouped)
         .navigationTitle(genre.isEmpty ? "(none)" : genre).navigationBarTitleDisplayMode(.inline)
-        .onAppear{ store.listAlbumsByArtist(filter:"genre",value:genre){albums=$0;loading=false} }
+        .onAppear{
+            store.listAlbumsByArtist(filter:"genre",value:genre){albums=$0;loading=false}
+            store.listDiscCounts(filter:"genre",value:genre){discMap=$0}
+        }
     }
 }
 

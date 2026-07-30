@@ -1431,6 +1431,75 @@ import Testing
     }
 }
 
+// MARK: - discTagValue
+
+@Suite struct DiscTagValueTests {
+    @Test func plainInteger() {
+        #expect(discTagValue("3") == 3)
+    }
+    @Test func slashFormatReturnsDenominator() {
+        #expect(discTagValue("1/4") == 4)
+    }
+    @Test func slashFormatWithSpaces() {
+        #expect(discTagValue("2 / 5") == 5)
+    }
+    @Test func emptyStringReturnsNil() {
+        #expect(discTagValue("") == nil)
+    }
+    @Test func junkReturnsNil() {
+        #expect(discTagValue("abc") == nil)
+    }
+}
+
+// MARK: - albumDiscCount
+
+@Suite struct AlbumDiscCountTests {
+    @Test func tagDataWinsOverSingleVariant() {
+        // The reported bug: Live at Leeds — one album name, disc tags 1-4
+        #expect(albumDiscCount(variants: ["Live at Leeds"], tagDiscs: 4) == 4)
+    }
+    @Test func nameMarkerWinsWhenNoTagData() {
+        // Quadrophenia-style: disc markers in album names
+        #expect(albumDiscCount(variants: ["Quadrophenia [Disc 1]", "Quadrophenia [Disc 2]"], tagDiscs: nil) == 2)
+    }
+    @Test func singleAlbumNoTag() {
+        #expect(albumDiscCount(variants: ["Album"], tagDiscs: nil) == 1)
+    }
+    @Test func untaggedPlusDiscOneStillOne() {
+        // Edge: "Album" + "Album [Disc 1]" — discCountFromVariants = 1; tagDiscs nil → 1
+        #expect(albumDiscCount(variants: ["Album", "Album [Disc 1]"], tagDiscs: nil) == 1)
+    }
+    @Test func bothSignalsAgreeNoDoubleCount() {
+        // Name markers and tag data both say 2 — should still be 2
+        #expect(albumDiscCount(variants: ["X [Disc 1]", "X [Disc 2]"], tagDiscs: 2) == 2)
+    }
+}
+
+// MARK: - parseGroupedValues disc fixture
+
+@Suite struct ParseGroupedValuesDiscTests {
+    @Test func discGroupAlbumResponse() {
+        let lines = [
+            "Album: Live at Leeds",
+            "disc: 1/4",
+            "disc: 2/4",
+            "disc: 3/4",
+            "disc: 4/4",
+            "Album: Quadrophenia [Disc 1]",
+            "disc: 1/2",
+            "Album: Quadrophenia [Disc 2]",
+            "disc: 2/2",
+            "OK",
+        ]
+        let pairs = parseGroupedValues(lines, groupKey: "album", valueKey: "disc")
+        let leeds = pairs.filter { $0.group == "Live at Leeds" }
+        #expect(leeds.count == 4)
+        #expect(leeds.compactMap { discTagValue($0.value) }.max() == 4)
+        let quad = pairs.filter { $0.group.hasPrefix("Quadrophenia") }
+        #expect(quad.count == 2)
+    }
+}
+
 // MARK: - Disc-aware sorting
 
 @Suite struct DiscSortTests {

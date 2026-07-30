@@ -104,13 +104,31 @@ nonisolated func discCountFromVariants(_ variants: [String]) -> Int {
     variants.compactMap { albumBaseAndDisc($0).disc }.max() ?? variants.count
 }
 
+/// Parses an MPD `disc` tag value. "3" → 3; "1/4" → 4 (the total is authoritative
+/// when present); junk → nil.
+nonisolated func discTagValue(_ raw: String) -> Int? {
+    let parts = raw.split(separator: "/")
+    if parts.count == 2, let total = Int(parts[1].trimmingCharacters(in: .whitespaces)), total > 0 {
+        return total
+    }
+    return Int(parts.first?.trimmingCharacters(in: .whitespaces) ?? "")
+}
+
+/// Disc count combining album-name markers and the `disc` tag, taking the higher
+/// of the two so properly-tagged multi-disc albums (one name, disc tags 1–N) are
+/// not reported as single-disc.
+nonisolated func albumDiscCount(variants: [String], tagDiscs: Int?) -> Int {
+    max(discCountFromVariants(variants), tagDiscs ?? 0)
+}
+
 /// One row in an artist-aware album list: disc variants merged per artist.
 nonisolated struct AlbumGroup: Identifiable, Equatable {
     var artist: String
     var base: String
     var variants: [String]
+    var tagDiscs: Int? = nil          // from listDiscCounts; nil = not yet fetched
     var id: String { "\(artist.lowercased())|\(base)" }
-    var discCount: Int { discCountFromVariants(variants) }
+    var discCount: Int { albumDiscCount(variants: variants, tagDiscs: tagDiscs) }
 }
 
 /// Artist-aware variant of groupAlbumVariants for (artist, album) pairs from
@@ -222,6 +240,9 @@ nonisolated enum PlaybackSourceKind {
     case cd
 }
 
+// Shared formatter — ISO8601DateFormatter is thread-safe on Apple platforms.
+nonisolated(unsafe) let mpdDateParser = ISO8601DateFormatter()
+
 nonisolated struct MPDSong: Identifiable, Equatable {
     var file:     String = ""
     var title:    String = ""
@@ -278,7 +299,7 @@ nonisolated struct MPDSong: Identifiable, Equatable {
         duration = Double(r["duration"] ?? "0") ?? 0
         pos      = Int(r["pos"]  ?? "0") ?? 0
         songID   = r["id"]       ?? ""
-        if let lm = r["last-modified"] { lastModified = ISO8601DateFormatter().date(from: lm) }
+        if let lm = r["last-modified"] { lastModified = mpdDateParser.date(from: lm) }
     }
 }
 

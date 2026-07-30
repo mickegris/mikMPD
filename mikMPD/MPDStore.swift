@@ -721,8 +721,32 @@ final class MPDStore: ObservableObject {
         }
     }
 
+    /// Highest disc number per album from the `disc` tag ("list disc [FILTER] group album").
+    /// Key is the album base name lowercased (disc markers stripped). Values < 2 are omitted.
+    /// Falls back to an empty map on ACK (older MPD) — callers treat missing as single-disc.
+    func listDiscCounts(filter: String? = nil, value: String? = nil,
+                        completion: @escaping @MainActor ([String: Int]) -> Void) {
+        Q.async { [weak self] in
+            guard let self else { return }
+            var cmd = "list disc"
+            if let f = filter, let v = value, !v.isEmpty { cmd += " \(f) \"\(v.esc)\"" }
+            guard let lines = try? self.socket.rawLines(cmd + " group album") else {
+                DispatchQueue.main.async { completion([:]) }
+                return
+            }
+            var out: [String: Int] = [:]
+            for (album, disc) in parseGroupedValues(lines, groupKey: "album", valueKey: "disc") {
+                guard let n = discTagValue(disc), n > 0 else { continue }
+                let key = albumBaseAndDisc(album).base.lowercased()
+                out[key] = max(out[key] ?? 0, n)
+            }
+            let result = out.filter { $0.value > 1 }
+            DispatchQueue.main.async { completion(result) }
+        }
+    }
+
     func loadRecentlyAdded(days: Int = 30, completion: @escaping @MainActor ([MPDSong]) -> Void) {
-        let cutoff = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-Double(days) * 86400))
+        let cutoff = mpdDateParser.string(from: Date().addingTimeInterval(-Double(days) * 86400))
         Q.async { [weak self] in
             guard let self else { return }
             let records = (try? self.socket.command("find \"(modified-since '\(cutoff)')\"")) ?? []
@@ -892,7 +916,7 @@ final class MPDStore: ObservableObject {
     func setReplayGainMode(_ mode: String) {
         Q.async { [weak self] in
             guard let self else { return }
-            _ = try? socket.command("replay_gain_mode \(mode.esc)")
+            _ = try? socket.command("replay_gain_mode \"\(mode.esc)\"")
             guard let recs = try? socket.command("replay_gain_status") else { return }
             var r: MPDRecord = [:]
             for rec in recs { r.merge(rec) { _, new in new } }
@@ -918,7 +942,8 @@ final class MPDStore: ObservableObject {
     func clearQueue() {
         Q.async { [weak self] in
             _ = try? self?.socket.command("clear")
-            DispatchQueue.main.async { self?.playbackContext = nil; self?.loadQueue() }
+            // Reset playlistPos immediately so addNext doesn't insert at a stale position.
+            DispatchQueue.main.async { self?.playbackContext = nil; self?.playlistPos = -1; self?.loadQueue() }
         }
     }
 
