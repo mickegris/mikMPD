@@ -240,6 +240,29 @@ nonisolated enum PlaybackSourceKind {
     case cd
 }
 
+/// MPD replay gain modes, in the order the Now Playing button cycles them.
+/// Keeps the valid set, the cycle order and the display names in one place —
+/// the view previously duplicated the order as a string array and the names as
+/// a ternary chain, so adding a mode meant editing two files in step.
+nonisolated enum ReplayGainMode: String, CaseIterable {
+    case off, track, album, auto
+
+    var label: String {
+        switch self {
+        case .off:   "Off"
+        case .track: "Track"
+        case .album: "Album"
+        case .auto:  "Auto"
+        }
+    }
+
+    /// Next mode in the cycle, wrapping at the end.
+    var next: ReplayGainMode {
+        let all = Self.allCases
+        return all[((all.firstIndex(of: self) ?? 0) + 1) % all.count]
+    }
+}
+
 /// Parse-only; called on MPDStore's serial queue Q (MPDSong.init).
 nonisolated(unsafe) let mpdDateParser = ISO8601DateFormatter()
 /// Format-only; called on the main actor (loadRecentlyAdded cutoff string).

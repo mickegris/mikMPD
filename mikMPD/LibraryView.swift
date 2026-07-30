@@ -604,7 +604,7 @@ struct RadioView: View {
 private struct AddedAlbum: Identifiable {
     let artist: String       // song.groupingArtist
     let album: String
-    let hasAlbumArtist: Bool // whether the albumArtist tag was present
+    var hasAlbumArtist: Bool // true if *any* track of this album carried the tag
     var artistTag: String { hasAlbumArtist ? "albumartist" : "artist" }
     var id: String { artCacheKey(artist: artist, album: album) }
 }
@@ -619,18 +619,26 @@ struct RecentlyAddedView: View {
     // Derive and cap once on load so the dedup loop doesn't re-run on every
     // body evaluation. Songs are sorted newest-first by the store before this.
     private static func deriveAlbums(from songs: [MPDSong]) -> [AddedAlbum] {
-        var seen: Set<String> = []
-        var result: [AddedAlbum] = []
+        var order: [String] = []
+        var byKey: [String: AddedAlbum] = [:]
         for song in songs {
             guard !song.album.isEmpty else { continue }
             let key = artCacheKey(artist: song.groupingArtist, album: song.album)
-            guard seen.insert(key).inserted else { continue }
-            result.append(AddedAlbum(artist: song.groupingArtist,
-                                     album: song.album,
-                                     hasAlbumArtist: !song.albumArtist.isEmpty))
-            if result.count >= 50 { break }
+            if byKey[key] == nil {
+                guard order.count < 50 else { continue }
+                order.append(key)
+                byKey[key] = AddedAlbum(artist: song.groupingArtist,
+                                        album: song.album,
+                                        hasAlbumArtist: !song.albumArtist.isEmpty)
+            } else if !song.albumArtist.isEmpty, byKey[key]?.hasAlbumArtist == false {
+                // A later track of this album carries the AlbumArtist tag that the newest
+                // one lacked. Upgrade the flag (keeping the newest track's names) so
+                // AlbumDetailView filters by "albumartist" — filtering a partially-tagged
+                // album by plain "artist" can return only one artist's tracks.
+                byKey[key]?.hasAlbumArtist = true
+            }
         }
-        return result
+        return order.compactMap { byKey[$0] }
     }
 
     var body: some View {

@@ -462,19 +462,15 @@ struct NowPlayingView: View {
 
     var playbackOptionsRow: some View {
         HStack(spacing: 10) {
-            // Cycles off → track → album → auto → off
-            let rgOrder = ["off", "track", "album", "auto"]
-            let rgActive = store.replayGainMode != "off"
-            let rgLabel = store.replayGainMode == "off" ? "Gain: Off" :
-                          store.replayGainMode == "track" ? "Gain: Track" :
-                          store.replayGainMode == "album" ? "Gain: Album" : "Gain: Auto"
+            // Cycle order and display names live on ReplayGainMode (Models.swift)
+            let rg = store.replayGain
+            let rgActive = rg != .off
             Button {
-                let idx = rgOrder.firstIndex(of: store.replayGainMode) ?? 0
-                store.setReplayGainMode(rgOrder[(idx + 1) % rgOrder.count])
+                store.setReplayGainMode(rg.next)
             } label: {
                 VStack(spacing: 3) {
                     Image(systemName: "waveform").font(.title3)
-                    Text(rgLabel).font(.caption2)
+                    Text("Gain: \(rg.label)").font(.caption2)
                 }
                 .foregroundStyle(rgActive ? Color.accentColor : Color.secondary)
                 .frame(minWidth: 90, minHeight: 40)

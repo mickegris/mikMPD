@@ -923,14 +923,18 @@ final class MPDStore: ObservableObject {
     func toggleRandom()  { let v = randomMode;  Q.async { [weak self] in _ = try? self?.socket.command("random \(v ? 0:1)");  self?.poll() } }
     func toggleSingle()  { let v = singleMode;  Q.async { [weak self] in _ = try? self?.socket.command("single \(v ? 0:1)");  self?.poll() } }
     func toggleConsume() { let v = consumeMode; Q.async { [weak self] in _ = try? self?.socket.command("consume \(v ? 0:1)"); self?.poll() } }
-    func setReplayGainMode(_ mode: String) {
+    /// Server truth is kept as a String (MPD could report a mode we don't model);
+    /// this is the typed view of it for the UI, defaulting to `.off` if unknown.
+    var replayGain: ReplayGainMode { ReplayGainMode(rawValue: replayGainMode) ?? .off }
+
+    func setReplayGainMode(_ mode: ReplayGainMode) {
         Q.async { [weak self] in
             guard let self else { return }
-            _ = try? socket.command("replay_gain_mode \"\(mode.esc)\"")
+            _ = try? socket.command("replay_gain_mode \"\(mode.rawValue)\"")
             guard let recs = try? socket.command("replay_gain_status") else { return }
             var r: MPDRecord = [:]
             for rec in recs { r.merge(rec) { _, new in new } }
-            let newMode = r["replay_gain_mode"] ?? mode
+            let newMode = r["replay_gain_mode"] ?? mode.rawValue
             DispatchQueue.main.async { self.replayGainMode = newMode }
         }
     }
