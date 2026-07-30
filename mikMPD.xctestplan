@@ -9,16 +9,6 @@
     }
   ],
   "defaultOptions" : {
-    "environmentVariableEntries" : [
-      {
-        "key" : "WIKI_INTEGRATION",
-        "value" : "1"
-      },
-      {
-        "key" : "MPD_INTEGRATION",
-        "value" : "1"
-      }
-    ],
     "performanceAntipatternCheckerEnabled" : true,
     "targetForVariableExpansion" : {
       "containerPath" : "container:mikMPD.xcodeproj",
@@ -28,7 +18,7 @@
   },
   "testTargets" : [
     {
-      "parallelizable" : true,
+      "parallelizable" : false,
       "target" : {
         "containerPath" : "container:mikMPD.xcodeproj",
         "identifier" : "C84691182FCEAC8600AD5E70",

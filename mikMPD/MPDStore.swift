@@ -697,6 +697,8 @@ final class MPDStore: ObservableObject {
     /// the server rejects the group syntax.
     func listAlbumsByArtist(filter: String? = nil, value: String? = nil,
                             completion: @escaping @MainActor ([(artist: String, album: String)]) -> Void) {
+        // Capture on main thread — @Published properties must not be read from Q.
+        let h = host, p = port, pw = password
         Q.async { [weak self] in
             guard let self else { return }
             var base = "list album"
@@ -713,6 +715,9 @@ final class MPDStore: ObservableObject {
                 DispatchQueue.main.async { completion(pairs) }
                 return
             }
+            // Some MPD builds close the TCP connection instead of ACKing an unsupported
+            // command. Reconnect before the flat fallback so users get their albums list.
+            if !self.socket.connected { _ = try? self.socket.connect(host: h, port: p, password: pw) }
             let vals = ((try? self.socket.listValues(base, key: "album")) ?? [])
                 .filter { !$0.isEmpty }
                 .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
@@ -726,11 +731,13 @@ final class MPDStore: ObservableObject {
     /// Falls back to an empty map on ACK (older MPD) — callers treat missing as single-disc.
     func listDiscCounts(filter: String? = nil, value: String? = nil,
                         completion: @escaping @MainActor ([String: Int]) -> Void) {
+        let h = host, p = port, pw = password
         Q.async { [weak self] in
             guard let self else { return }
             var cmd = "list disc"
             if let f = filter, let v = value, !v.isEmpty { cmd += " \(f) \"\(v.esc)\"" }
             guard let lines = try? self.socket.rawLines(cmd + " group album") else {
+                if !self.socket.connected { _ = try? self.socket.connect(host: h, port: p, password: pw) }
                 DispatchQueue.main.async { completion([:]) }
                 return
             }
