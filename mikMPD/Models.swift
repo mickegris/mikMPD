@@ -240,8 +240,10 @@ nonisolated enum PlaybackSourceKind {
     case cd
 }
 
-// Shared formatter — ISO8601DateFormatter is thread-safe on Apple platforms.
+/// Parse-only; called on MPDStore's serial queue Q (MPDSong.init).
 nonisolated(unsafe) let mpdDateParser = ISO8601DateFormatter()
+/// Format-only; called on the main actor (loadRecentlyAdded cutoff string).
+nonisolated(unsafe) let mpdDateFormatter = ISO8601DateFormatter()
 
 nonisolated struct MPDSong: Identifiable, Equatable {
     var file:     String = ""

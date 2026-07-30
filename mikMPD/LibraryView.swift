@@ -82,7 +82,14 @@ struct AlbumListView: View {
     var groups: [AlbumGroup] {
         var gs = sortedAlbumGroups(groupAlbumVariants(shown), by: albumSort)
         if !discMap.isEmpty {
-            for i in gs.indices { gs[i].tagDiscs = discMap[gs[i].base.lowercased()] }
+            // Only apply tagDiscs when the base name is unambiguous (owned by exactly one
+            // artist in the current view), so "Greatest Hits" by two artists never gets
+            // the disc count from the other artist's multi-disc release.
+            var byBase: [String: Set<String>] = [:]
+            for g in gs { byBase[g.base.lowercased(), default: []].insert(g.artist.lowercased()) }
+            for i in gs.indices where byBase[gs[i].base.lowercased()]?.count == 1 {
+                gs[i].tagDiscs = discMap[gs[i].base.lowercased()]
+            }
         }
         return gs
     }
@@ -208,6 +215,8 @@ struct AlbumDetailView: View {
         let g = Dictionary(grouping:songs){ $0.effectiveDisc }
         return g.keys.sorted().map{ ($0, g[$0]!) }
     }
+    var maxDiscNumber: Int { songsByDisc.map(\.disc).max() ?? 0 }
+    var isMultiDisc: Bool { songsByDisc.count > 1 && maxDiscNumber > 1 }
     var body: some View {
         List {
             Section {
@@ -223,8 +232,7 @@ struct AlbumDetailView: View {
                                 }
                             }
                             if !loading {
-                                let discMax = songsByDisc.map(\.disc).max() ?? songsByDisc.count
-                                let discPrefix = songsByDisc.count > 1 ? "\(discMax) discs · " : ""
+                                let discPrefix = isMultiDisc ? "\(maxDiscNumber) discs · " : ""
                                 Text(discPrefix + "\(songs.count) tracks · \(formatTime(songs.map(\.duration).reduce(0,+)))").font(.caption).foregroundStyle(.secondary)
                             }
                         }
@@ -248,7 +256,7 @@ struct AlbumDetailView: View {
             }
             if loading {
                 Section("Tracks"){ HStack{Spacer();ProgressView();Spacer()} }
-            } else if songsByDisc.count > 1 {
+            } else if isMultiDisc {
                 ForEach(songsByDisc,id:\.disc){ g in
                     Section(g.disc > 0 ? "Disc \(g.disc)" : "Tracks"){ trackRows(g.songs) }
                 }
@@ -424,6 +432,7 @@ struct ArtistDetailView: View {
         .onAppear{ loadAlbums(); loadWiki(); loadArtistImage() }
     }
     func loadAlbums(){
+        guard albums.isEmpty else { return }
         store.listTag("album",filter:"artist",value:artist){albums=$0;loading=false}
         store.listDiscCounts(filter:"artist",value:artist){tagDiscs=$0}
     }
@@ -463,7 +472,13 @@ struct GenreDetailView: View {
     @State private var discMap:[String:Int]=[:]
     var groups:[AlbumGroup]{
         var gs=groupAlbumVariants(albums)
-        if !discMap.isEmpty { for i in gs.indices { gs[i].tagDiscs=discMap[gs[i].base.lowercased()] } }
+        if !discMap.isEmpty {
+            var byBase:[String:Set<String>]=[:]
+            for g in gs { byBase[g.base.lowercased(), default:[]].insert(g.artist.lowercased()) }
+            for i in gs.indices where byBase[gs[i].base.lowercased()]?.count==1 {
+                gs[i].tagDiscs=discMap[gs[i].base.lowercased()]
+            }
+        }
         return gs
     }
     var body: some View {
@@ -647,11 +662,19 @@ struct RecentlyAddedView: View {
                             }
                         }
                     }
-                }.listStyle(.plain)
+                }
+                .listStyle(.plain)
+                .refreshable { reload() }
             }
         }
         .sheet(item: $addRequest) { AddToPlaylistSheet(uris: $0.uris) }
         .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button { reload() } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .disabled(loading)
+            }
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button { useGrid.toggle() } label: {
                     Image(systemName: useGrid ? "list.bullet" : "square.grid.2x2")
@@ -660,10 +683,15 @@ struct RecentlyAddedView: View {
         }
         .onAppear {
             guard loading else { return }
-            store.loadRecentlyAdded { songs in
-                albums = Self.deriveAlbums(from: songs)
-                loading = false
-            }
+            reload()
+        }
+    }
+
+    private func reload() {
+        loading = true
+        store.loadRecentlyAdded { songs in
+            albums = Self.deriveAlbums(from: songs)
+            loading = false
         }
     }
 

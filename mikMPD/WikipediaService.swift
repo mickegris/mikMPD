@@ -27,7 +27,8 @@ actor WikipediaService {
     nonisolated static let genericAlbumTitles: Set<String> = [
         "greatest hits", "gold", "live", "the best of", "best of", "hits",
         "anthology", "collection", "the collection", "essential", "the essential",
-        "platinum", "compilation", "singles", "the singles"
+        "platinum", "compilation", "singles", "the singles",
+        "the very best of", "the hits", "unplugged", "in concert"
     ]
 
     nonisolated static func isGenericAlbumTitle(_ album: String) -> Bool {

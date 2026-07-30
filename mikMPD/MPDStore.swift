@@ -746,7 +746,7 @@ final class MPDStore: ObservableObject {
     }
 
     func loadRecentlyAdded(days: Int = 30, completion: @escaping @MainActor ([MPDSong]) -> Void) {
-        let cutoff = mpdDateParser.string(from: Date().addingTimeInterval(-Double(days) * 86400))
+        let cutoff = mpdDateFormatter.string(from: Date().addingTimeInterval(-Double(days) * 86400))
         Q.async { [weak self] in
             guard let self else { return }
             let records = (try? self.socket.command("find \"(modified-since '\(cutoff)')\"")) ?? []
@@ -959,6 +959,8 @@ final class MPDStore: ObservableObject {
         Q.async { [weak self] in
             guard let self else { return }
             _ = try? self.socket.command("addid \"\(uri.esc)\" \(pos)")
+            // Deliberately not clearing playbackContext: inserting one song next doesn't
+            // change which playlist the queue came from — the label stays accurate.
             DispatchQueue.main.async { self.loadQueue() }
         }
     }
