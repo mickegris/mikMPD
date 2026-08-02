@@ -147,10 +147,16 @@ struct AlbumListView: View {
                     .cornerRadius(8)
             }
             .buttonStyle(.plain)
-            Text(g.base.isEmpty ? "(no title)" : g.base).font(.subheadline).lineLimit(2)
-            if !g.artist.isEmpty {
-                Text(g.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-            }
+            // reservesSpace keeps every tile's text block the same height, so a title
+            // that wraps to two lines doesn't push its artist caption out of line with
+            // the neighbouring tile's. The artist line is always rendered for the same
+            // reason — an album with no albumartist would otherwise sit shorter.
+            Text(g.base.isEmpty ? "(no title)" : g.base)
+                .font(.subheadline)
+                .lineLimit(2, reservesSpace: true)
+            Text(g.artist)
+                .font(.caption).foregroundStyle(.secondary)
+                .lineLimit(1, reservesSpace: true)
         }
         // Fill the column so tile width is independent of how long the title is —
         // otherwise a wrapping title widens the VStack and moves its artwork.
@@ -717,10 +723,12 @@ struct RecentlyAddedView: View {
                     .cornerRadius(8)
             }
             .buttonStyle(.plain)
-            Text(g.album.isEmpty ? "(no title)" : g.album).font(.subheadline).lineLimit(2)
-            if !g.artist.isEmpty {
-                Text(g.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-            }
+            Text(g.album.isEmpty ? "(no title)" : g.album)
+                .font(.subheadline)
+                .lineLimit(2, reservesSpace: true)
+            Text(g.artist)
+                .font(.caption).foregroundStyle(.secondary)
+                .lineLimit(1, reservesSpace: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .contextMenu {
