@@ -143,7 +143,7 @@ struct AlbumListView: View {
             NavigationLink(destination: AlbumDetailView(album: g.variants[0],
                                                         artist: g.artist.isEmpty ? nil : g.artist,
                                                         artistTag: "albumartist")) {
-                ArtThumbByKey(artist: g.artist, album: g.variants[0], size: 130)
+                ArtThumbByKey(artist: g.artist, album: g.variants[0])
                     .cornerRadius(8)
             }
             .buttonStyle(.plain)
@@ -713,7 +713,7 @@ struct RecentlyAddedView: View {
             NavigationLink(destination: AlbumDetailView(album: g.album,
                                                         artist: g.artist.isEmpty ? nil : g.artist,
                                                         artistTag: g.artistTag)) {
-                ArtThumbByKey(artist: g.artist, album: g.album, size: 130)
+                ArtThumbByKey(artist: g.artist, album: g.album)
                     .cornerRadius(8)
             }
             .buttonStyle(.plain)
@@ -871,15 +871,38 @@ struct SongRow: View {
     }
 }
 struct ArtThumbByKey: View {
-    @EnvironmentObject var store:MPDStore
-    let artist:String; let album:String; let size:CGFloat
-    var artKey:String{ artCacheKey(artist:artist,album:album) }
+    @EnvironmentObject var store: MPDStore
+    let artist: String; let album: String
+    /// Fixed square side, or `nil` to fill the available width (still square).
+    /// Grid tiles fill: a fixed 130 pt cover inside a ~179 pt column left 49 pt of
+    /// dead space per cell, which is what made tile alignment look wrong no matter
+    /// which alignment was chosen. Filling removes the slack instead of moving it.
+    var size: CGFloat? = nil
+
+    var artKey: String { artCacheKey(artist: artist, album: album) }
+
+    @ViewBuilder private var imageLayer: some View {
+        if let img = store.albumArtCache[artKey] {
+            Image(uiImage: img).resizable().aspectRatio(contentMode: .fill)
+        } else {
+            ZStack {
+                Color(.systemGray5)
+                Image("MikMPDLogo").resizable().scaledToFit()
+                    .padding(size.map { $0 * 0.18 } ?? 26)
+            }
+        }
+    }
+
     var body: some View {
         Group {
-            if let img=store.albumArtCache[artKey] {
-                Image(uiImage:img).resizable().aspectRatio(contentMode:.fill).frame(width:size,height:size).clipped()
+            if let size {
+                imageLayer.frame(width: size, height: size).clipped()
             } else {
-                ZStack{Color(.systemGray5);Image("MikMPDLogo").resizable().scaledToFit().padding(size * 0.18)}.frame(width:size,height:size)
+                Color.clear
+                    .frame(maxWidth: .infinity)
+                    .aspectRatio(1, contentMode: .fit)
+                    .overlay { imageLayer }
+                    .clipped()
             }
         }
         .task(id: artKey) { store.fetchArtIfNeeded(artist: artist, album: album) }
