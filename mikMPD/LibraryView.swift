@@ -101,7 +101,7 @@ struct AlbumListView: View {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if useGrid {
                 ScrollView {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 130), spacing: 12)], spacing: 16) {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 130), spacing: 12, alignment: .leading)], spacing: 16) {
                         ForEach(groups) { g in albumGridTile(g) }
                     }
                     .padding()
@@ -152,6 +152,9 @@ struct AlbumListView: View {
                 Text(g.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
         }
+        // Fill the column so tile width is independent of how long the title is —
+        // otherwise a wrapping title widens the VStack and moves its artwork.
+        .frame(maxWidth: .infinity, alignment: .leading)
         .contextMenu {
             Button {
                 store.albumSongs(album: g.variants[0], artist: g.artist.isEmpty ? nil : g.artist, artistTag: "albumartist") {
@@ -651,7 +654,7 @@ struct RecentlyAddedView: View {
                     description: Text("No tracks added or modified in the last 30 days."))
             } else if useGrid {
                 ScrollView {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 130), spacing: 12)], spacing: 16) {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 130), spacing: 12, alignment: .leading)], spacing: 16) {
                         ForEach(albums) { g in albumGridTile(g) }
                     }
                     .padding()
@@ -719,6 +722,7 @@ struct RecentlyAddedView: View {
                 Text(g.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .contextMenu {
             Button {
                 store.albumSongs(album: g.album, artist: g.artist.isEmpty ? nil : g.artist, artistTag: g.artistTag) {
