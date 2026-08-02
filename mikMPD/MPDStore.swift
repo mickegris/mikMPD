@@ -32,6 +32,8 @@ final class MPDStore: ObservableObject {
     @Published var randomMode:  Bool   = false
     @Published var singleMode:  Bool   = false
     @Published var consumeMode: Bool   = false
+    @Published var replayGainMode: String = "off"
+    @Published var crossfadeSeconds: Int  = 0
     @Published var playlistPos: Int    = -1
     @Published var currentSongID: String = ""
     @Published var bitrate:     String = ""
@@ -50,7 +52,7 @@ final class MPDStore: ObservableObject {
     @Published var playbackContext: String?        = nil  // stored-playlist name; nil = unknown/other
     @Published var albumArtCache:  [String: UIImage] = [:]
     private var artAccessOrder: [String] = []
-    private let artCacheLimit = 100
+    private let artCacheLimit = 400   // grid working set is ~800 albums; 100 thrashed
     @Published var isConnected     = false
     @Published var connectionError: String?        = nil
     @Published var isSearching     = false
@@ -337,6 +339,8 @@ final class MPDStore: ObservableObject {
         elapsed = 0; duration = 0; isPlaying = false; isPaused = false
         playlistPos = -1; bitrate = ""; audioFmt = ""; currentPartition = ""
         lyricsState = .unavailable; playbackContext = nil
+        replayGainMode = "off"; crossfadeSeconds = 0
+        serverStats = nil; statsError = nil; isUpdatingDB = false
     }
 
     // MARK: - Timers
@@ -464,11 +468,14 @@ final class MPDStore: ObservableObject {
             let sid  = s["songid"]  ?? ""
             let br   = s["bitrate"] ?? ""
             let af   = s["audio"]   ?? ""
-            let rep  = s["repeat"]  == "1"
-            let ran  = s["random"]  == "1"
-            let sin  = s["single"]  == "1"
-            let con  = s["consume"] == "1"
+            let rep   = s["repeat"]  == "1"
+            let ran   = s["random"]  == "1"
+            let sin   = s["single"]  == "1"
+            let con   = s["consume"] == "1"
+            let xfade = Int(s["xfade"] ?? "0") ?? 0
             let curPartition = s["partition"] ?? ""
+            // Present only while a database scan is running; carries the job id.
+            let updatingDB = s["updating_db"] != nil
 
             let songChanged = sid != self.lastSongID
             let song: MPDSong
@@ -515,10 +522,17 @@ final class MPDStore: ObservableObject {
                     self.lastUsedPartitionName = curPartition
                 }
 
-                if self.repeatMode   != rep { self.repeatMode   = rep }
-                if self.randomMode   != ran { self.randomMode   = ran }
-                if self.singleMode   != sin { self.singleMode   = sin }
-                if self.consumeMode  != con { self.consumeMode  = con }
+                if self.repeatMode       != rep   { self.repeatMode       = rep }
+                if self.randomMode       != ran   { self.randomMode       = ran }
+                if self.singleMode       != sin   { self.singleMode       = sin }
+                if self.consumeMode      != con   { self.consumeMode      = con }
+                if self.crossfadeSeconds != xfade { self.crossfadeSeconds = xfade }
+                if self.isUpdatingDB != updatingDB {
+                    self.isUpdatingDB = updatingDB
+                    // Scan just finished — refresh the figures so Server Statistics
+                    // updates itself without the user tapping anything.
+                    if !updatingDB { self.loadStats() }
+                }
                 if self.currentSong  != song { self.currentSong = song }
                 // Only update elapsed from poll when not seek-locked and value differs
                 if Date() >= self.seekLockUntil, self.elapsed != elapsed {
@@ -558,7 +572,7 @@ final class MPDStore: ObservableObject {
 
     // MARK: - Load
 
-    func loadAll() { loadQueue(); loadOutputs(); loadPartitions(); browse("") }
+    func loadAll() { loadQueue(); loadOutputs(); loadPartitions(); browse(""); loadReplayGainStatus() }
 
     func loadQueue() {
         Q.async { [weak self] in
@@ -691,6 +705,8 @@ final class MPDStore: ObservableObject {
     /// the server rejects the group syntax.
     func listAlbumsByArtist(filter: String? = nil, value: String? = nil,
                             completion: @escaping @MainActor ([(artist: String, album: String)]) -> Void) {
+        // Capture on main thread — @Published properties must not be read from Q.
+        let h = host, p = port, pw = password, part = currentPartition
         Q.async { [weak self] in
             guard let self else { return }
             var base = "list album"
@@ -707,11 +723,65 @@ final class MPDStore: ObservableObject {
                 DispatchQueue.main.async { completion(pairs) }
                 return
             }
+            // Some MPD builds close the TCP connection instead of ACKing an unsupported
+            // command. Reconnect and restore the active partition before the flat fallback
+            // so the user stays in the right zone and the albums list is populated.
+            if !self.socket.connected,
+               (try? self.socket.connect(host: h, port: p, password: pw)) != nil {
+                if !part.isEmpty { _ = try? self.socket.command("partition \"\(part.esc)\"") }
+                DispatchQueue.main.async { self.isConnected = true }
+            }
             let vals = ((try? self.socket.listValues(base, key: "album")) ?? [])
                 .filter { !$0.isEmpty }
                 .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
                 .map { (artist: "", album: $0) }
             DispatchQueue.main.async { completion(vals) }
+        }
+    }
+
+    /// Highest disc number per album from the `disc` tag ("list disc [FILTER] group album").
+    /// Key is `albumGroupingKey(album)` (disc markers stripped, punctuation folded). Values < 2 are omitted.
+    /// Falls back to an empty map on ACK (older MPD) — callers treat missing as single-disc.
+    func listDiscCounts(filter: String? = nil, value: String? = nil,
+                        completion: @escaping @MainActor ([String: Int]) -> Void) {
+        Q.async { [weak self] in
+            guard let self else { return }
+            var cmd = "list disc"
+            if let f = filter, let v = value, !v.isEmpty { cmd += " \(f) \"\(v.esc)\"" }
+            guard let lines = try? self.socket.rawLines(cmd + " group album") else {
+                DispatchQueue.main.async { completion([:]) }
+                return
+            }
+            var out: [String: Int] = [:]
+            for (album, disc) in parseGroupedValues(lines, groupKey: "album", valueKey: "disc") {
+                guard let n = discTagValue(disc), n > 0 else { continue }
+                let key = albumGroupingKey(album)
+                out[key] = max(out[key] ?? 0, n)
+            }
+            let result = out.filter { $0.value > 1 }
+            DispatchQueue.main.async { completion(result) }
+        }
+    }
+
+    /// Newly added songs, newest first. The `find` is **bounded** with `window`:
+    /// unbounded it walks the whole library (9846 songs here) and can outrun the
+    /// socket's 5 s read timeout, which disconnects mid-response and leaves MPD
+    /// generating output for a client that has gone away — then the 3 s reconnect
+    /// re-issues it. `limit` is generous relative to the 50 albums the view shows.
+    func loadRecentlyAdded(days: Int = 30, limit: Int = 2000,
+                           completion: @escaping @MainActor ([MPDSong]) -> Void) {
+        guard !isLoadingRecentlyAdded else { return }
+        isLoadingRecentlyAdded = true
+        let cutoff = mpdDateFormatter.string(from: Date().addingTimeInterval(-Double(days) * 86400))
+        Q.async { [weak self] in
+            guard let self else { return }
+            defer { DispatchQueue.main.async { self.isLoadingRecentlyAdded = false } }
+            let records = (try? self.socket.command(
+                "find \"(modified-since '\(cutoff)')\" window 0:\(limit)")) ?? []
+            let songs = records.map { MPDSong($0) }
+                .filter { !$0.file.isEmpty }
+                .sorted { ($0.lastModified ?? .distantPast) > ($1.lastModified ?? .distantPast) }
+            DispatchQueue.main.async { completion(songs) }
         }
     }
 
@@ -871,13 +941,41 @@ final class MPDStore: ObservableObject {
     func toggleRandom()  { let v = randomMode;  Q.async { [weak self] in _ = try? self?.socket.command("random \(v ? 0:1)");  self?.poll() } }
     func toggleSingle()  { let v = singleMode;  Q.async { [weak self] in _ = try? self?.socket.command("single \(v ? 0:1)");  self?.poll() } }
     func toggleConsume() { let v = consumeMode; Q.async { [weak self] in _ = try? self?.socket.command("consume \(v ? 0:1)"); self?.poll() } }
+    /// Server truth is kept as a String (MPD could report a mode we don't model);
+    /// this is the typed view of it for the UI, defaulting to `.off` if unknown.
+    var replayGain: ReplayGainMode { ReplayGainMode(rawValue: replayGainMode) ?? .off }
+
+    func setReplayGainMode(_ mode: ReplayGainMode) {
+        Q.async { [weak self] in
+            guard let self else { return }
+            _ = try? socket.command("replay_gain_mode \"\(mode.rawValue)\"")
+            guard let recs = try? socket.command("replay_gain_status") else { return }
+            var r: MPDRecord = [:]
+            for rec in recs { r.merge(rec) { _, new in new } }
+            let newMode = r["replay_gain_mode"] ?? mode.rawValue
+            DispatchQueue.main.async { self.replayGainMode = newMode }
+        }
+    }
+    func setCrossfade(_ seconds: Int) { Q.async { [weak self] in _ = try? self?.socket.command("crossfade \(seconds)"); self?.poll() } }
+
+    func loadReplayGainStatus() {
+        Q.async { [weak self] in
+            guard let self else { return }
+            guard let recs = try? socket.command("replay_gain_status") else { return }
+            var r: MPDRecord = [:]
+            for rec in recs { r.merge(rec) { _, new in new } }
+            guard let mode = r["replay_gain_mode"] else { return }
+            DispatchQueue.main.async { self.replayGainMode = mode }
+        }
+    }
 
     // MARK: - Queue management
 
     func clearQueue() {
         Q.async { [weak self] in
             _ = try? self?.socket.command("clear")
-            DispatchQueue.main.async { self?.playbackContext = nil; self?.loadQueue() }
+            // Reset playlistPos immediately so addNext doesn't insert at a stale position.
+            DispatchQueue.main.async { self?.playbackContext = nil; self?.playlistPos = -1; self?.loadQueue() }
         }
     }
 
@@ -885,6 +983,17 @@ final class MPDStore: ObservableObject {
         Q.async { [weak self] in
             _ = try? self?.socket.command("add \"\(uri.esc)\"")
             DispatchQueue.main.async { self?.playbackContext = nil; self?.loadQueue() }
+        }
+    }
+
+    func addNext(uri: String) {
+        let pos = playlistPos + 1
+        Q.async { [weak self] in
+            guard let self else { return }
+            _ = try? self.socket.command("addid \"\(uri.esc)\" \(pos)")
+            // Deliberately not clearing playbackContext: inserting one song next doesn't
+            // change which playlist the queue came from — the label stays accurate.
+            DispatchQueue.main.async { self.loadQueue() }
         }
     }
 
@@ -940,6 +1049,52 @@ final class MPDStore: ObservableObject {
         }
     }
 
+    /// Load playlist, physically shuffle the queue, then play from position 0.
+    /// Uses `shuffle` (reorders in place) — distinct from `random` mode toggle.
+    func shufflePlayPlaylist(_ name: String) {
+        Q.async { [weak self] in
+            guard let self else { return }
+            _ = try? self.socket.command("clear")
+            _ = try? self.socket.command("load \"\(name.esc)\"")
+            _ = try? self.socket.command("shuffle")
+            _ = try? self.socket.command("play 0")
+            self.poll()
+            DispatchQueue.main.async { self.playbackContext = name; self.loadQueue() }
+        }
+    }
+
+    /// Physically reorder the current queue in place (`shuffle` command).
+    func shuffleQueue() {
+        Q.async { [weak self] in
+            guard let self else { return }
+            _ = try? self.socket.command("shuffle")
+            DispatchQueue.main.async { self.loadQueue() }
+        }
+    }
+
+    /// Enqueue everything matching a tag with MPD's server-side `findadd` — one
+    /// command instead of one `add` per song. "Play All" on a large artist or genre
+    /// used to send thousands of sequential commands on the socket queue, starving
+    /// the poll for minutes. Ordering comes from MPD's database order (directory
+    /// then filename), which for the usual Artist/Album/NN-Track layout matches the
+    /// album-then-track order the old client-side sort produced.
+    func enqueueMatching(tag: String, value: String, replace: Bool = false, playFirst: Bool = false) {
+        Q.async { [weak self] in
+            guard let self else { return }
+            if replace { _ = try? self.socket.command("clear") }
+            let before = replace ? 0 : self.playlistLength()
+            _ = try? self.socket.command("findadd \(tag) \"\(value.esc)\"")
+            if playFirst || replace {
+                _ = try? self.socket.command("play \(before)")
+                self.poll()
+            }
+            DispatchQueue.main.async {
+                if replace { self.playbackContext = nil }
+                self.loadQueue()
+            }
+        }
+    }
+
     func enqueue(songs: [MPDSong], replace: Bool = false, playFirst: Bool = false) {
         Q.async { [weak self] in
             guard let self else { return }
@@ -952,6 +1107,68 @@ final class MPDStore: ObservableObject {
                 if replace { self.playbackContext = nil }
                 self.loadQueue()
             }
+        }
+    }
+
+    // MARK: - Server statistics
+
+    @Published var serverStats: MPDStats? = nil
+    @Published var statsError: String? = nil
+    /// True while MPD reports `updating_db` in `status` — set by the poll, so it
+    /// reflects scans started from any client, not just this one.
+    @Published var isUpdatingDB = false
+    /// Guards against re-issuing the (expensive) recently-added query while one is
+    /// already in flight — pull-to-refresh and tab re-entry could stack them.
+    private var isLoadingRecentlyAdded = false
+
+    /// Ask MPD to scan the music directory. `update` picks up new/changed/removed
+    /// files; `rescan` re-reads every file regardless of timestamp (much slower).
+    /// Both return immediately — progress is observed via `isUpdatingDB`.
+    func updateDatabase(rescan: Bool = false) {
+        Q.async { [weak self] in
+            guard let self else { return }
+            do {
+                _ = try self.socket.command(rescan ? "rescan" : "update")
+            } catch {
+                // Needs the "admin" permission; a password-protected server ACKs
+                // otherwise. Surface it instead of looking like nothing happened.
+                let msg = Self.ackMessage(error.localizedDescription)
+                DispatchQueue.main.async { self.statsError = msg }
+                return
+            }
+            self.poll()
+        }
+    }
+
+    func loadStats() {
+        serverStats = nil
+        statsError = nil
+        Q.async { [weak self] in
+            guard let self else { return }
+            let records: [MPDRecord]
+            do {
+                records = try socket.command("stats")
+            } catch {
+                DispatchQueue.main.async { self.statsError = "Could not load statistics." }
+                return
+            }
+            var r: MPDRecord = [:]
+            for rec in records { r.merge(rec) { _, new in new } }
+            guard !r.isEmpty else {
+                DispatchQueue.main.async { self.statsError = "No statistics returned." }
+                return
+            }
+            var s = MPDStats()
+            s.artists    = Int(r["artists"]     ?? "") ?? 0
+            s.albums     = Int(r["albums"]      ?? "") ?? 0
+            s.songs      = Int(r["songs"]       ?? "") ?? 0
+            s.uptime     = Int(r["uptime"]      ?? "") ?? 0
+            s.dbPlaytime = Int(r["db_playtime"] ?? "") ?? 0
+            s.playtime   = Int(r["playtime"]    ?? "") ?? 0
+            if let ts = Int(r["db_update"] ?? "") {
+                s.dbUpdate = Date(timeIntervalSince1970: TimeInterval(ts))
+            }
+            DispatchQueue.main.async { self.serverStats = s; self.statsError = nil }
         }
     }
 
@@ -1290,40 +1507,80 @@ final class MPDStore: ObservableObject {
             storeArt(key: key, image: img)
             return
         }
+        // A previous lookup found nothing. Without this the grid re-ran the whole
+        // MusicBrainz cascade for every art-less album on every scroll pass.
+        guard !Self.hasRecentMiss(key: key) else { return }
         artPending.insert(key)
         let file = song.file
+        let artist = song.artist, album = song.album
         Task { [weak self] in
             guard let self else { return }
-            // Try MPD-local art first (cover.jpg/png + embedded)
+            // Bound how many fetches run at once — a grid of 800 tiles otherwise
+            // opens hundreds of parallel requests.
+            await ArtFetchGate.shared.acquire()
+            defer { Task { await ArtFetchGate.shared.release() } }
+
             var img: UIImage?
-            if !file.isEmpty {
-                img = await self.fetchMPDArt(file: file)
+            if !Task.isCancelled {
+                // Prefer MPD-local art: it is on the LAN and usually already indexed,
+                // versus up to ~15 internet round trips through MusicBrainz. Grid tiles
+                // arrive with no file URI, so resolve one representative track first.
+                var localFile = file
+                if localFile.isEmpty, !album.isEmpty {
+                    localFile = await self.representativeFile(album: album, artist: artist)
+                }
+                if !localFile.isEmpty {
+                    img = await self.fetchMPDArt(file: localFile)
+                }
+                // Fall back to MusicBrainz/CoverArtArchive
+                if img == nil, !Task.isCancelled {
+                    img = await Self.downloadArt(artist: artist, album: album)
+                }
             }
-            // Fall back to MusicBrainz/CoverArtArchive
-            if img == nil {
-                img = await Self.downloadArt(artist: song.artist, album: song.album)
-            }
+            let found = img
             await MainActor.run {
                 self.artPending.remove(key)
-                if let img {
-                    self.storeArt(key: key, image: img)
+                if let found {
+                    self.storeArt(key: key, image: found)
+                } else if !Task.isCancelled {
+                    Self.recordMiss(key: key)
                 }
             }
         }
     }
 
-    /// Fetch art from MPD via albumart (cover files) then readpicture (embedded).
+    /// One track from an album, for MPD-local art lookups. `window 0:1` keeps it to a
+    /// single row no matter how large the album is.
+    private func representativeFile(album: String, artist: String) async -> String {
+        await withCheckedContinuation { cont in
+            Q.async { [weak self] in
+                guard let self else { cont.resume(returning: ""); return }
+                var cmd = "find album \"\(album.esc)\""
+                if !artist.isEmpty { cmd += " artist \"\(artist.esc)\"" }
+                cmd += " window 0:1"
+                let file = (try? self.socket.command(cmd))?.first?["file"] ?? ""
+                cont.resume(returning: file)
+            }
+        }
+    }
+
+    /// MPD-local art, tag art first: `readpicture` reads the picture embedded in the
+    /// file's own tags, `albumart` looks for a cover file (cover.jpg/png/…) beside it.
+    /// Tag art wins because it is the track's own art and, on a tagged library, the one
+    /// that actually exists — probing `albumart` first cost a wasted ACK round trip per
+    /// album on a library whose covers are all embedded. Caller falls back to
+    /// MusicBrainz/CoverArtArchive when both miss, giving: tag → cover file → internet.
     private func fetchMPDArt(file: String) async -> UIImage? {
         await withCheckedContinuation { cont in
             Q.async { [weak self] in
                 guard let self else { cont.resume(returning: nil); return }
-                // albumart: directory-level cover.jpg/png + embedded (MPD 0.21+)
-                if let data = try? self.socket.albumArt(uri: file), let img = UIImage(data: data) {
+                // 1. Embedded picture tag (MPD 0.22+)
+                if let data = try? self.socket.readPicture(uri: file), let img = UIImage(data: data) {
                     cont.resume(returning: img)
                     return
                 }
-                // readpicture: embedded picture tag (MPD 0.22+)
-                if let data = try? self.socket.readPicture(uri: file), let img = UIImage(data: data) {
+                // 2. Cover file in the song's directory (MPD 0.21+)
+                if let data = try? self.socket.albumArt(uri: file), let img = UIImage(data: data) {
                     cont.resume(returning: img)
                     return
                 }
@@ -1348,6 +1605,34 @@ final class MPDStore: ObservableObject {
     private static func artDiskPath(key: String) -> URL {
         let safe = key.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? key
         return artDiskCacheDir.appendingPathComponent(safe + ".jpg")
+    }
+
+    // MARK: Negative cache
+    //
+    // Albums with no art anywhere used to re-run the full MusicBrainz cascade on
+    // every scroll pass. A zero-byte marker records the miss; it expires so art
+    // added later is still picked up.
+
+    private static let missTTL: TimeInterval = 7 * 86_400
+
+    private static func missMarkerPath(key: String) -> URL {
+        let safe = key.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? key
+        return artDiskCacheDir.appendingPathComponent(safe + ".miss")
+    }
+
+    private static func hasRecentMiss(key: String) -> Bool {
+        let url = missMarkerPath(key: key)
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let modified = attrs[.modificationDate] as? Date else { return false }
+        if Date().timeIntervalSince(modified) > missTTL {
+            try? FileManager.default.removeItem(at: url)
+            return false
+        }
+        return true
+    }
+
+    private static func recordMiss(key: String) {
+        try? Data().write(to: missMarkerPath(key: key), options: .atomic)
     }
 
     private static func saveArtToDisk(key: String, image: UIImage) {
@@ -1516,6 +1801,8 @@ final class MPDStore: ObservableObject {
         guard let url = c.url else { return [] }
         var req = URLRequest(url: url)
         req.setValue("MPDClient-iOS/1.0", forHTTPHeaderField: "User-Agent")
+        // MusicBrainz allows ~1 request/second per client; exceeding it earns 503s.
+        await MusicBrainzThrottle.shared.wait()
         guard
             let (data, _)  = try? await URLSession.shared.data(for: req),
             let json       = try? JSONSerialization.jsonObject(with: data) as? [String: Any],

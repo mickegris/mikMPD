@@ -148,11 +148,21 @@ struct SearchView: View {
                                     : Color.clear
                             )
                             .swipeActions(edge: .leading) {
+                                if song.sourceKind == .library {
+                                    Button { store.addNext(uri: song.file) } label: {
+                                        Label("Add Next", systemImage: "text.line.first.and.arrowtriangle.forward")
+                                    }.tint(.orange)
+                                }
                                 Button { addRequest = AddToPlaylistRequest(uris: [song.file]) } label: {
                                     Label("Playlist", systemImage: "music.note.list")
                                 }.tint(.indigo)
                             }
                             .contextMenu {
+                                if song.sourceKind == .library {
+                                    Button { store.addNext(uri: song.file) } label: {
+                                        Label("Add Next", systemImage: "text.line.first.and.arrowtriangle.forward")
+                                    }
+                                }
                                 Button { addRequest = AddToPlaylistRequest(uris: [song.file]) } label: {
                                     Label("Add to Playlist…", systemImage: "music.note.list")
                                 }
@@ -176,7 +186,7 @@ struct SearchView: View {
                         .font(.caption)
                     }
                 } footer: {
-                    Text("Long press or swipe a song to add it to a playlist. Double-tap to play.")
+                    Text("Double-tap to play. Long press or swipe for options.")
                 }
             }
         }
@@ -236,7 +246,7 @@ struct SearchView: View {
                 var seen: [String: Int] = [:]
                 var grouped: [(artist: String, album: String, discCount: Int)] = []
                 for p in sorted {
-                    let key = "\(p.artist)|\(albumBaseAndDisc(p.album).base)"
+                    let key = "\(p.artist.lowercased())|\(albumGroupingKey(p.album))"
                     if let i = seen[key] {
                         grouped[i].discCount += 1
                     } else {

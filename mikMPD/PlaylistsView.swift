@@ -164,11 +164,21 @@ struct PlaylistDetailView: View {
                                 Button { store.add(uri: s.file) } label: {
                                     Label("Queue", systemImage: "plus")
                                 }.tint(.green)
+                                if s.sourceKind == .library {
+                                    Button { store.addNext(uri: s.file) } label: {
+                                        Label("Add Next", systemImage: "text.line.first.and.arrowtriangle.forward")
+                                    }.tint(.orange)
+                                }
                                 Button { addRequest = AddToPlaylistRequest(uris: [s.file]) } label: {
                                     Label("Playlist", systemImage: "music.note.list")
                                 }.tint(.indigo)
                             }
                             .contextMenu {
+                                if s.sourceKind == .library {
+                                    Button { store.addNext(uri: s.file) } label: {
+                                        Label("Add Next", systemImage: "text.line.first.and.arrowtriangle.forward")
+                                    }
+                                }
                                 Button { addRequest = AddToPlaylistRequest(uris: [s.file]) } label: {
                                     Label("Add to Playlist…", systemImage: "music.note.list")
                                 }
@@ -187,7 +197,7 @@ struct PlaylistDetailView: View {
             } header: {
                 Text("Tracks")
             } footer: {
-                Text("Long press or swipe a track to add it to another playlist.")
+                Text("Long press or swipe a track to add to queue, play next, or add to a playlist.")
             }
         }
         .listStyle(.insetGrouped)
@@ -195,6 +205,12 @@ struct PlaylistDetailView: View {
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
                 EditButton().disabled(songs.isEmpty)
+            }
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button { store.shufflePlayPlaylist(name) } label: {
+                    Image(systemName: "shuffle")
+                }
+                .disabled(loading || songs.isEmpty)
             }
         }
         .sheet(item: $addRequest) { AddToPlaylistSheet(uris: $0.uris, excluding: name) }

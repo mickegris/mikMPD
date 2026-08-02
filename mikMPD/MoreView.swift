@@ -3,6 +3,7 @@ import SwiftUI
 struct MoreView: View {
     @EnvironmentObject var store: MPDStore
     @State private var showConnection = false
+    @AppStorage("diagnosticsEnabled") private var diagnosticsEnabled = false
 
     /// "1.1 (15)" — marketing version plus build number.
     private var appVersionString: String {
@@ -63,7 +64,43 @@ struct MoreView: View {
                         Text("Snapcast")
                     }
                 }
-                
+
+                NavigationLink {
+                    ServerStatsView()
+                } label: {
+                    HStack {
+                        Image(systemName: "chart.bar")
+                            .foregroundColor(.accentColor)
+                            .frame(width: 28)
+                        Text("Server Statistics")
+                    }
+                }
+
+                Section {
+                    Toggle(isOn: $diagnosticsEnabled) {
+                        HStack {
+                            Image(systemName: "stethoscope")
+                                .foregroundColor(.accentColor)
+                                .frame(width: 28)
+                            Text("Diagnostics")
+                        }
+                    }
+                    if diagnosticsEnabled {
+                        NavigationLink {
+                            DiagnosticsView()
+                        } label: {
+                            HStack {
+                                Image(systemName: "list.bullet.rectangle")
+                                    .foregroundColor(.accentColor)
+                                    .frame(width: 28)
+                                Text("MPD Command Log")
+                            }
+                        }
+                    }
+                } footer: {
+                    Text("Records recent MPD commands with timings so a slow or unresponsive server can be diagnosed. Off by default; turning it off clears the log.")
+                }
+
                 Section("About") {
                     HStack {
                         Text("Version")
@@ -80,9 +117,100 @@ struct MoreView: View {
             }
             .listStyle(.insetGrouped)
             .navigationTitle("More")
+            .onAppear { MPDCommandLog.shared.isEnabled = diagnosticsEnabled }
+            .onChange(of: diagnosticsEnabled) { _, on in MPDCommandLog.shared.isEnabled = on }
         }
         .sheet(isPresented: $showConnection) {
             ConnectionView()
+        }
+    }
+}
+
+struct ServerStatsView: View {
+    @EnvironmentObject var store: MPDStore
+    @State private var confirmRescan = false
+
+    private static let dateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .medium
+        f.timeStyle = .short
+        return f
+    }()
+
+    var body: some View {
+        Group {
+            if let s = store.serverStats {
+                List {
+                    Section("Library") {
+                        statRow("Songs",      value: s.songs.formatted())
+                        statRow("Albums",     value: s.albums.formatted())
+                        statRow("Artists",    value: s.artists.formatted())
+                        statRow("Total time", value: formatDuration(s.dbPlaytime))
+                    }
+                    Section("Server") {
+                        statRow("Uptime",          value: formatDuration(s.uptime))
+                        statRow("Total playtime",  value: formatDuration(s.playtime))
+                        if let updated = s.dbUpdate {
+                            statRow("Last DB update", value: Self.dateFormatter.string(from: updated))
+                        }
+                    }
+                    databaseSection
+                }
+                .listStyle(.insetGrouped)
+            } else if let err = store.statsError {
+                ContentUnavailableView("Statistics Unavailable",
+                    systemImage: "exclamationmark.triangle",
+                    description: Text(err))
+            } else {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .navigationTitle("Server Statistics")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button { store.loadStats() } label: { Image(systemName: "arrow.clockwise") }
+            }
+        }
+        .alert("Full Rescan?", isPresented: $confirmRescan) {
+            Button("Rescan", role: .destructive) { store.updateDatabase(rescan: true) }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Re-reads every file in the library, ignoring timestamps. This can take a long time on a large library.")
+        }
+        .onAppear { store.loadStats() }
+    }
+
+    @ViewBuilder
+    private var databaseSection: some View {
+        Section {
+            Button { store.updateDatabase() } label: {
+                HStack {
+                    Label(store.isUpdatingDB ? "Updating…" : "Update Database",
+                          systemImage: "arrow.triangle.2.circlepath")
+                    if store.isUpdatingDB { Spacer(); ProgressView() }
+                }
+            }
+            .disabled(store.isUpdatingDB)
+
+            Button(role: .destructive) { confirmRescan = true } label: {
+                Label("Full Rescan…", systemImage: "arrow.clockwise.circle")
+            }
+            .disabled(store.isUpdatingDB)
+        } header: {
+            Text("Database")
+        } footer: {
+            Text(store.isUpdatingDB
+                 ? "MPD is scanning. Statistics refresh automatically when it finishes."
+                 : "Update scans for new and changed files. A full rescan re-reads every file and can take a long time.")
+        }
+    }
+
+    private func statRow(_ label: String, value: String) -> some View {
+        HStack {
+            Text(label)
+            Spacer()
+            Text(value).foregroundStyle(.secondary)
         }
     }
 }

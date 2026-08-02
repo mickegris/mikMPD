@@ -437,6 +437,28 @@ import Testing
     }
 }
 
+// MARK: - MPDSong.lastModified
+
+@Suite struct MPDSongLastModifiedTests {
+    @Test func parsesISO8601Date() {
+        let song = MPDSong(["file": "test.flac", "last-modified": "2026-07-29T09:12:33Z"])
+        let expected = ISO8601DateFormatter().date(from: "2026-07-29T09:12:33Z")
+        #expect(song.lastModified == expected)
+    }
+
+    @Test func missingFieldGivesNil() {
+        let song = MPDSong(["file": "test.flac"])
+        #expect(song.lastModified == nil)
+    }
+
+    @Test func newerSongSortsFirst() {
+        let older = MPDSong(["file": "a.flac", "last-modified": "2026-01-01T00:00:00Z"])
+        let newer = MPDSong(["file": "b.flac", "last-modified": "2026-07-01T00:00:00Z"])
+        let sorted = [older, newer].sorted { ($0.lastModified ?? .distantPast) > ($1.lastModified ?? .distantPast) }
+        #expect(sorted.first?.file == "b.flac")
+    }
+}
+
 // MARK: - parseStreamURL
 
 @Suite struct ParseStreamURLTests {
@@ -587,6 +609,41 @@ import Testing
             extract: "Greatest Hits is a compilation album by the American rock band Journey.",
             album: "Greatest Hits",
             artist: "Queen"))
+    }
+
+    // albumResultMatches alone cannot distinguish a real artist-specific article
+    // from a generic compilation page that mentions the artist in passing.
+    // fetchAlbum uses isGenericAlbumTitle to suppress these paths.
+    @Test func genericAlbumPassesMatchWhenArtistMentioned() {
+        #expect(WikipediaService.albumResultMatches(
+            title: "Greatest Hits",
+            extract: "Greatest Hits is a common name for compilation albums. Artists such as Bob Dylan and Neil Young have each released albums with this title.",
+            album: "Greatest Hits",
+            artist: "Bob Dylan"))
+    }
+}
+
+// MARK: - Wikipedia generic album title guard
+
+@Suite struct WikipediaGenericTitleTests {
+    @Test func knownGenericTitlesAreClassified() {
+        for title in ["Greatest Hits", "Gold", "Live", "The Best Of", "Best Of",
+                      "Hits", "Anthology", "Collection", "The Collection",
+                      "Essential", "The Essential", "Platinum", "Compilation",
+                      "Singles", "The Singles"] {
+            #expect(WikipediaService.isGenericAlbumTitle(title), "Expected \(title) to be generic")
+        }
+    }
+
+    @Test func distinctiveAlbumsAreNotGeneric() {
+        for title in ["101", "Abbey Road", "The Wall", "Kind of Blue", "Rumours", "OK Computer"] {
+            #expect(!WikipediaService.isGenericAlbumTitle(title), "Expected \(title) to be non-generic")
+        }
+    }
+
+    @Test func caseInsensitiveMatch() {
+        #expect(WikipediaService.isGenericAlbumTitle("GREATEST HITS"))
+        #expect(WikipediaService.isGenericAlbumTitle("greatest hits"))
     }
 }
 
@@ -1333,6 +1390,183 @@ import Testing
         let g = groupAlbumVariants(["One", "Two"])
         #expect(g.count == 2)
         #expect(g[0].variants == ["One"])
+    }
+}
+
+// MARK: - discCountFromVariants
+
+@Suite struct DiscCountFromVariantsTests {
+    // The reported bug: disc 1 tagged both with and without marker creates
+    // 3 variants but only 2 physical discs.
+    @Test func mixedMarkerAndBareVariant() {
+        #expect(discCountFromVariants(["Album", "Album [Disc 1]", "Album [Disc 2]"]) == 2)
+    }
+
+    @Test func normalTwoDiscAlbum() {
+        #expect(discCountFromVariants(["Album [Disc 1]", "Album [Disc 2]"]) == 2)
+    }
+
+    @Test func singleVariantNoMarker() {
+        #expect(discCountFromVariants(["Album"]) == 1)
+    }
+
+    @Test func gapInDiscNumbers() {
+        // Disc 2 missing: shows max disc number (3), not variant count (2).
+        #expect(discCountFromVariants(["Album [Disc 1]", "Album [Disc 3]"]) == 3)
+    }
+
+    @Test func noDiscMarkersAtAllFallsBackToCount() {
+        // Two un-marked variants: falls back to variant count.
+        #expect(discCountFromVariants(["Album Bonus", "Album"]) == 2)
+    }
+
+    @Test func letteredDiscs() {
+        #expect(discCountFromVariants(["101 [Disc A]", "101 [Disc B]"]) == 2)
+    }
+
+    // Two variants but only one marked disc — discCount is 1, so the
+    // "N discs" caption should be suppressed (not show "1 discs").
+    @Test func untaggedPlusTaggedDiscOneReturnsOne() {
+        #expect(discCountFromVariants(["Album", "Album [Disc 1]"]) == 1)
+    }
+}
+
+// MARK: - albumGroupingKey (punctuation-folded album identity)
+
+@Suite struct AlbumGroupingKeyTests {
+    // The reported bug: The Beatles' 2-disc set is tagged "1967-1970" (ASCII hyphen,
+    // disc 2) and "1967\u{2013}1970" (en dash, disc 1) — two directories, two album
+    // tags, one album. Exact-string grouping split it into two single-disc rows.
+    @Test func enDashAndHyphenFoldTogether() {
+        #expect(albumGroupingKey("1967-1970") == albumGroupingKey("1967\u{2013}1970"))
+    }
+
+    @Test func emDashAndMinusSignFoldToo() {
+        #expect(albumGroupingKey("A\u{2014}B") == albumGroupingKey("A-B"))
+        #expect(albumGroupingKey("A\u{2212}B") == albumGroupingKey("A-B"))
+    }
+
+    @Test func smartQuotesAndEllipsisFold() {
+        #expect(albumGroupingKey("Sgt. Pepper\u{2019}s") == albumGroupingKey("Sgt. Pepper's"))
+        #expect(albumGroupingKey("Wait\u{2026}") == albumGroupingKey("Wait..."))
+    }
+
+    @Test func caseAndWhitespaceFold() {
+        #expect(albumGroupingKey("  Abbey Road ") == albumGroupingKey("abbey road"))
+    }
+
+    @Test func discMarkersStillStripped() {
+        #expect(albumGroupingKey("Quadrophenia [Disc 1]") == albumGroupingKey("Quadrophenia [Disc 2]"))
+    }
+
+    @Test func genuinelyDifferentAlbumsStayApart() {
+        #expect(albumGroupingKey("Revolver") != albumGroupingKey("Revolution"))
+        #expect(albumGroupingKey("1962-1966") != albumGroupingKey("1967-1970"))
+    }
+}
+
+@Suite struct AlbumGroupingMergeTests {
+    @Test func dashVariantsMergeIntoOneRow() {
+        let groups = groupAlbumVariants(["1967-1970", "1967\u{2013}1970"])
+        #expect(groups.count == 1, "dash variants must be one album, got \(groups.count)")
+        #expect(groups[0].variants.count == 2)
+        // No disc markers in either name, so the count falls back to the variant count.
+        #expect(discCountFromVariants(groups[0].variants) == 2)
+    }
+
+    @Test func artistAwareOverloadMergesDashVariants() {
+        let groups = groupAlbumVariants([
+            (artist: "The Beatles", album: "1967-1970"),
+            (artist: "The Beatles", album: "1967\u{2013}1970"),
+        ])
+        #expect(groups.count == 1)
+        #expect(groups[0].variants.count == 2)
+        #expect(groups[0].discCount == 2)
+    }
+
+    @Test func sameTitleDifferentArtistsStaySeparate() {
+        let groups = groupAlbumVariants([
+            (artist: "The Beatles", album: "1967-1970"),
+            (artist: "Someone Else", album: "1967\u{2013}1970"),
+        ])
+        #expect(groups.count == 2, "punctuation folding must not merge across artists")
+    }
+
+    @Test func tagDiscsLookupUsesFoldedKey() {
+        // listDiscCounts keys on albumGroupingKey; the row must find its entry even
+        // though its display base uses the other dash.
+        let group = groupAlbumVariants([(artist: "The Beatles", album: "1967\u{2013}1970")])[0]
+        let discMap = [albumGroupingKey("1967-1970"): 2]
+        #expect(discMap[group.groupingKey] == 2)
+    }
+}
+
+// MARK: - discTagValue
+
+@Suite struct DiscTagValueTests {
+    @Test func plainInteger() {
+        #expect(discTagValue("3") == 3)
+    }
+    @Test func slashFormatReturnsDenominator() {
+        #expect(discTagValue("1/4") == 4)
+    }
+    @Test func slashFormatWithSpaces() {
+        #expect(discTagValue("2 / 5") == 5)
+    }
+    @Test func emptyStringReturnsNil() {
+        #expect(discTagValue("") == nil)
+    }
+    @Test func junkReturnsNil() {
+        #expect(discTagValue("abc") == nil)
+    }
+}
+
+// MARK: - albumDiscCount
+
+@Suite struct AlbumDiscCountTests {
+    @Test func tagDataWinsOverSingleVariant() {
+        // The reported bug: Live at Leeds — one album name, disc tags 1-4
+        #expect(albumDiscCount(variants: ["Live at Leeds"], tagDiscs: 4) == 4)
+    }
+    @Test func nameMarkerWinsWhenNoTagData() {
+        // Quadrophenia-style: disc markers in album names
+        #expect(albumDiscCount(variants: ["Quadrophenia [Disc 1]", "Quadrophenia [Disc 2]"], tagDiscs: nil) == 2)
+    }
+    @Test func singleAlbumNoTag() {
+        #expect(albumDiscCount(variants: ["Album"], tagDiscs: nil) == 1)
+    }
+    @Test func untaggedPlusDiscOneStillOne() {
+        // Edge: "Album" + "Album [Disc 1]" — discCountFromVariants = 1; tagDiscs nil → 1
+        #expect(albumDiscCount(variants: ["Album", "Album [Disc 1]"], tagDiscs: nil) == 1)
+    }
+    @Test func bothSignalsAgreeNoDoubleCount() {
+        // Name markers and tag data both say 2 — should still be 2
+        #expect(albumDiscCount(variants: ["X [Disc 1]", "X [Disc 2]"], tagDiscs: 2) == 2)
+    }
+}
+
+// MARK: - parseGroupedValues disc fixture
+
+@Suite struct ParseGroupedValuesDiscTests {
+    @Test func discGroupAlbumResponse() {
+        let lines = [
+            "Album: Live at Leeds",
+            "disc: 1/4",
+            "disc: 2/4",
+            "disc: 3/4",
+            "disc: 4/4",
+            "Album: Quadrophenia [Disc 1]",
+            "disc: 1/2",
+            "Album: Quadrophenia [Disc 2]",
+            "disc: 2/2",
+            "OK",
+        ]
+        let pairs = parseGroupedValues(lines, groupKey: "album", valueKey: "disc")
+        let leeds = pairs.filter { $0.group == "Live at Leeds" }
+        #expect(leeds.count == 4)
+        #expect(leeds.compactMap { discTagValue($0.value) }.max() == 4)
+        let quad = pairs.filter { $0.group.hasPrefix("Quadrophenia") }
+        #expect(quad.count == 2)
     }
 }
 

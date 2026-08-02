@@ -26,6 +26,10 @@ struct NowPlayingView: View {
     // Presents the Recently Played sheet
     @State private var showHistory = false
 
+    // Presents the Outputs sheet and partition picker
+    @State private var showOutputs    = false
+    @State private var showPartitions = false
+
     var song: MPDSong { store.currentSong }
 
     // What fraction to show in the slider
@@ -56,6 +60,9 @@ struct NowPlayingView: View {
                 VStack(spacing: 18) {
                     addToPlaylistButton
                     historyButton
+                    if !store.outputs.isEmpty {
+                        outputsButton
+                    }
                 }
                 .frame(width: 30)
 
@@ -75,6 +82,9 @@ struct NowPlayingView: View {
                 VStack(spacing: 18) {
                     queueToggle
                     lyricsToggle
+                    if store.partitions.count > 1 {
+                        partitionButton
+                    }
                 }
                 .frame(width: 30)
             }
@@ -116,6 +126,47 @@ struct NowPlayingView: View {
         }
         .accessibilityLabel("Recently played")
         .sheet(isPresented: $showHistory) { RecentlyPlayedSheet() }
+    }
+
+    /// Enable/disable outputs inline, mirroring `partitionButton`. Deliberately does
+    /// *not* open OutputsView: that screen also offers moving outputs between
+    /// partitions, which must not be two taps from the main screen (see
+    /// plans/move-active-output-hang.md). Partition management stays in the Outputs tab.
+    var outputsButton: some View {
+        Button {
+            store.loadOutputs()   // refresh enabled flags; the poll doesn't re-read outputs
+            showOutputs = true
+        } label: {
+            Image(systemName: "hifispeaker.2")
+                .font(.body)
+                .foregroundStyle(Color.secondary)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Audio outputs")
+        .confirmationDialog("Audio Outputs", isPresented: $showOutputs, titleVisibility: .visible) {
+            ForEach(store.outputs) { out in
+                Button(out.enabled ? "✓ \(out.name)" : out.name) {
+                    store.toggleOutput(out.outputID)
+                }
+            }
+        }
+    }
+
+    var partitionButton: some View {
+        Button { showPartitions = true } label: {
+            Image(systemName: "rectangle.3.group")
+                .font(.body)
+                .foregroundStyle(Color.secondary)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Switch partition")
+        .confirmationDialog("Switch Partition", isPresented: $showPartitions) {
+            ForEach(store.partitions, id: \.self) { part in
+                Button(part == store.currentPartition ? "✓ \(part)" : part) {
+                    if part != store.currentPartition { store.switchPartition(part) }
+                }
+            }
+        }
     }
 
     // MARK: - Subviews
@@ -411,11 +462,24 @@ struct NowPlayingView: View {
     }
 
     var modeButtons: some View {
-        HStack(spacing: 10) {
+        // Replay gain and crossfade are global MPD settings like the other four, so
+        // they sit in the same row and use ModeBtn for identical sizing. Six buttons
+        // only fit because ModeBtn expands to share the width rather than claiming a
+        // fixed minimum. Each shows its value when set and its name when off.
+        let rg = store.replayGain
+        let xfadeOn = store.crossfadeSeconds > 0
+        return HStack(spacing: 6) {
             ModeBtn("Repeat",  "repeat",                "repeat",             store.repeatMode)  { store.toggleRepeat()  }
             ModeBtn("Shuffle", "shuffle",               "shuffle",            store.randomMode)  { store.toggleRandom()  }
             ModeBtn("Single",  "1.circle.fill",         "1.circle",           store.singleMode)  { store.toggleSingle()  }
             ModeBtn("Consume", "fork.knife.circle.fill","fork.knife.circle",  store.consumeMode) { store.toggleConsume() }
+            ModeBtn(rg == .off ? "Gain" : rg.label, "waveform", "waveform", rg != .off) {
+                store.setReplayGainMode(rg.next)
+            }
+            ModeBtn(xfadeOn ? "\(store.crossfadeSeconds)s" : "Fade",
+                    "arrow.left.arrow.right", "arrow.left.arrow.right", xfadeOn) {
+                store.setCrossfade(xfadeOn ? 0 : 5)
+            }
         }
     }
 
@@ -463,9 +527,11 @@ struct ModeBtn: View {
             VStack(spacing: 3) {
                 Image(systemName: active ? sfOn : sfOff).font(.title3)
                 Text(label).font(.caption2)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
             }
             .foregroundStyle(active ? Color.accentColor : Color.secondary)
-            .frame(minWidth: 60, minHeight: 40)
+            .frame(maxWidth: .infinity, minHeight: 40)
             .background(RoundedRectangle(cornerRadius: 10)
                 .fill(active ? Color.accentColor.opacity(0.15) : Color(.systemGray6)))
         }

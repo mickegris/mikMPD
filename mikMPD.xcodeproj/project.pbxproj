@@ -26,6 +26,7 @@
 		C8203DEB2F55CD88008D17BA /* LICENSE.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = LICENSE.md; sourceTree = "<group>"; };
 		C8203DF42F55CD88008D17BA /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		C84691192FCEAC8600AD5E70 /* mikMPDTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = mikMPDTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		C84BD007301B5978000FF2A4 /* mikMPD.xctestplan */ = {isa = PBXFileReference; lastKnownFileType = text; path = mikMPD.xctestplan; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -75,6 +76,7 @@
 		C81F37E42F51D1C000DE5EB1 = {
 			isa = PBXGroup;
 			children = (
+				C84BD007301B5978000FF2A4 /* mikMPD.xctestplan */,
 				C81F37EF2F51D1C000DE5EB1 /* mikMPD */,
 				C846911A2FCEAC8600AD5E70 /* mikMPDTests */,
 				C81F37EE2F51D1C000DE5EB1 /* Products */,
@@ -359,7 +361,7 @@
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 26;
+				CURRENT_PROJECT_VERSION = 33;
 				DEVELOPMENT_TEAM = 92VS77Q28U;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -374,7 +376,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.3;
+				MARKETING_VERSION = 1.4;
 				PRODUCT_BUNDLE_IDENTIFIER = klova.mikMPD;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -397,7 +399,7 @@
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 26;
+				CURRENT_PROJECT_VERSION = 33;
 				DEVELOPMENT_TEAM = 92VS77Q28U;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -412,7 +414,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.3;
+				MARKETING_VERSION = 1.4;
 				PRODUCT_BUNDLE_IDENTIFIER = klova.mikMPD;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";

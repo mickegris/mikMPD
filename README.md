@@ -4,11 +4,13 @@ A lightweight iOS/iPadOS client for [Music Player Daemon](https://www.musicpd.or
 
 ## Features
 
-**Now Playing** — Album art (fetched from MusicBrainz/CoverArtArchive), synced lyrics (via LRCLIB), seek bar, transport controls (play/pause, stop, previous, next), volume slider, and mode toggles (repeat, shuffle, single, consume). Shows bitrate and audio format info. Add the current song to a playlist with one tap.
+**Now Playing** — Album art (fetched from MusicBrainz/CoverArtArchive), synced lyrics (via LRCLIB), seek bar, transport controls (play/pause, stop, previous, next), volume slider, and mode toggles (repeat, shuffle, single, consume). Shows bitrate and audio format info, plus replay gain and crossfade controls. The square pane flips between artwork, lyrics and the live queue, and shows which playlist the current song is playing from. Quick buttons reach outputs and partition switching without leaving the screen. Add the current song to a playlist with one tap.
 
-**Library** — Browse by albums, artists, genres, or playlists with search filtering. Album and artist detail views include Wikipedia summaries. Play or enqueue entire albums/artists with one tap.
+**Library** — Browse by albums, artists, genres, playlists or recently added, with search filtering and sorting. Albums can be shown as a list or an album-art grid. Album and artist detail views include Wikipedia summaries. Play or enqueue entire albums/artists with one tap. Multi-disc albums are collapsed into a single row with a disc count, whether the discs are marked in the album name or only in the tracks' disc tags.
 
-**Playlists** — Full stored-playlist support: browse, rename, and delete playlists, save the queue as a playlist, tap a track to play it in playlist context, drag to reorder, swipe to remove or enqueue. "Add to Playlist" is available from Now Playing, albums, search results, and the queue.
+**Recently Added** — Albums added or modified in the last 30 days, newest first, as a list or art grid.
+
+**Playlists** — Full stored-playlist support: browse, rename, and delete playlists, save the queue as a playlist, tap a track to play it in playlist context, shuffle-play a whole playlist, drag to reorder, swipe to remove or enqueue. "Add to Playlist" is available from Now Playing, albums, search results, and the queue.
 
 **Recently Played** — Client-side listening history, accessible from the clock button in Now Playing. Shows an album grid (tap to open the album) and a per-track list; history is kept per server for 30 days / 100 entries. Note: recording requires the app to be running — songs played on the MPD device while the app is backgrounded (without "Listen on Phone" active) are not captured.
 
@@ -20,15 +22,19 @@ A lightweight iOS/iPadOS client for [Music Player Daemon](https://www.musicpd.or
 
 **Search** — Concurrent search across songs, artists, and albums with debounced input, batch selection, and album art thumbnails.
 
-**Queue** — View and manage the current playlist. Double-tap to jump to a song, drag to reorder, swipe to delete, clear all, toggle consume mode.
+**Queue** — View and manage the current playlist. Double-tap to jump to a song, drag to reorder, swipe to delete, shuffle the queue in place, clear all, toggle consume mode. "Add Next" (from album, search and playlist rows) queues a track right after the one playing.
 
-**Outputs & Partitions** — Toggle audio outputs on/off, switch between MPD partitions, create and delete partitions, move outputs between partitions via long-press context menu. Optional partition memory across reconnects.
+**Outputs & Partitions** — Toggle audio outputs on/off and switch partitions straight from Now Playing. The Outputs tab adds creating and deleting partitions and moving outputs between them (outputs are disabled before a move, which avoids a server-side stall). Optional partition memory across reconnects.
 
 **Multiple Servers** — Save any number of MPD servers and switch between them with one tap. Nearby servers advertising over Bonjour/Zeroconf are discovered automatically and can be added directly. Passwords are stored in the Keychain, and the last-used partition is remembered per server.
 
 **Listen on Phone** — Stream audio from an MPD httpd output directly to the device via AVPlayer. Configure the stream URL per server, then toggle "Listen on phone" in Now Playing. Supports background playback with lock screen metadata (song title, artist, album art) and lock screen transport controls.
 
 **Snapcast** — Control a [Snapcast](https://github.com/badaix/snapcast) multiroom server from the More tab. Adjust per-client volume and latency, mute groups, move clients between groups, rename clients, switch stream sources, and remove disconnected clients. Real-time updates via Snapcast's JSON-RPC push notifications. Configure the Snapcast host/port per MPD server profile (defaults to the MPD host, port 1705).
+
+**Server Statistics** — Library totals (songs, albums, artists, total playing time) and server uptime, playtime and last database update, from the More tab. Trigger a database update or a full rescan from the same screen; the figures refresh themselves when the scan finishes.
+
+**Diagnostics** — An optional rolling log of recent MPD commands with timings, under More (off by default). Slow commands are highlighted and the whole log can be copied, which makes a stalled or unresponsive server far easier to pin down.
 
 ## Requirements
 

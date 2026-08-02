@@ -20,3 +20,9 @@ Package.resolved
 # Code coverage
 *.gcno
 *.gcda
+
+# Implementation plans
+plans/
+
+# Local-only integration tests (require a real MPD server — must not be committed)
+mikMPDTests/Local/

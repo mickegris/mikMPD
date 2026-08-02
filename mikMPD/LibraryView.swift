@@ -1,16 +1,18 @@
 import SwiftUI
 
-enum LibTab: String, CaseIterable { case albums="Albums"; case artists="Artists"; case genres="Genres"; case playlists="Playlists"; case radio="Radio"; case cd="CD" }
+// Chip-bar order follows this declaration order (CaseIterable).
+enum LibTab: String, CaseIterable { case albums="Albums"; case artists="Artists"; case recentlyAdded="Recent"; case genres="Genres"; case playlists="Playlists"; case radio="Radio"; case cd="CD" }
 
 extension LibTab {
     var sfSymbol: String {
         switch self {
-        case .albums:    "square.stack"
-        case .artists:   "person"
-        case .genres:    "tag"
-        case .playlists: "music.note.list"
-        case .radio:     "antenna.radiowaves.left.and.right"
-        case .cd:        "opticaldisc"
+        case .albums:        "square.stack"
+        case .artists:       "person"
+        case .genres:        "tag"
+        case .playlists:     "music.note.list"
+        case .radio:         "antenna.radiowaves.left.and.right"
+        case .cd:            "opticaldisc"
+        case .recentlyAdded: "sparkles"
         }
     }
 }
@@ -27,8 +29,9 @@ struct LibraryView: View {
                 case .artists:   ArtistListView()
                 case .genres:    GenreListView()
                 case .playlists: PlaylistListView()
-                case .radio:     RadioView()
-                case .cd:        CDView()
+                case .radio:         RadioView()
+                case .cd:            CDView()
+                case .recentlyAdded: RecentlyAddedView()
                 }
             }
             .navigationTitle("Library").navigationBarTitleDisplayMode(.inline)
@@ -64,23 +67,58 @@ struct LibraryView: View {
 // MARK: - Albums
 struct AlbumListView: View {
     @EnvironmentObject var store: MPDStore
-    @State private var albums:[(artist: String, album: String)]=[];@State private var loading=true;@State private var filter=""
+    @State private var albums: [(artist: String, album: String)] = []
+    @State private var loading = true
+    @State private var filter = ""
+    @State private var addRequest: AddToPlaylistRequest?
     @AppStorage("librarySortAlbums") private var albumSort: AlbumSort = .artistAsc
-    var shown:[(artist: String, album: String)]{
-        filter.isEmpty ? albums : albums.filter{
+    @AppStorage("libraryAlbumLayout") private var useGrid: Bool = false
+    @State private var discMap: [String: Int] = [:]
+
+    var shown: [(artist: String, album: String)] {
+        filter.isEmpty ? albums : albums.filter {
             $0.album.localizedCaseInsensitiveContains(filter) || $0.artist.localizedCaseInsensitiveContains(filter)
         }
     }
-    var body: some View {
-        Group {
-            if loading { ProgressView().frame(maxWidth:.infinity,maxHeight:.infinity) }
-            else {
-                List(sortedAlbumGroups(groupAlbumVariants(shown), by: albumSort)){ g in
-                    AlbumGroupRow(group: g)
-                }.listStyle(.plain).searchable(text:$filter,prompt:"Filter albums…")
+    var groups: [AlbumGroup] {
+        var gs = sortedAlbumGroups(groupAlbumVariants(shown), by: albumSort)
+        if !discMap.isEmpty {
+            // Only apply tagDiscs when the base name is unambiguous (owned by exactly one
+            // artist in the current view), so "Greatest Hits" by two artists never gets
+            // the disc count from the other artist's multi-disc release.
+            var byBase: [String: Set<String>] = [:]
+            for g in gs { byBase[g.groupingKey, default: []].insert(g.artist.lowercased()) }
+            for i in gs.indices where byBase[gs[i].groupingKey]?.count == 1 {
+                gs[i].tagDiscs = discMap[gs[i].groupingKey]
             }
         }
+        return gs
+    }
+
+    var body: some View {
+        Group {
+            if loading {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if useGrid {
+                ScrollView {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 130), spacing: 12, alignment: .leading)], spacing: 16) {
+                        ForEach(groups) { g in albumGridTile(g) }
+                    }
+                    .padding()
+                }
+            } else {
+                List(groups) { g in AlbumGroupRow(group: g) }
+                    .listStyle(.plain)
+            }
+        }
+        .searchable(text: $filter, prompt: "Filter albums…")
+        .sheet(item: $addRequest) { AddToPlaylistSheet(uris: $0.uris) }
         .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button { useGrid.toggle() } label: {
+                    Image(systemName: useGrid ? "list.bullet" : "square.grid.2x2")
+                }
+            }
             ToolbarItem(placement: .navigationBarTrailing) {
                 Menu {
                     ForEach(AlbumSort.allCases, id: \.self) { sort in
@@ -92,7 +130,54 @@ struct AlbumListView: View {
                 } label: { Image(systemName: "arrow.up.arrow.down") }
             }
         }
-        .onAppear{ guard albums.isEmpty else{return}; store.listAlbumsByArtist{albums=$0;loading=false} }
+        .onAppear {
+            guard albums.isEmpty else { return }
+            store.listAlbumsByArtist { albums = $0; loading = false }
+            store.listDiscCounts { discMap = $0 }
+        }
+    }
+
+    @ViewBuilder
+    private func albumGridTile(_ g: AlbumGroup) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            NavigationLink(destination: AlbumDetailView(album: g.variants[0],
+                                                        artist: g.artist.isEmpty ? nil : g.artist,
+                                                        artistTag: "albumartist")) {
+                ArtThumbByKey(artist: g.artist, album: g.variants[0])
+                    .cornerRadius(8)
+            }
+            .buttonStyle(.plain)
+            // reservesSpace keeps every tile's text block the same height, so a title
+            // that wraps to two lines doesn't push its artist caption out of line with
+            // the neighbouring tile's. The artist line is always rendered for the same
+            // reason — an album with no albumartist would otherwise sit shorter.
+            Text(g.base.isEmpty ? "(no title)" : g.base)
+                .font(.subheadline)
+                .lineLimit(2, reservesSpace: true)
+            Text(g.artist)
+                .font(.caption).foregroundStyle(.secondary)
+                .lineLimit(1, reservesSpace: true)
+        }
+        // Fill the column so tile width is independent of how long the title is —
+        // otherwise a wrapping title widens the VStack and moves its artwork.
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contextMenu {
+            Button {
+                store.albumSongs(album: g.variants[0], artist: g.artist.isEmpty ? nil : g.artist, artistTag: "albumartist") {
+                    store.enqueue(songs: $0, replace: true, playFirst: true)
+                }
+            } label: { Label("Play Album", systemImage: "play.fill") }
+            Button {
+                store.albumSongs(album: g.variants[0], artist: g.artist.isEmpty ? nil : g.artist, artistTag: "albumartist") {
+                    store.enqueue(songs: $0)
+                }
+            } label: { Label("Add to Queue", systemImage: "plus") }
+            Button {
+                store.albumSongs(album: g.variants[0], artist: g.artist.isEmpty ? nil : g.artist, artistTag: "albumartist") {
+                    addRequest = AddToPlaylistRequest(uris: $0.map(\.file))
+                }
+            } label: { Label("Add to Playlist…", systemImage: "music.note.list") }
+        }
     }
 }
 
@@ -115,9 +200,9 @@ struct AlbumGroupRow: View {
                 } icon: {
                     Image(systemName:"square.stack")
                 }
-                if group.variants.count > 1 {
+                if group.discCount > 1 {
                     Spacer()
-                    Text("\(group.variants.count) discs").font(.caption).foregroundStyle(.secondary)
+                    Text("\(group.discCount) discs").font(.caption).foregroundStyle(.secondary)
                 }
             }
         }
@@ -140,6 +225,8 @@ struct AlbumDetailView: View {
         let g = Dictionary(grouping:songs){ $0.effectiveDisc }
         return g.keys.sorted().map{ ($0, g[$0]!) }
     }
+    var maxDiscNumber: Int { songsByDisc.map(\.disc).max() ?? 0 }
+    var isMultiDisc: Bool { songsByDisc.count > 1 && maxDiscNumber > 1 }
     var body: some View {
         List {
             Section {
@@ -155,7 +242,7 @@ struct AlbumDetailView: View {
                                 }
                             }
                             if !loading {
-                                let discPrefix = songsByDisc.count > 1 ? "\(songsByDisc.count) discs · " : ""
+                                let discPrefix = isMultiDisc ? "\(maxDiscNumber) discs · " : ""
                                 Text(discPrefix + "\(songs.count) tracks · \(formatTime(songs.map(\.duration).reduce(0,+)))").font(.caption).foregroundStyle(.secondary)
                             }
                         }
@@ -179,12 +266,17 @@ struct AlbumDetailView: View {
             }
             if loading {
                 Section("Tracks"){ HStack{Spacer();ProgressView();Spacer()} }
-            } else if songsByDisc.count > 1 {
+            } else if isMultiDisc {
                 ForEach(songsByDisc,id:\.disc){ g in
                     Section(g.disc > 0 ? "Disc \(g.disc)" : "Tracks"){ trackRows(g.songs) }
                 }
             } else {
                 Section("Tracks"){ trackRows(songs) }
+            }
+            if !loading && !songs.isEmpty {
+                Section {} footer: {
+                    Text("Long press or swipe trailing to add to queue, play next, or add to a playlist.")
+                }
             }
         }
         .listStyle(.insetGrouped)
@@ -199,8 +291,15 @@ struct AlbumDetailView: View {
         ForEach(list){ s in
             SongRow(song:s, isCurrentlyPlaying: s.file == store.currentSong.file)
                 .playableRow{ store.addAndPlay(uri:s.file) }
-                .swipeActions(edge:.trailing){ Button{store.add(uri:s.file)} label:{Label("Add",systemImage:"plus")}.tint(.green) }
+                .swipeActions(edge:.trailing){
+                    Button{store.add(uri:s.file)} label:{Label("Add",systemImage:"plus")}.tint(.green)
+                    Button{store.addNext(uri:s.file)} label:{Label("Add Next",systemImage:"text.line.first.and.arrowtriangle.forward")}.tint(.orange)
+                }
                 .swipeActions(edge:.leading){ Button{addRequest=AddToPlaylistRequest(uris:[s.file])} label:{Label("Playlist",systemImage:"music.note.list")}.tint(.indigo) }
+                .contextMenu {
+                    Button{store.addNext(uri:s.file)} label:{Label("Add Next",systemImage:"text.line.first.and.arrowtriangle.forward")}
+                    Button{addRequest=AddToPlaylistRequest(uris:[s.file])} label:{Label("Add to Playlist…",systemImage:"music.note.list")}
+                }
         }
     }
     // Merge sibling disc variants ("X [Disc 1]" + "X [Disc 2]") into one page,
@@ -213,9 +312,9 @@ struct AlbumDetailView: View {
             loadSongs(tags: [album])
             return
         }
-        let base = albumBaseAndDisc(album).base
+        let key = albumGroupingKey(album)
         store.listTag("album", filter: artistTag, value: artist){ all in
-            let sibs = all.filter{ albumBaseAndDisc($0).base == base }
+            let sibs = all.filter{ albumGroupingKey($0) == key }
             let tags = sibs.count > 1 ? sibs : [album]
             mergedTags = tags
             loadSongs(tags: tags)
@@ -288,6 +387,7 @@ struct ArtistDetailView: View {
     @State private var albums:[String]=[];@State private var loading=true
     @State private var wiki:String?=nil;@State private var wikiLoading=false;@State private var expanded=false
     @State private var artistImage:UIImage?=nil
+    @State private var tagDiscs:[String:Int]=[:]
     var albumGroups:[(base:String,variants:[String])]{ groupAlbumVariants(albums) }
     var body: some View {
         List {
@@ -315,8 +415,8 @@ struct ArtistDetailView: View {
                 }
             }
             Section{
-                Button{ store.findSongs(tag:"artist",value:artist){store.enqueue(songs:$0,replace:true,playFirst:true)} } label:{Label("Play All",systemImage:"play.fill").frame(maxWidth:.infinity)}.buttonStyle(.borderedProminent)
-                Button{ store.findSongs(tag:"artist",value:artist){store.enqueue(songs:$0)} } label:{Label("Add All",systemImage:"plus").frame(maxWidth:.infinity)}.buttonStyle(.bordered)
+                Button{ store.enqueueMatching(tag:"artist",value:artist,replace:true,playFirst:true) } label:{Label("Play All",systemImage:"play.fill").frame(maxWidth:.infinity)}.buttonStyle(.borderedProminent)
+                Button{ store.enqueueMatching(tag:"artist",value:artist) } label:{Label("Add All",systemImage:"plus").frame(maxWidth:.infinity)}.buttonStyle(.bordered)
             }
             Section("Albums"){
                 if loading { HStack{Spacer();ProgressView();Spacer()} }
@@ -326,9 +426,10 @@ struct ArtistDetailView: View {
                             HStack(spacing:10){
                                 ArtThumbByKey(artist:artist,album:g.variants[0],size:44).cornerRadius(4)
                                 Text(g.base.isEmpty ? "(no title)" : g.base)
-                                if g.variants.count > 1 {
+                                let nd = albumDiscCount(variants: g.variants, tagDiscs: tagDiscs[albumGroupingKey(g.base)])
+                                if nd > 1 {
                                     Spacer()
-                                    Text("\(g.variants.count) discs").font(.caption).foregroundStyle(.secondary)
+                                    Text("\(nd) discs").font(.caption).foregroundStyle(.secondary)
                                 }
                             }
                         }
@@ -340,7 +441,11 @@ struct ArtistDetailView: View {
         .navigationTitle(artist.isEmpty ? "(unknown)" : artist).navigationBarTitleDisplayMode(.inline)
         .onAppear{ loadAlbums(); loadWiki(); loadArtistImage() }
     }
-    func loadAlbums(){ store.listTag("album",filter:"artist",value:artist){albums=$0;loading=false} }
+    func loadAlbums(){
+        guard albums.isEmpty else { return }
+        store.listTag("album",filter:"artist",value:artist){albums=$0;loading=false}
+        store.listDiscCounts(filter:"artist",value:artist){tagDiscs=$0}
+    }
     func loadWiki(){
         guard wiki==nil,!wikiLoading else{return}; wikiLoading=true
         Task{ let t=await WikipediaService.shared.fetchArtist(query:artist); await MainActor.run{wiki=t;wikiLoading=false} }
@@ -374,21 +479,36 @@ struct GenreDetailView: View {
     @EnvironmentObject var store: MPDStore
     let genre:String
     @State private var albums:[(artist: String, album: String)]=[];@State private var loading=true
+    @State private var discMap:[String:Int]=[:]
+    var groups:[AlbumGroup]{
+        var gs=groupAlbumVariants(albums)
+        if !discMap.isEmpty {
+            var byBase:[String:Set<String>]=[:]
+            for g in gs { byBase[g.groupingKey, default:[]].insert(g.artist.lowercased()) }
+            for i in gs.indices where byBase[gs[i].groupingKey]?.count==1 {
+                gs[i].tagDiscs=discMap[gs[i].groupingKey]
+            }
+        }
+        return gs
+    }
     var body: some View {
         List {
             Section{
-                Button{ store.findSongs(tag:"genre",value:genre){store.enqueue(songs:$0,replace:true,playFirst:true)} } label:{Label("Play All",systemImage:"play.fill").frame(maxWidth:.infinity)}.buttonStyle(.borderedProminent)
+                Button{ store.enqueueMatching(tag:"genre",value:genre,replace:true,playFirst:true) } label:{Label("Play All",systemImage:"play.fill").frame(maxWidth:.infinity)}.buttonStyle(.borderedProminent)
             }
             Section("Albums"){
                 if loading { HStack{Spacer();ProgressView();Spacer()} }
                 else {
-                    ForEach(groupAlbumVariants(albums)){ g in AlbumGroupRow(group: g) }
+                    ForEach(groups){ g in AlbumGroupRow(group: g) }
                 }
             }
         }
         .listStyle(.insetGrouped)
         .navigationTitle(genre.isEmpty ? "(none)" : genre).navigationBarTitleDisplayMode(.inline)
-        .onAppear{ store.listAlbumsByArtist(filter:"genre",value:genre){albums=$0;loading=false} }
+        .onAppear{
+            store.listAlbumsByArtist(filter:"genre",value:genre){albums=$0;loading=false}
+            store.listDiscCounts(filter:"genre",value:genre){discMap=$0}
+        }
     }
 }
 
@@ -425,11 +545,8 @@ struct RadioView: View {
         List {
             Section("Stations") {
                 ForEach(builtInStations) { station in
-                    Button {
-                        store.addAndPlay(uri: station.url)
-                    } label: {
-                        Label(station.name, systemImage: "antenna.radiowaves.left.and.right")
-                    }
+                    stationRow(station)
+                        .playableRow { store.addAndPlay(uri: station.url) }
                 }
             }
             Section("Saved Stations") {
@@ -437,11 +554,8 @@ struct RadioView: View {
                     Text("No saved stations").foregroundStyle(.secondary).font(.subheadline)
                 } else {
                     ForEach(savedStations) { station in
-                        Button {
-                            store.addAndPlay(uri: station.url)
-                        } label: {
-                            Label(station.name, systemImage: "antenna.radiowaves.left.and.right")
-                        }
+                        stationRow(station)
+                            .playableRow { store.addAndPlay(uri: station.url) }
                     }
                     .onDelete { offsets in
                         var stations = savedStations
@@ -478,6 +592,162 @@ struct RadioView: View {
             }
         }
         .listStyle(.insetGrouped)
+    }
+
+    @ViewBuilder
+    private func stationRow(_ station: SavedStation) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: "antenna.radiowaves.left.and.right")
+                .frame(width: 24)
+            Text(station.name).font(.subheadline)
+            Spacer()
+            if station.url == store.currentSong.file {
+                Image(systemName: "speaker.wave.2.fill").font(.caption2).foregroundStyle(.tint)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+}
+
+// MARK: - Recently Added
+
+private struct AddedAlbum: Identifiable {
+    let artist: String       // song.groupingArtist
+    let album: String
+    var hasAlbumArtist: Bool // true if *any* track of this album carried the tag
+    var artistTag: String { hasAlbumArtist ? "albumartist" : "artist" }
+    var id: String { artCacheKey(artist: artist, album: album) }
+}
+
+struct RecentlyAddedView: View {
+    @EnvironmentObject var store: MPDStore
+    @State private var albums: [AddedAlbum] = []
+    @State private var loading = true
+    @State private var addRequest: AddToPlaylistRequest?
+    @AppStorage("libraryAlbumLayout") private var useGrid: Bool = false
+
+    // Derive and cap once on load so the dedup loop doesn't re-run on every
+    // body evaluation. Songs are sorted newest-first by the store before this.
+    private static func deriveAlbums(from songs: [MPDSong]) -> [AddedAlbum] {
+        var order: [String] = []
+        var byKey: [String: AddedAlbum] = [:]
+        for song in songs {
+            guard !song.album.isEmpty else { continue }
+            let key = artCacheKey(artist: song.groupingArtist, album: song.album)
+            if byKey[key] == nil {
+                guard order.count < 50 else { continue }
+                order.append(key)
+                byKey[key] = AddedAlbum(artist: song.groupingArtist,
+                                        album: song.album,
+                                        hasAlbumArtist: !song.albumArtist.isEmpty)
+            } else if !song.albumArtist.isEmpty, byKey[key]?.hasAlbumArtist == false {
+                // A later track of this album carries the AlbumArtist tag that the newest
+                // one lacked. Upgrade the flag (keeping the newest track's names) so
+                // AlbumDetailView filters by "albumartist" — filtering a partially-tagged
+                // album by plain "artist" can return only one artist's tracks.
+                byKey[key]?.hasAlbumArtist = true
+            }
+        }
+        return order.compactMap { byKey[$0] }
+    }
+
+    var body: some View {
+        Group {
+            if loading {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if albums.isEmpty {
+                ContentUnavailableView("Nothing Recently Added", systemImage: "sparkles",
+                    description: Text("No tracks added or modified in the last 30 days."))
+            } else if useGrid {
+                ScrollView {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 130), spacing: 12, alignment: .leading)], spacing: 16) {
+                        ForEach(albums) { g in albumGridTile(g) }
+                    }
+                    .padding()
+                }
+            } else {
+                List(albums) { g in
+                    NavigationLink(destination: AlbumDetailView(album: g.album,
+                                                                artist: g.artist.isEmpty ? nil : g.artist,
+                                                                artistTag: g.artistTag)) {
+                        HStack(spacing: 10) {
+                            ArtThumbByKey(artist: g.artist, album: g.album, size: 44).cornerRadius(4)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(g.album).lineLimit(2)
+                                if !g.artist.isEmpty {
+                                    Text(g.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                }
+                            }
+                        }
+                    }
+                }
+                .listStyle(.plain)
+                .refreshable { reload() }
+            }
+        }
+        .sheet(item: $addRequest) { AddToPlaylistSheet(uris: $0.uris) }
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button { reload() } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .disabled(loading)
+            }
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button { useGrid.toggle() } label: {
+                    Image(systemName: useGrid ? "list.bullet" : "square.grid.2x2")
+                }
+            }
+        }
+        .onAppear {
+            guard loading else { return }
+            reload()
+        }
+    }
+
+    private func reload() {
+        loading = true
+        store.loadRecentlyAdded { songs in
+            albums = Self.deriveAlbums(from: songs)
+            loading = false
+        }
+    }
+
+    @ViewBuilder
+    private func albumGridTile(_ g: AddedAlbum) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            NavigationLink(destination: AlbumDetailView(album: g.album,
+                                                        artist: g.artist.isEmpty ? nil : g.artist,
+                                                        artistTag: g.artistTag)) {
+                ArtThumbByKey(artist: g.artist, album: g.album)
+                    .cornerRadius(8)
+            }
+            .buttonStyle(.plain)
+            Text(g.album.isEmpty ? "(no title)" : g.album)
+                .font(.subheadline)
+                .lineLimit(2, reservesSpace: true)
+            Text(g.artist)
+                .font(.caption).foregroundStyle(.secondary)
+                .lineLimit(1, reservesSpace: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contextMenu {
+            Button {
+                store.albumSongs(album: g.album, artist: g.artist.isEmpty ? nil : g.artist, artistTag: g.artistTag) {
+                    store.enqueue(songs: $0, replace: true, playFirst: true)
+                }
+            } label: { Label("Play Album", systemImage: "play.fill") }
+            Button {
+                store.albumSongs(album: g.album, artist: g.artist.isEmpty ? nil : g.artist, artistTag: g.artistTag) {
+                    store.enqueue(songs: $0)
+                }
+            } label: { Label("Add to Queue", systemImage: "plus") }
+            Button {
+                store.albumSongs(album: g.album, artist: g.artist.isEmpty ? nil : g.artist, artistTag: g.artistTag) {
+                    addRequest = AddToPlaylistRequest(uris: $0.map(\.file))
+                }
+            } label: { Label("Add to Playlist…", systemImage: "music.note.list") }
+        }
     }
 }
 
@@ -609,18 +879,41 @@ struct SongRow: View {
     }
 }
 struct ArtThumbByKey: View {
-    @EnvironmentObject var store:MPDStore
-    let artist:String; let album:String; let size:CGFloat
-    var artKey:String{ artCacheKey(artist:artist,album:album) }
-    var body: some View {
-        Group {
-            if let img=store.albumArtCache[artKey] {
-                Image(uiImage:img).resizable().aspectRatio(contentMode:.fill).frame(width:size,height:size).clipped()
-            } else {
-                ZStack{Color(.systemGray5);Image("MikMPDLogo").resizable().scaledToFit().padding(size * 0.18)}.frame(width:size,height:size)
+    @EnvironmentObject var store: MPDStore
+    let artist: String; let album: String
+    /// Fixed square side, or `nil` to fill the available width (still square).
+    /// Grid tiles fill: a fixed 130 pt cover inside a ~179 pt column left 49 pt of
+    /// dead space per cell, which is what made tile alignment look wrong no matter
+    /// which alignment was chosen. Filling removes the slack instead of moving it.
+    var size: CGFloat? = nil
+
+    var artKey: String { artCacheKey(artist: artist, album: album) }
+
+    @ViewBuilder private var imageLayer: some View {
+        if let img = store.albumArtCache[artKey] {
+            Image(uiImage: img).resizable().aspectRatio(contentMode: .fill)
+        } else {
+            ZStack {
+                Color(.systemGray5)
+                Image("MikMPDLogo").resizable().scaledToFit()
+                    .padding(size.map { $0 * 0.18 } ?? 26)
             }
         }
-        .onAppear{ store.fetchArtIfNeeded(artist:artist,album:album) }
+    }
+
+    var body: some View {
+        Group {
+            if let size {
+                imageLayer.frame(width: size, height: size).clipped()
+            } else {
+                Color.clear
+                    .frame(maxWidth: .infinity)
+                    .aspectRatio(1, contentMode: .fit)
+                    .overlay { imageLayer }
+                    .clipped()
+            }
+        }
+        .task(id: artKey) { store.fetchArtIfNeeded(artist: artist, album: album) }
     }
 }
 struct ArtThumb: View {
@@ -634,6 +927,6 @@ struct ArtThumb: View {
                 ZStack{Color(.systemGray5);Image(song?.fallbackArtAssetName ?? "MikMPDLogo").resizable().scaledToFit().padding(size * 0.18)}.frame(width:size,height:size)
             }
         }
-        .onAppear{ if let s=song { store.fetchArtIfNeeded(for:s) } }
+        .task(id: song?.artKey ?? "") { if let s = song { store.fetchArtIfNeeded(for: s) } }
     }
 }

@@ -21,6 +21,50 @@ Tests cover pure logic that doesn't need an MPD server: MPD protocol parsing (`p
 
 `parseMPDRecords` is an internal free function extracted from `MPDSocket` specifically for testability.
 
+## References
+
+**MPD protocol**: https://mpd.readthedocs.io/en/stable/protocol.html#command-reference  
+Full command reference for all MPD text commands. Consult before adding new MPD operations — covers filters, tags, binary commands (`albumart`, `readpicture`), partition commands, stickers, channels, and more.
+
+### Verified server behavior (checked against MPD 0.24.0)
+
+Facts confirmed by querying a real server, each of which cost debugging time to learn:
+
+- **Filter values are case-sensitive.** `list disc album "Live at Leeds"` returns nothing;
+  `list disc album "Live At Leeds"` returns all four discs. When an exact-name query comes back
+  empty, suspect capitalisation before concluding the tag is missing or differently shaped —
+  a mis-cased probe was once misdiagnosed as "the album uses disc markers in its name".
+  Prefer scoping by artist/albumartist and matching case-insensitively in Swift.
+- **`xfade` is omitted from `status` when crossfade is 0** (not reported as `xfade: 0`).
+  `poll()` handles this with `Int(s["xfade"] ?? "0") ?? 0`; any new status field may be absent
+  when it holds its default.
+- **ACK does not always keep the connection alive.** A bad *argument* on a *known* command
+  ACKs and leaves the socket usable (`setvol 9999`). Some builds close the TCP connection
+  outright for an *unknown* command, which surfaces as a non-ACK I/O error and disconnects.
+  Capability probes that fall back on failure must check `socket.connected` before retrying —
+  see the caveat comment in `MPDSocket.command`.
+- **Multiple `group` keys are supported**: `list disc group albumartist group album` works and
+  interleaves `Album:` / `AlbumArtist:` / `Disc:` lines (empty `Disc:` for untagged albums).
+  `listDiscCounts` currently uses the single-key form plus a base-name-uniqueness guard;
+  the two-key form would make disc counts artist-aware and remove that limitation, but needs a
+  two-key variant of `parseGroupedValues`.
+
+### MPD stickers (v1.5 candidate)
+
+Per-song metadata stored by MPD clients on the server. `<type>` is always `"song"` in practice.
+
+| Command | Purpose |
+|---|---|
+| `sticker get song <uri> <name>` | Read one sticker value |
+| `sticker set song <uri> <name> <value>` | Write one sticker value |
+| `sticker delete song <uri> <name>` | Remove a sticker |
+| `sticker list song <uri>` | List all stickers on a song |
+| `sticker find song <base> <name>` | Find all songs under a path with a given sticker |
+
+**Planned use**: star ratings (1–5) stored as sticker name `rating`. Requires `sticker_file` set in mpd.conf — probe availability on connect with `sticker list song ""` and check for non-ACK (set `stickersAvailable: Bool` on `MPDStore`).
+
+**Not planned**: MPD channels (`subscribe`/`sendmessage`/`readmessages`) — low value for a single-client setup; document only.
+
 ## Architecture
 
 This is an MPD (Music Player Daemon) client for iOS/iPadOS.
@@ -29,9 +73,13 @@ This is an MPD (Music Player Daemon) client for iOS/iPadOS.
 
 **MPDSocket** — Raw TCP socket using Darwin POSIX APIs. Sends text commands, reads lines until `OK` or `ACK`. Parses responses into `[[String: String]]` records by splitting on `:` and flushing on record-starter keys (`file`, `directory`, `playlist`, `outputid`, `partition`).
 
-**MPDStore** — Single `@Observable` store that owns the socket and all published state. Views never talk to the socket directly. All socket I/O runs on a dedicated `DispatchQueue` (`.userInteractive`); all `@Published` properties update on main thread.
+**MPDStore** — `final class MPDStore: ObservableObject`. Single store that owns the socket and all `@Published` state. Views never talk to the socket directly. All socket I/O runs on a dedicated `DispatchQueue` (`.userInteractive`); all `@Published` properties update on main thread.
 
-**Views** — SwiftUI views consume `MPDStore` via `@EnvironmentObject`. They are purely reactive — no view-local state for MPD data, only for transient UI concerns (drag state, search text).
+**Views** — SwiftUI views consume `MPDStore` via `@EnvironmentObject`. They are purely reactive — no view-local state for MPD data, only for transient UI concerns (drag state, search text). Tab structure (ContentView.swift): Now Playing, Library, Browse, Search, More.
+
+**BrowserView** — Filesystem-style MPD library browser. Single tap navigates directories; double-tap adds and plays a file or loads a playlist. Swipe actions: add to queue (green) or play immediately (blue, files only). Toolbar shows current directory name with Up and Home buttons. Uses `store.browse(_:)`, `store.browseUp()`, `store.browseItems`, `store.isAtRoot`, `store.browsePath`.
+
+**SearchView** — Searches songs (`store.searchResults`), artists, and albums simultaneously via a cancellable `Task`. Shows three result sections (Artists → NavigationLink to artist albums; Albums → AlbumGroup rows; Songs → SongRow with context menus). `AddToPlaylistSheet` reachable from song rows.
 
 **Models** — Lightweight value types (`MPDSong`, `MPDOutput`, `MPDBrowseItem`, `MPDPlaylist`, `MPDServerProfile`) initialized from parsed MPD records or persisted as JSON.
 
@@ -105,14 +153,21 @@ Disconnects on background, reconnects on foreground resume — **unless phone st
 
 - MPD command arguments are escaped via `String.esc` (backslash + quote escaping) and wrapped in quotes to prevent injection.
 - Password stored in Keychain via `KeychainHelper`; legacy migration from UserDefaults runs on init.
-- Album art keyed by `artist|album` (lowercased) with an LRU cache (100 items). Fetch order: MPD-local (`albumart`/`readpicture` binary commands) → MusicBrainz/CoverArtArchive. Both in-memory and disk-cached (`Caches/albumart/`).
+- Album art keyed by `artist|album` (lowercased) with an LRU cache (400 items — the grid's working set is ~800 albums; 100 thrashed). Fetch order is **tag art → cover file → internet**: `readpicture` (picture embedded in the file's own tags), then `albumart` (cover.jpg/png beside the song), then MusicBrainz/CoverArtArchive. Tag art is probed first because on a tagged library it is the one that exists — asking `albumart` first cost a wasted ACK round trip per album. Both in-memory and disk-cached (`Caches/albumart/`).
+- **Art fetching is throttled on three axes, and all three matter at grid scale.** A grid tile only knows `artist`/`album`, so `fetchArt` resolves one representative track first (`find album … artist … window 0:1`) and tries MPD-local art before the internet — without that, every tile went straight to MusicBrainz at up to ~15 round trips per album. `ArtFetchGate` (ArtFetch.swift) caps concurrent fetches at 4, since a grid otherwise opens hundreds in parallel. `MusicBrainzThrottle` serialises MusicBrainz to ~1 req/s, which their usage policy requires. Failures write a zero-byte `<key>.miss` marker next to the disk cache with a 7-day TTL, so art-less albums are not re-attempted on every scroll pass. Thumbnails use `.task(id:)` rather than `.onAppear` so scrolling away cancels pending work.
+- **Bulk enqueue is server-side.** `enqueueMatching(tag:value:)` uses MPD's `findadd`; the old path fetched every song then sent one `add` per track, so "Play All" on a large artist or genre was thousands of sequential commands that starved the poll for minutes. Ordering comes from MPD's database order, which for the usual Artist/Album/NN-Track layout matches the previous client-side album/track sort. `enqueue(songs:)` remains for explicit song lists (albums, playlists, search selections).
+- **Every MPD command is logged.** `MPDCommandLog` (MPDCommandLog.swift) keeps a 250-entry ring buffer of `(time, command, duration, outcome)`, written from `MPDSocket.command`/`rawLines` and read by `DiagnosticsView` (More → Diagnostics → MPD Command Log, with copy-to-clipboard). **Off by default** — the `diagnosticsEnabled` setting mirrors into `MPDCommandLog.isEnabled` (thread-safe, read on Q), so a disabled log costs nothing per command and turning it off clears the buffer. Commands slower than 2 s are highlighted. This exists because the daemon has hung hard enough to need `kill -9` with nothing on the client recording what it was doing — see `plans/mpd-hang-investigation.md`.
+- Unbounded library queries must be bounded: `loadRecentlyAdded` uses `find "(modified-since …)" window 0:2000` and an in-flight guard. Unbounded, it walks the whole library and can outrun the socket's 5 s read timeout, which disconnects mid-response and leaves MPD generating output for a client that has gone away — and the 3 s reconnect then re-issues it.
 - **Multi-disc albums**: `albumBaseAndDisc` (Models.swift) strips trailing disc markers (`[Disc 1]`, `(CD 2)`, `Disk 3`, bare `CD2`; a delimiter must precede the keyword so titles like "ABCD2" survive). Applied in `artCacheKey` (disc variants share one cover), MusicBrainz queries, and `WikipediaService.fetchAlbum`. `MPDSong` parses the `disc` tag; `effectiveDisc` falls back to the album-suffix disc; album tracks sort via `sortedByDiscAndTrack`. Album lists collapse variants into one row via `groupAlbumVariants` ("N discs" caption); `AlbumDetailView.loadSongs` re-expands to sibling variants (one `listTag` probe) and renders "Disc N" sections when tracks span multiple discs. The stripped base title is shown only when variants actually merged.
+- **Disc count comes from two independent signals, and both are needed.** Real libraries mix the conventions: "Live At Leeds" is *one* album tag with `disc` tags 1–4, "Quadrophenia [Disc 1]/[Disc 2]" puts the marker in the album name, "'98 Live Meltdown (disc 1)" uses lowercase parens. Name markers alone (`discCountFromVariants`) report a properly-tagged multi-disc album as single-disc — the better the tagging, the worse the display. So `listDiscCounts` issues `list disc [FILTER] group album` alongside each album list and maps *lowercased base name* → highest disc number, `discTagValue` parses the tag (`"1/4"` → 4, the denominator wins when present), and `albumDiscCount(variants:tagDiscs:)` takes the **max** of both signals so agreeing signals don't double-count. `AlbumGroup.tagDiscs` carries the tag value; views fill it in after the query returns. Captions gate on `discCount > 1`, never `variants.count > 1` — a mixed-tagged album ("X" + "X [Disc 1]") has 2 variants but 1 disc and must not render "1 discs". `AlbumDetailView` uses `isMultiDisc` (`songsByDisc.count > 1 && maxDiscNumber > 1`) for both its header prefix and its "Disc N" section split. Because `list disc group album` groups by name only, `AlbumListView`/`GenreDetailView` apply `tagDiscs` **only when the base name is owned by exactly one artist in the current list**, so a multi-disc "Greatest Hits" can't stamp its count onto another artist's single-disc album of the same name. `SearchView` still counts name variants only — a known, deliberate gap.
+- **Album identity is punctuation-folded.** `albumGroupingKey` (Models.swift) strips disc markers then folds en/em dash and minus sign → hyphen, smart quotes → straight, ellipsis → "...", trims and lowercases. It is *only* ever a key — display always uses the raw tag. It exists because two rips of one album can differ by a single character: The Beatles' "1967-1970" (ASCII hyphen, disc 2) and "1967–1970" (en dash, disc 1) are separate directories and separate album tags, which split one 2-disc set into two single-disc rows, each with a wrong caption and half the tracks. Used by both `groupAlbumVariants` overloads, `AlbumGroup.groupingKey`, `listDiscCounts`' map keys, `AlbumDetailView.loadSongs`' sibling matching, and SearchView's album collapsing — **all of these must agree**, or a row won't find its own disc data. Folding only punctuation and case is safe because the artist remains part of every key that uses it. (`artCacheKey` is deliberately *not* folded: changing it would orphan the whole album-art disk cache for a cosmetic gain.)
 - **Album identity includes the artist.** Albums/Genre lists use `listAlbumsByArtist` (`list album [FILTER] group albumartist`, MPD 0.21+, flat name-only fallback on ACK) and show one `AlbumGroup` row per (albumartist, base) with an artist caption — same-named albums by different artists are separate rows. Grouped responses need `MPDSocket.rawLines` + `parseGroupedValues` (a `list … group …` response has no record-starter keys, so `parseMPDRecords` collapses it and `listValues` drops the group). `AlbumDetailView` takes `artistTag` ("albumartist" from grouped lists, "artist" from song links — different tags for compilations); sibling merging and `find` are always artist-filtered, and **merging is skipped when no artist is known**. `dedupedAlbumTracks` collapses duplicate library copies keyed `groupingArtist|disc|track|title` — the artist in the key is what makes it safe (a key without it merged same-titled tracks across artists and had to be reverted once).
 - Artist/album names are clickable `NavigationLink`s across NowPlaying, Queue, Search, and Library detail views.
 - No command batching — each MPD operation is a separate `send`/`receive` cycle ("No command_list, no dual sockets").
 - **SDK callbacks that run off-main must be explicitly `@Sendable`.** With default MainActor isolation, closure literals passed to non-`@Sendable` SDK parameters are inferred `@MainActor` and trap at runtime (`dispatch_assert_queue`) if the framework invokes them on another queue. Known cases handled: `MPMediaItemArtwork(boundsSize:requestHandler:)` (MediaPlayer calls it on its internal queue), `DispatchSourceTimer.setEventHandler`, and `MPRemoteCommand.addTarget`. `DispatchQueue.async` is already `@Sendable` in the SDK, so `Q.async` closures are unaffected. The `PhoneStreamTests` regression test guards this class of bug.
 - Stored playlists: `listplaylistinfo` returns no pos/id, so positions are assigned from the record index (`songsAssigningPositions`) to keep duplicate files uniquely identifiable. Names are validated via `validatePlaylistName` (no slashes/newlines). Only pre-0.24 command syntax is used (no `playlistadd` POSITION arg, no `save` modes). The shared `AddToPlaylistSheet` (PlaylistsView.swift) is presented via `.sheet(item:)` with an `AddToPlaylistRequest`.
 - `WikipediaService` is a Swift actor with in-memory and disk caches (`Caches/artistart/` for artist images). Uses music-aware disambiguation: artist lookups try Wikipedia suffix pages `(band)`, `(musician)`, etc. before falling back to exact title with music-keyword validation. Album lookups clean the tag via `albumLookupTitle` (disc markers + bracketed edition qualifiers like "[24-bit remaster]" — lookups only, never grouping/art keys), then try naming patterns, the plain exact title (music+artist validated), and search over the top 3 hits. A hit whose *title* names the album (`titleMatchesAlbum`: exact or ≥2/3 token overlap) wins immediately; extract-only matches are fallback — a sequel's article cites the album by name in its extract ("Live at Carnegie Hall…" vs the Vienna Opera House album). Disambiguation pages and unrelated results are rejected (blank wiki shown instead).
+- `LyricsService` (LyricsService.swift) is a Swift actor that fetches lyrics from LRCLIB (no API key required). `Lyrics` holds `plain: String?`, `synced: [LyricLine]?`, and `instrumental: Bool`; `LyricLine` has `secs` and `text`. `LyricsState` enum (`.loading`, `.unavailable`, `.loaded(Lyrics)`) is consumed by the Now Playing lyrics pane. Negative results are cached to avoid repeat hits. Disk cache at `Caches/lyrics/`. Modeled after `WikipediaService`.
 - `MarqueeText` (NowPlayingView.swift) renders one-line text that ping-pongs (scroll–dwell–scroll back) when it overflows; used for Now Playing's title and album lines. Driven by a trigger-less `PhaseAnimator` — `.animation(value:)` + `repeatForever` gets cancelled by the 10 Hz elapsed re-renders and froze. State resets via `.id(text)`. `AlbumDetailView` keeps its (truncating) inline bar title; the in-page header carries the full name with `fixedSize(horizontal: false, vertical: true)` to guarantee wrapping.
 - Now Playing's square region is a three-state pane (`Pane`: art/lyrics/queue); the four small buttons (playlist, history, queue, lyrics) sit in fixed-width columns flanking the pane, not in a header row. Art↔lyrics also toggles by tapping the pane. The tap gesture lives on the art/lyrics panes themselves, **not** the shared container — a container gesture would swallow the queue list's row taps/swipes. The queue pane reuses `QueueRow` (single tap plays; reorder stays in the Queue tab) and auto-centers the current track via `ScrollViewReader` on `playlistPos` changes.
 - Album *names* in list rows wrap (no lineLimit); song rows keep `lineLimit(1)`. Now Playing's title and album lines use `MarqueeText`.
