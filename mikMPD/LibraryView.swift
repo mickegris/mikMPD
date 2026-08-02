@@ -1,6 +1,7 @@
 import SwiftUI
 
-enum LibTab: String, CaseIterable { case albums="Albums"; case artists="Artists"; case genres="Genres"; case playlists="Playlists"; case radio="Radio"; case cd="CD"; case recentlyAdded="Recent" }
+// Chip-bar order follows this declaration order (CaseIterable).
+enum LibTab: String, CaseIterable { case albums="Albums"; case artists="Artists"; case recentlyAdded="Recent"; case genres="Genres"; case playlists="Playlists"; case radio="Radio"; case cd="CD" }
 
 extension LibTab {
     var sfSymbol: String {

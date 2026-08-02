@@ -25,8 +25,23 @@ nonisolated final class MPDCommandLog: @unchecked Sendable {
     private let lock = NSLock()
     private var entries: [MPDCommandLogEntry] = []
     private let capacity = 250
+    private var _enabled = false
+
+    /// Off by default — recording is a diagnostic aid, not something every user
+    /// should pay for on every command. Mirrored from the `diagnosticsEnabled`
+    /// setting; read on the socket queue, written from the main actor.
+    var isEnabled: Bool {
+        get { lock.lock(); defer { lock.unlock() }; return _enabled }
+        set {
+            lock.lock()
+            _enabled = newValue
+            if !newValue { entries.removeAll() }   // don't retain a stale buffer
+            lock.unlock()
+        }
+    }
 
     func record(command: String, duration: TimeInterval, outcome: String) {
+        guard isEnabled else { return }
         // Commands carry quoted user data (album names, URIs); keep them short so a
         // long `find` filter can't dominate the buffer.
         let trimmed = command.count > 120 ? String(command.prefix(120)) + "…" : command

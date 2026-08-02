@@ -1564,18 +1564,23 @@ final class MPDStore: ObservableObject {
         }
     }
 
-    /// Fetch art from MPD via albumart (cover files) then readpicture (embedded).
+    /// MPD-local art, tag art first: `readpicture` reads the picture embedded in the
+    /// file's own tags, `albumart` looks for a cover file (cover.jpg/png/…) beside it.
+    /// Tag art wins because it is the track's own art and, on a tagged library, the one
+    /// that actually exists — probing `albumart` first cost a wasted ACK round trip per
+    /// album on a library whose covers are all embedded. Caller falls back to
+    /// MusicBrainz/CoverArtArchive when both miss, giving: tag → cover file → internet.
     private func fetchMPDArt(file: String) async -> UIImage? {
         await withCheckedContinuation { cont in
             Q.async { [weak self] in
                 guard let self else { cont.resume(returning: nil); return }
-                // albumart: directory-level cover.jpg/png + embedded (MPD 0.21+)
-                if let data = try? self.socket.albumArt(uri: file), let img = UIImage(data: data) {
+                // 1. Embedded picture tag (MPD 0.22+)
+                if let data = try? self.socket.readPicture(uri: file), let img = UIImage(data: data) {
                     cont.resume(returning: img)
                     return
                 }
-                // readpicture: embedded picture tag (MPD 0.22+)
-                if let data = try? self.socket.readPicture(uri: file), let img = UIImage(data: data) {
+                // 2. Cover file in the song's directory (MPD 0.21+)
+                if let data = try? self.socket.albumArt(uri: file), let img = UIImage(data: data) {
                     cont.resume(returning: img)
                     return
                 }

@@ -3,6 +3,7 @@ import SwiftUI
 struct MoreView: View {
     @EnvironmentObject var store: MPDStore
     @State private var showConnection = false
+    @AppStorage("diagnosticsEnabled") private var diagnosticsEnabled = false
 
     /// "1.1 (15)" — marketing version plus build number.
     private var appVersionString: String {
@@ -75,15 +76,29 @@ struct MoreView: View {
                     }
                 }
 
-                NavigationLink {
-                    DiagnosticsView()
-                } label: {
-                    HStack {
-                        Image(systemName: "stethoscope")
-                            .foregroundColor(.accentColor)
-                            .frame(width: 28)
-                        Text("Diagnostics")
+                Section {
+                    Toggle(isOn: $diagnosticsEnabled) {
+                        HStack {
+                            Image(systemName: "stethoscope")
+                                .foregroundColor(.accentColor)
+                                .frame(width: 28)
+                            Text("Diagnostics")
+                        }
                     }
+                    if diagnosticsEnabled {
+                        NavigationLink {
+                            DiagnosticsView()
+                        } label: {
+                            HStack {
+                                Image(systemName: "list.bullet.rectangle")
+                                    .foregroundColor(.accentColor)
+                                    .frame(width: 28)
+                                Text("MPD Command Log")
+                            }
+                        }
+                    }
+                } footer: {
+                    Text("Records recent MPD commands with timings so a slow or unresponsive server can be diagnosed. Off by default; turning it off clears the log.")
                 }
 
                 Section("About") {
@@ -102,6 +117,8 @@ struct MoreView: View {
             }
             .listStyle(.insetGrouped)
             .navigationTitle("More")
+            .onAppear { MPDCommandLog.shared.isEnabled = diagnosticsEnabled }
+            .onChange(of: diagnosticsEnabled) { _, on in MPDCommandLog.shared.isEnabled = on }
         }
         .sheet(isPresented: $showConnection) {
             ConnectionView()

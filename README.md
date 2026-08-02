@@ -34,7 +34,7 @@ A lightweight iOS/iPadOS client for [Music Player Daemon](https://www.musicpd.or
 
 **Server Statistics** — Library totals (songs, albums, artists, total playing time) and server uptime, playtime and last database update, from the More tab. Trigger a database update or a full rescan from the same screen; the figures refresh themselves when the scan finishes.
 
-**Diagnostics** — A rolling log of recent MPD commands with timings, under More. Slow commands are highlighted and the whole log can be copied, which makes a stalled or unresponsive server far easier to pin down.
+**Diagnostics** — An optional rolling log of recent MPD commands with timings, under More (off by default). Slow commands are highlighted and the whole log can be copied, which makes a stalled or unresponsive server far easier to pin down.
 
 ## Requirements
 
