@@ -96,6 +96,44 @@ import Testing
 
 // MARK: - artCacheKey
 
+@Suite struct SearchPlaylistCommandTests {
+    @Test func plainQuery() {
+        #expect(searchPlaylistCommand(name: "Rock 2024", query: "marillion", limit: 50)
+                == "searchplaylist \"Rock 2024\" \"(any contains \\\"marillion\\\")\" window 0:50")
+    }
+
+    // Both levels of quoting have to survive: the value's quotes sit inside the
+    // already-quoted filter argument. Getting this wrong produces an ACK.
+    @Test func quotesInTheQueryAreEscapedTwice() {
+        let cmd = searchPlaylistCommand(name: "P", query: "say \"hi\"", limit: 10)
+        #expect(cmd == "searchplaylist \"P\" \"(any contains \\\"say \\\\\\\"hi\\\\\\\"\\\")\" window 0:10")
+    }
+
+    @Test func backslashesAndQuotesInTheNameAreEscaped() {
+        let cmd = searchPlaylistCommand(name: "a\\b\"c", query: "x", limit: 5)
+        #expect(cmd.hasPrefix("searchplaylist \"a\\\\b\\\"c\" "))
+    }
+
+    @Test func windowCarriesTheLimit() {
+        #expect(searchPlaylistCommand(name: "P", query: "x", limit: 7).hasSuffix(" window 0:7"))
+    }
+}
+
+@Suite struct PlaylistMatchTests {
+    @Test func nameOnlyMatchHasNoTrackCount() {
+        let m = PlaylistMatch(name: "Marillion Live", nameMatched: true, trackCount: 0)
+        #expect(m.trackCount == 0)
+        #expect(m.nameMatched)
+        #expect(m.id == "Marillion Live")
+    }
+
+    @Test func contentMatchCarriesACount() {
+        let m = PlaylistMatch(name: "Rock 2024", nameMatched: false, trackCount: 12)
+        #expect(!m.nameMatched)
+        #expect(m.trackCount == 12)
+    }
+}
+
 @Suite struct PlaybackContextValidationTests {
     private let playlist: Set<String> = ["a.flac", "b.flac", "c.flac"]
 

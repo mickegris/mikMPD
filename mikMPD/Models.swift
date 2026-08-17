@@ -643,6 +643,25 @@ nonisolated func playbackContextStillValid(queueFiles: Set<String>,
     return queueFiles.isSubset(of: playlistFiles)
 }
 
+/// A stored playlist that matched a search: by its name, by its contents, or both.
+nonisolated struct PlaylistMatch: Identifiable, Equatable {
+    var name: String
+    var nameMatched: Bool
+    var trackCount: Int      // matching tracks; 0 when only the name matched
+    var id: String { name }
+}
+
+/// `searchplaylist NAME "(any contains "QUERY")"`.
+///
+/// Extracted as a free function so the nesting is testable without a socket —
+/// the inner quotes around the value sit inside the already-quoted filter
+/// argument, so both levels need escaping, and getting that wrong produces an
+/// ACK rather than a wrong answer.
+nonisolated func searchPlaylistCommand(name: String, query: String, limit: Int) -> String {
+    let filter = "(any contains \"\(query.esc)\")"
+    return "searchplaylist \"\(name.esc)\" \"\(filter.esc)\" window 0:\(limit)"
+}
+
 nonisolated struct MPDBrowseItem: Identifiable {
     enum Kind { case directory, file, playlist }
     var kind: Kind

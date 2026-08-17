@@ -6,6 +6,7 @@ struct SearchView: View {
     @State private var selectedSongs: Set<String> = []
     @State private var artists: [String] = []
     @State private var albums: [(artist: String, album: String, discCount: Int)] = []
+    @State private var playlistMatches: [PlaylistMatch] = []
     @State private var isSearching = false
     @State private var searchTask: Task<Void, Never>?
     @State private var addRequest: AddToPlaylistRequest?
@@ -25,7 +26,8 @@ struct SearchView: View {
                         description: Text("Search for songs, artists, and albums")
                     )
                     Spacer()
-                } else if store.searchResults.isEmpty && artists.isEmpty && albums.isEmpty {
+                } else if store.searchResults.isEmpty && artists.isEmpty && albums.isEmpty
+                            && playlistMatches.isEmpty {
                     ContentUnavailableView.search(text: query)
                     Spacer()
                 } else {
@@ -114,6 +116,57 @@ struct SearchView: View {
                     }
                 } header: {
                     Text("Albums (\(albums.count))")
+                }
+            }
+
+            // Playlists section — matched by name and by contents
+            if !playlistMatches.isEmpty {
+                Section {
+                    ForEach(playlistMatches) { pl in
+                        let isPlaying = store.playbackContext == pl.name
+                        NavigationLink(destination: PlaylistDetailView(name: pl.name)) {
+                            HStack(spacing: 12) {
+                                Image(systemName: isPlaying ? "speaker.wave.2.fill" : "music.note.list")
+                                    .foregroundStyle(isPlaying ? Color.accentColor : .secondary)
+                                    .frame(width: 24)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(pl.name).font(.subheadline).lineLimit(2)
+                                        .foregroundStyle(isPlaying ? Color.accentColor : .primary)
+                                    if pl.trackCount > 0 {
+                                        Text("\(pl.trackCount) matching track\(pl.trackCount == 1 ? "" : "s")")
+                                            .font(.caption).foregroundStyle(.secondary)
+                                    } else {
+                                        Text("Name matches").font(.caption).foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                            .padding(.vertical, 2)
+                        }
+                        .nowPlayingRow(isPlaying)
+                        .swipeActions(edge: .trailing) {
+                            Button { store.loadPlaylist(pl.name, replace: true, play: true) } label: {
+                                Label("Play", systemImage: "play.fill")
+                            }.tint(.blue)
+                            Button { store.loadPlaylist(pl.name) } label: {
+                                Label("Add", systemImage: "plus")
+                            }.tint(.green)
+                        }
+                        .contextMenu {
+                            Button { store.loadPlaylist(pl.name, replace: true, play: true) } label: {
+                                Label("Play Playlist", systemImage: "play.fill")
+                            }
+                            Button { store.shufflePlayPlaylist(pl.name) } label: {
+                                Label("Shuffle Play", systemImage: "shuffle")
+                            }
+                            Button { store.loadPlaylist(pl.name) } label: {
+                                Label("Add to Queue", systemImage: "plus")
+                            }
+                        }
+                    }
+                } header: {
+                    Text("Playlists (\(playlistMatches.count))")
+                } footer: {
+                    Text("Long press or swipe a playlist to play, shuffle, or add it to the queue.")
                 }
             }
             
@@ -207,6 +260,7 @@ struct SearchView: View {
         selectedSongs.removeAll()
 
         store.search(field: "any", query: query)
+        store.searchPlaylists(query: query) { self.playlistMatches = $0 }
 
         store.listTag("artist") { allArtists in
             let matchingArtists = allArtists.filter { $0.localizedCaseInsensitiveContains(query) }
@@ -273,6 +327,7 @@ struct SearchView: View {
         store.searchResults = []
         artists = []
         albums = []
+        playlistMatches = []
         selectedSongs.removeAll()
     }
 }

@@ -206,6 +206,9 @@ final class MPDStore: ObservableObject {
         Q.async { [weak self] in
             guard let self else { return }
             do {
+                // Capability probes are per-connection: a different server, or
+                // the same one after an upgrade, may answer differently.
+                self.playlistSearchAvailable = nil
                 try self.socket.connect(host: h, port: p, password: pw)
                 // MPD accepts connections without auth even when a password is
                 // required — commands then all ACK with a permission error.
@@ -1253,6 +1256,75 @@ final class MPDStore: ObservableObject {
             }.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
             DispatchQueue.main.async { self.playlists = lists }
         }
+    }
+
+    /// nil = not probed yet on this connection. `searchplaylist` is MPD 0.24+,
+    /// and an *unknown* command can close the connection outright on some builds
+    /// rather than ACKing — see the caveat in `MPDSocket.command` — so the probe
+    /// checks `socket.connected` and falls back permanently for this connection.
+    ///
+    /// Q-only, same invariant as the socket itself: every access happens on the
+    /// store's serial queue.
+    nonisolated(unsafe) private var playlistSearchAvailable: Bool? = nil
+
+    /// Bumped per search so a superseded fan-out's results are dropped rather
+    /// than landing after a newer query's. Main-thread only.
+    private var playlistSearchGeneration = 0
+
+    /// Search stored playlists by name and by contents.
+    ///
+    /// Bounded on three axes, each mirroring a rule this app already learned the
+    /// hard way: at most `limit` playlists are scanned (a fan-out of one command
+    /// per playlist is how "Play All" once starved the poll for minutes), each
+    /// scan takes a `window` (an unbounded query can outrun the socket's 5 s read
+    /// timeout), and a generation counter drops results from a superseded query
+    /// so a fast typist cannot have an old fan-out land last.
+    func searchPlaylists(query: String, limit: Int = 20,
+                         completion: @escaping @MainActor ([PlaylistMatch]) -> Void) {
+        let trimmed = query.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { completion([]); return }
+        playlistSearchGeneration &+= 1
+        let generation = playlistSearchGeneration
+        Q.async { [weak self] in
+            guard let self else { return }
+            let names = (try? self.socket.command("listplaylists"))?
+                .compactMap { $0["playlist"] } ?? []
+            var matches: [PlaylistMatch] = []
+            for name in names.prefix(limit) {
+                let nameHit = name.localizedCaseInsensitiveContains(trimmed)
+                let hits = self.matchingTrackCount(playlist: name, query: trimmed)
+                if nameHit || hits > 0 {
+                    matches.append(PlaylistMatch(name: name, nameMatched: nameHit, trackCount: hits))
+                }
+            }
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.playlistSearchGeneration == generation else { return }
+                completion(matches)
+            }
+        }
+    }
+
+    /// Rows in one playlist matching `query`, capped. Uses `searchplaylist` when
+    /// the server has it, else pulls the playlist and filters client-side —
+    /// same number of round trips, much larger payloads, so it is the fallback.
+    nonisolated private func matchingTrackCount(playlist: String, query: String,
+                                                limit: Int = 50) -> Int {
+        if playlistSearchAvailable != false {
+            let cmd = searchPlaylistCommand(name: playlist, query: query, limit: limit)
+            if let rows = try? socket.command(cmd) {
+                playlistSearchAvailable = true
+                return rows.filter { $0["file"] != nil }.count
+            }
+            // ACK (unsupported/bad syntax) or a dropped connection. Either way,
+            // stop trying it — and let the reconnect loop handle the socket.
+            playlistSearchAvailable = false
+            guard socket.connected else { return 0 }
+        }
+        let rows = (try? socket.command("listplaylistinfo \"\(playlist.esc)\"")) ?? []
+        return rows.filter { r in
+            [r["title"], r["artist"], r["album"], r["albumartist"], r["file"]]
+                .contains { $0?.localizedCaseInsensitiveContains(query) == true }
+        }.prefix(limit).count
     }
 
     func playlistSongs(name: String, completion: @escaping @MainActor ([MPDSong]) -> Void) {
