@@ -10,16 +10,46 @@ Deployment target: iOS 26.2+. Swift 6 language mode with default actor isolation
 
 **Adding source files**: `mikMPD/mikMPD/` is an Xcode synchronized group — write `.swift` files directly to that directory on disk and Xcode picks them up automatically. Do not use `XcodeWrite` or manually add file references in the project navigator.
 
+`mikMPD` is the only scheme; targets are `mikMPD` and `mikMPDTests`. From the command line (useful for a non-interactive compile check):
+
+```bash
+xcodebuild build -project mikMPD.xcodeproj -scheme mikMPD -destination 'platform=iOS Simulator,name=iPhone 17'
+```
+
 ## Tests
 
-Unit tests use the Swift Testing framework (`mikMPDTests` target).
+Unit tests use the Swift Testing framework (`mikMPDTests` target), driven by `mikMPD.xctestplan` (single configuration, `parallelizable: false`).
 
 - **Run all**: **Product → Test** (Cmd+U)
 - **Run a single test**: click the diamond button in the gutter next to the test function, or right-click it in the Test Navigator and choose **Run**.
+- **From the CLI**: build and test in two steps so a rebuild isn't repeated per run —
+
+```bash
+xcodebuild build-for-testing -project mikMPD.xcodeproj -scheme mikMPD -destination 'platform=iOS Simulator,name=iPhone 17'
+```
+
+```bash
+xcodebuild test-without-building -project mikMPD.xcodeproj -scheme mikMPD -destination 'platform=iOS Simulator,name=iPhone 17' -only-testing:mikMPDTests/AlbumDiscTests
+```
 
 Tests cover pure logic that doesn't need an MPD server: MPD protocol parsing (`parseMPDRecords`, `parseGroupedValues`), all model helpers and computed properties, Codable roundtrips, album/disc grouping, Snapcast model decoding and wire helpers, Wikipedia/MusicBrainz match logic, recently-played derivation, and Bonjour host formatting. One integration-style regression test (`PhoneStreamTests`) pumps the run loop to catch actor-isolation traps in SDK callbacks.
 
 `parseMPDRecords` is an internal free function extracted from `MPDSocket` specifically for testability.
+
+### Live integration tests (local only)
+
+`mikMPDTests/Local/` holds suites that talk to a real MPD server, and it is **gitignored** — a fresh clone has no live tests at all. `LocalTestSupport.swift` defines the host/port constants and `withSocket`, which runs each test body on a dedicated serial queue to honour `MPDSocket`'s `@unchecked Sendable` invariant. Suite gates, in ascending order of risk:
+
+- **Groups A–C (read-only: connection, capability probe, library fixtures)** — gated on `integrationEnabled`, which is a *reachability probe* (a real `connect()` at load time), deliberately **not** an env var. Off-LAN runs therefore skip rather than fail.
+- **Group D (mutating)** — `MPD_INTEGRATION_MUTATE=1`. Every test captures a `ServerSnapshot` (state, position, elapsed, volume, all modes, queue) and restores it in `defer`.
+- **Group E (dangerous: partition lifecycle, daemon-hang repro)** — double-gated on `MPD_INTEGRATION_DANGEROUS=1` *and* a `private let iAcceptDaemonHangRisk` literal that must be flipped in the file and never committed as `true`.
+- **Group W (Wikipedia, real HTTP)** — `WIKI_INTEGRATION=1`.
+
+**Never put these env vars in `mikMPD.xctestplan`.** It is the only place Xcode can store scheme env vars once a test plan is in use, and it is *tracked* — committing `MPD_INTEGRATION=1` there turned the gate on for every clone and had to be reverted twice. That history is why the read-only gate became a reachability probe instead.
+
+## Repo layout notes
+
+`plans/` (design/review notes, one per feature) and `mikMPDTests/Local/` are both gitignored, so the `plans/…` cross-references throughout this file resolve only on a machine that has them. `docs/plans/` is tracked. `TESTING.md` is a manual QA checklist (launch screen, first-run setup, multi-disc, marquee, queue pane, recently played, swipe/long-press parity) — work through it for release-shaped changes; the first two sections need a fresh install.
 
 ## References
 
@@ -81,6 +111,8 @@ This is an MPD (Music Player Daemon) client for iOS/iPadOS.
 
 **SearchView** — Searches songs (`store.searchResults`), artists, and albums simultaneously via a cancellable `Task`. Shows three result sections (Artists → NavigationLink to artist albums; Albums → AlbumGroup rows; Songs → SongRow with context menus). `AddToPlaylistSheet` reachable from song rows.
 
+**LibraryView** — One file (LibraryView.swift, the largest view file) holding the whole Library tab: a scrolling chip bar over `LibTab` (Albums, Artists, Recent, Genres, Playlists, Radio, CD), plus `AlbumListView`, `ArtistListView`, `GenreListView`/`GenreDetailView`, `AlbumDetailView`, `RecentlyAddedView`, `RadioView`, `CDView`, and the shared row/grid helpers. Albums and Recently Added share a list/grid toggle persisted in `@AppStorage("libraryAlbumLayout")` (`LazyVGrid` with `GridItem(.adaptive(minimum: 130))`); sort order persists in `librarySortAlbums`/`librarySortArtists`. `RecentlyAddedView` derives `AddedAlbum`s from the bounded `loadRecentlyAdded` query and records per album whether *any* track carried an `albumartist`, since that decides the `artistTag` handed to `AlbumDetailView`.
+
 **Models** — Lightweight value types (`MPDSong`, `MPDOutput`, `MPDBrowseItem`, `MPDPlaylist`, `MPDServerProfile`) initialized from parsed MPD records or persisted as JSON.
 
 **MPDDiscoveryService** — Bonjour browser (`NWBrowser`, `_mpd._tcp`) that resolves advertised MPD servers to host:port via throwaway `NWConnection`s. Scans stop after a 10 s timeout; the Connection screen offers rescan. Requires `NSBonjourServices` + `NSLocalNetworkUsageDescription` in Info.plist.
@@ -125,6 +157,18 @@ MPD has no history command, so history is client-side: `RecentlyPlayedRecorder` 
 
 **Scope limitation:** recording only happens while the app is active. The foreground poll (RunLoop timer) drives the recorder normally. The background `DispatchSourceTimer` on `Q` also runs — but only when phone streaming is active. Songs played on the MPD device while the app is backgrounded *without* phone streaming are never captured.
 
+### Non-library playback sources (radio, CD)
+
+Not every playing item is a library file, and several views branch on which it is. `MPDSong.sourceKind` (`PlaybackSourceKind`: `.library` / `.radio` / `.cd`) is derived from the file URI alone — `cdda:` prefix → CD, an `http`/`https`/`icy` scheme → radio, otherwise library — and drives `fallbackArtAssetName` (`MikMPDLogo` / `RadioFallbackArt` / `CDFallbackArt`) so art-less streams still get a sensible tile. It also gates actions that don't apply: "Add Next" appears only for `.library` rows (search, playlist detail), and Now Playing's Add-to-Playlist button hides for `.cd` — CD tracks can't live in a stored playlist, though stream URLs can.
+
+**Radio** (`RadioView`): a hardcoded `builtInStations` list (Swedish Radio P1–P4) plus user stations persisted as JSON in `@AppStorage("savedRadioStations")` (`SavedStation`: name + url, `id` is the url). Playing a station is just `store.addAndPlay(uri:)` with the stream URL; the "now playing" indicator compares `station.url == store.currentSong.file`.
+
+**CD** (`CDView`): tracks are the `cdda:///N` URIs MPD exposes; `probeCDTracks` enumerates them, `playCD(track:)` / `addCD(track:)` play or enqueue one, and `playCD()` with no argument plays the bare `cdda:///` whole-disc URI.
+
+### Server statistics and database update
+
+More → Statistics reads MPD's `stats` into `MPDStats` (`loadStats`, `@Published serverStats`/`statsError`) and formats durations with `formatDuration` ("Nd Nh Nm"). The same screen triggers `update` / `rescan` via `updateDatabase(rescan:)`, which returns immediately; progress is observed through `isUpdatingDB`, set by the poll from the presence of `updating_db` in `status` — so it reflects scans started from *any* client, and the figures refresh themselves when the scan finishes. Both commands need MPD's `admin` permission and ACK otherwise, which is surfaced through `statsError` rather than silently doing nothing.
+
 ### Snapcast multiroom control
 
 `SnapcastView` (More tab) connects to a Snapcast server's JSON-RPC 2.0 control port (default 1705, TCP, newline-delimited). The Snapcast host/port are per-server-profile (`snapcastHost`/`snapcastPort` on `MPDServerProfile`); host defaults to the MPD host when blank.
@@ -153,10 +197,14 @@ Disconnects on background, reconnects on foreground resume — **unless phone st
 
 - MPD command arguments are escaped via `String.esc` (backslash + quote escaping) and wrapped in quotes to prevent injection.
 - Password stored in Keychain via `KeychainHelper`; legacy migration from UserDefaults runs on init.
+- **Never read `@Published` state from inside `Q.async`** — those properties are main-thread state. Capture what the command needs into a local *before* dispatching (`let v = repeatMode; Q.async { … }`), and hand results back through `completion: @escaping @MainActor (…)` parameters, which is how every `MPDStore` query returns.
+- Rows that start playback use the shared `.playableRow { … }` modifier (LibraryView.swift), which adds the tap target, a light `Haptics.tap()`, and a 350 ms accent-colour flash. Use it rather than a bare `.onTapGesture` so play feedback stays uniform across radio, CD, and library rows.
+- Enumerations that a view cycles through belong in Models.swift with their order and display names attached — see `ReplayGainMode` (`allCases` order *is* the cycle order, `next` wraps, `label` is the display name). The Now Playing view previously duplicated the order as a string array and the names as a ternary chain, so adding a mode meant editing two files in step.
 - Album art keyed by `artist|album` (lowercased) with an LRU cache (400 items — the grid's working set is ~800 albums; 100 thrashed). Fetch order is **tag art → cover file → internet**: `readpicture` (picture embedded in the file's own tags), then `albumart` (cover.jpg/png beside the song), then MusicBrainz/CoverArtArchive. Tag art is probed first because on a tagged library it is the one that exists — asking `albumart` first cost a wasted ACK round trip per album. Both in-memory and disk-cached (`Caches/albumart/`).
 - **Art fetching is throttled on three axes, and all three matter at grid scale.** A grid tile only knows `artist`/`album`, so `fetchArt` resolves one representative track first (`find album … artist … window 0:1`) and tries MPD-local art before the internet — without that, every tile went straight to MusicBrainz at up to ~15 round trips per album. `ArtFetchGate` (ArtFetch.swift) caps concurrent fetches at 4, since a grid otherwise opens hundreds in parallel. `MusicBrainzThrottle` serialises MusicBrainz to ~1 req/s, which their usage policy requires. Failures write a zero-byte `<key>.miss` marker next to the disk cache with a 7-day TTL, so art-less albums are not re-attempted on every scroll pass. Thumbnails use `.task(id:)` rather than `.onAppear` so scrolling away cancels pending work.
 - **Bulk enqueue is server-side.** `enqueueMatching(tag:value:)` uses MPD's `findadd`; the old path fetched every song then sent one `add` per track, so "Play All" on a large artist or genre was thousands of sequential commands that starved the poll for minutes. Ordering comes from MPD's database order, which for the usual Artist/Album/NN-Track layout matches the previous client-side album/track sort. `enqueue(songs:)` remains for explicit song lists (albums, playlists, search selections).
 - **Every MPD command is logged.** `MPDCommandLog` (MPDCommandLog.swift) keeps a 250-entry ring buffer of `(time, command, duration, outcome)`, written from `MPDSocket.command`/`rawLines` and read by `DiagnosticsView` (More → Diagnostics → MPD Command Log, with copy-to-clipboard). **Off by default** — the `diagnosticsEnabled` setting mirrors into `MPDCommandLog.isEnabled` (thread-safe, read on Q), so a disabled log costs nothing per command and turning it off clears the buffer. Commands slower than 2 s are highlighted. This exists because the daemon has hung hard enough to need `kill -9` with nothing on the client recording what it was doing — see `plans/mpd-hang-investigation.md`.
+- Reordering goes through `mpdMoveTarget(from:to:)` (Models.swift): SwiftUI's `onMove` destination is an index into the *pre-removal* array, MPD's `move`/`playlistmove` TO argument is an index *after* removal, so dragging downward is off by one without the conversion. (`addNext(uri:)` is unrelated to that off-by-one — it just captures `playlistPos + 1` on the main thread and passes it as `addid`'s position argument.)
 - Unbounded library queries must be bounded: `loadRecentlyAdded` uses `find "(modified-since …)" window 0:2000` and an in-flight guard. Unbounded, it walks the whole library and can outrun the socket's 5 s read timeout, which disconnects mid-response and leaves MPD generating output for a client that has gone away — and the 3 s reconnect then re-issues it.
 - **Multi-disc albums**: `albumBaseAndDisc` (Models.swift) strips trailing disc markers (`[Disc 1]`, `(CD 2)`, `Disk 3`, bare `CD2`; a delimiter must precede the keyword so titles like "ABCD2" survive). Applied in `artCacheKey` (disc variants share one cover), MusicBrainz queries, and `WikipediaService.fetchAlbum`. `MPDSong` parses the `disc` tag; `effectiveDisc` falls back to the album-suffix disc; album tracks sort via `sortedByDiscAndTrack`. Album lists collapse variants into one row via `groupAlbumVariants` ("N discs" caption); `AlbumDetailView.loadSongs` re-expands to sibling variants (one `listTag` probe) and renders "Disc N" sections when tracks span multiple discs. The stripped base title is shown only when variants actually merged.
 - **Disc count comes from two independent signals, and both are needed.** Real libraries mix the conventions: "Live At Leeds" is *one* album tag with `disc` tags 1–4, "Quadrophenia [Disc 1]/[Disc 2]" puts the marker in the album name, "'98 Live Meltdown (disc 1)" uses lowercase parens. Name markers alone (`discCountFromVariants`) report a properly-tagged multi-disc album as single-disc — the better the tagging, the worse the display. So `listDiscCounts` issues `list disc [FILTER] group album` alongside each album list and maps *lowercased base name* → highest disc number, `discTagValue` parses the tag (`"1/4"` → 4, the denominator wins when present), and `albumDiscCount(variants:tagDiscs:)` takes the **max** of both signals so agreeing signals don't double-count. `AlbumGroup.tagDiscs` carries the tag value; views fill it in after the query returns. Captions gate on `discCount > 1`, never `variants.count > 1` — a mixed-tagged album ("X" + "X [Disc 1]") has 2 variants but 1 disc and must not render "1 discs". `AlbumDetailView` uses `isMultiDisc` (`songsByDisc.count > 1 && maxDiscNumber > 1`) for both its header prefix and its "Disc N" section split. Because `list disc group album` groups by name only, `AlbumListView`/`GenreDetailView` apply `tagDiscs` **only when the base name is owned by exactly one artist in the current list**, so a multi-disc "Greatest Hits" can't stamp its count onto another artist's single-disc album of the same name. `SearchView` still counts name variants only — a known, deliberate gap.
