@@ -1001,6 +1001,43 @@ import Testing
         #expect(r.disc == nil)
     }
 
+    // MARK: – Marker at the tail of a qualifier bracket
+    //
+    // The real shape of this library's Marillion remasters. Stripping the marker
+    // naively leaves "X [24-bit Remaster" — an unbalanced tag that was shown in
+    // the UI and sent to Wikipedia and MusicBrainz, which know no such album.
+    // Only the marker goes; the qualifier bracket is re-closed, because a
+    // remaster is a distinct library album from the plain edition.
+
+    @Test func markerInsideQualifierBracketReclosesIt() {
+        let r = albumBaseAndDisc("Clutching at Straws [24-bit Remaster CD 1]")
+        #expect(r.base == "Clutching at Straws [24-bit Remaster]")
+        #expect(r.disc == 1)
+    }
+
+    @Test func bothDiscsOfAQualifiedAlbumShareABase() {
+        let one = albumBaseAndDisc("Misplaced Childhood [24-bit Remaster CD 1]")
+        let two = albumBaseAndDisc("Misplaced Childhood [24-bit Remaster CD 2]")
+        #expect(one.base == two.base)
+        #expect(one.disc == 1)
+        #expect(two.disc == 2)
+        // …so they collapse into one album row rather than two.
+        #expect(albumGroupingKey("Misplaced Childhood [24-bit Remaster CD 1]")
+                == albumGroupingKey("Misplaced Childhood [24-bit Remaster CD 2]"))
+    }
+
+    @Test func balancedBaseIsNotTouched() {
+        // The ordinary case must not gain a stray bracket.
+        #expect(albumBaseAndDisc("Blast from the Past [Disc 1]").base == "Blast from the Past")
+        #expect(albumBaseAndDisc("Album (CD 1)").base == "Album")
+        #expect(albumBaseAndDisc("S&M (Symphony & Metallica) [Disc 2]").base
+                == "S&M (Symphony & Metallica)")
+    }
+
+    @Test func reclosingNeverLeavesAnEmptyBracket() {
+        #expect(albumBaseAndDisc("X [ - CD 1]").base == "X")
+    }
+
     @Test func markerOnlyPassesThrough() {
         let r = albumBaseAndDisc("Disc 1")
         #expect(r.base == "Disc 1")
@@ -1128,6 +1165,15 @@ import Testing
         let r = albumBaseAndDisc("X {Disc 1}")
         #expect(r.base == "X")
         #expect(r.disc == 1)
+    }
+
+    // The end-to-end path for the reported bug: the raw tag reaches Wikipedia
+    // and MusicBrainz as a bare album title, with both the disc marker and the
+    // remaster bracket gone.
+    @Test func discMarkerNestedInQualifierBracket() {
+        #expect(albumLookupTitle("Clutching at Straws [24-bit Remaster CD 1]") == "Clutching at Straws")
+        #expect(albumLookupTitle("Clutching at Straws [24-bit Remaster CD 2]") == "Clutching at Straws")
+        #expect(albumLookupTitle("Misplaced Childhood [24-bit Remaster CD 1]") == "Misplaced Childhood")
     }
 
     @Test func partNumberIsNotAQualifier() {

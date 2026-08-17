@@ -24,8 +24,36 @@ nonisolated private enum DiscMarker {
         options: [.caseInsensitive])
 }
 
+/// Re-closes a bracket that stripping a disc marker broke open.
+///
+/// Real tags put the marker at the *tail of a qualifier bracket*:
+/// "Clutching at Straws [24-bit Remaster CD 1]". The marker regex matches from
+/// the space before "CD", which leaves the base as
+/// "Clutching at Straws [24-bit Remaster" — an unbalanced tag that is then shown
+/// in the UI, used as the art-cache key, and (fatally) sent to Wikipedia and
+/// MusicBrainz, neither of which knows an album by that name.
+///
+/// Only the marker is removed, never the bracket around it: a remaster is a
+/// distinct library album, and dropping the whole bracket would fold it into the
+/// plain edition, which the library may hold separately. Closers are appended
+/// only for openers left genuinely unmatched, so a balanced base is untouched.
+nonisolated private func reclosingBrokenBracket(_ s: String) -> String {
+    let closer: [Character: Character] = ["(": ")", "[": "]", "{": "}"]
+    var stack: [Character] = []
+    for ch in s {
+        if let c = closer[ch] {
+            stack.append(c)
+        } else if ch == ")" || ch == "]" || ch == "}" {
+            if stack.last == ch { stack.removeLast() }
+        }
+    }
+    guard !stack.isEmpty else { return s }
+    return s + String(stack.reversed())
+}
+
 /// Splits a disc marker off an album tag: "Blast from the Past [Disc 1]" →
-/// ("Blast from the Past", 1); "101 [Disc B]" → ("101", 2). Tags without a
+/// ("Blast from the Past", 1); "101 [Disc B]" → ("101", 2);
+/// "X [24-bit Remaster CD 1]" → ("X [24-bit Remaster]", 1). Tags without a
 /// marker — or that are nothing but a marker — come back unchanged with a nil disc.
 nonisolated func albumBaseAndDisc(_ album: String) -> (base: String, disc: Int?) {
     let ns = album as NSString
@@ -44,9 +72,15 @@ nonisolated func albumBaseAndDisc(_ album: String) -> (base: String, disc: Int?)
     } else {
         return (album, nil)
     }
-    let base = ns.substring(to: markerStart).trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !base.isEmpty else { return (album, nil) }
-    return (base, disc)
+    let stripped = ns.substring(to: markerStart).trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !stripped.isEmpty else { return (album, nil) }
+    let base = reclosingBrokenBracket(stripped)
+    // Re-closing can leave nothing but an empty bracket ("X []"): that means the
+    // marker *was* the whole bracket, so drop it.
+    return (base.hasSuffix("()") || base.hasSuffix("[]") || base.hasSuffix("{}")
+            ? String(base.dropLast(2)).trimmingCharacters(in: .whitespacesAndNewlines)
+            : base,
+            disc)
 }
 
 /// Extra cleaning for *external lookups only* (Wikipedia/MusicBrainz), never for

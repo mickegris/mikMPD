@@ -1635,6 +1635,25 @@ final class MPDStore: ObservableObject {
         try? Data().write(to: missMarkerPath(key: key), options: .atomic)
     }
 
+    /// Empty both art caches, including the `.miss` markers.
+    ///
+    /// Without this there is no way to force a re-fetch from inside the app: a
+    /// failed lookup is remembered for 7 days, so fixing a lookup bug appears to
+    /// change nothing until the markers age out. Changing an art *key* (as the
+    /// albumartist fallback does) has the same effect from the other direction —
+    /// the old entries become unreachable rather than wrong.
+    func clearAlbumArtCache() {
+        albumArtCache.removeAll()
+        artPending.removeAll()
+        let fm = FileManager.default
+        let dir = Self.artDiskCacheDir
+        for url in (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? [] {
+            try? fm.removeItem(at: url)
+        }
+        // Re-fetch what is on screen right now rather than waiting for a scroll.
+        if !currentSong.file.isEmpty { fetchArt(for: currentSong) }
+    }
+
     private static func saveArtToDisk(key: String, image: UIImage) {
         guard let data = image.jpegData(compressionQuality: 0.85) else { return }
         try? data.write(to: artDiskPath(key: key), options: .atomic)
