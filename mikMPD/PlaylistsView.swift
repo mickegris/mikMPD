@@ -28,9 +28,19 @@ struct PlaylistListView: View {
                 List {
                     Section {
                         ForEach(shown) { pl in
+                            // The app knows what it is playing from, so the list
+                            // of playlists should say so too.
+                            let isPlaying = store.playbackContext == pl.name
                             NavigationLink(destination: PlaylistDetailView(name: pl.name)) {
-                                Label(pl.name, systemImage: "music.note.list").lineLimit(2)
+                                Label {
+                                    Text(pl.name).lineLimit(2)
+                                        .foregroundStyle(isPlaying ? Color.accentColor : .primary)
+                                } icon: {
+                                    Image(systemName: isPlaying ? "speaker.wave.2.fill" : "music.note.list")
+                                        .foregroundStyle(isPlaying ? Color.accentColor : .secondary)
+                                }
                             }
+                            .nowPlayingRow(isPlaying)
                             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                                 Button(role: .destructive) { playlistToDelete = pl } label: {
                                     Label("Delete", systemImage: "trash")
@@ -158,7 +168,11 @@ struct PlaylistDetailView: View {
                     Text("Empty playlist").foregroundStyle(.secondary)
                 } else {
                     ForEach(songs) { s in
-                        SearchRow(song: s, selected: false, isCurrentlyPlaying: s.file == store.currentSong.file)
+                        // Matches on the URI, never on `s.pos`: that is the
+                        // *playlist* index, unrelated to the queue position.
+                        SearchRow(song: s, selected: false,
+                                  isCurrentlyPlaying: isCurrentTrack(file: s.file, currentFile: store.currentSong.file))
+                            .nowPlayingRow(isCurrentTrack(file: s.file, currentFile: store.currentSong.file))
                             .playableRow{ store.playPlaylist(name: name, at: s.pos) }
                             .swipeActions(edge: .leading) {
                                 Button { store.add(uri: s.file) } label: {

@@ -137,6 +137,10 @@ struct AlbumListView: View {
         }
     }
 
+    private func isPlayingAlbum(_ g: AlbumGroup) -> Bool {
+        isCurrentAlbum(rowArtist: g.artist, rowAlbum: g.base, current: store.currentSong)
+    }
+
     @ViewBuilder
     private func albumGridTile(_ g: AlbumGroup) -> some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -145,6 +149,7 @@ struct AlbumListView: View {
                                                         artistTag: "albumartist")) {
                 ArtThumbByKey(artist: g.artist, album: g.variants[0])
                     .cornerRadius(8)
+                    .nowPlayingCover(isPlayingAlbum(g), cornerRadius: 8)
             }
             .buttonStyle(.plain)
             // reservesSpace keeps every tile's text block the same height, so a title
@@ -153,6 +158,7 @@ struct AlbumListView: View {
             // reason — an album with no albumartist would otherwise sit shorter.
             Text(g.base.isEmpty ? "(no title)" : g.base)
                 .font(.subheadline)
+                .foregroundStyle(isPlayingAlbum(g) ? Color.accentColor : .primary)
                 .lineLimit(2, reservesSpace: true)
             Text(g.artist)
                 .font(.caption).foregroundStyle(.secondary)
@@ -184,7 +190,11 @@ struct AlbumListView: View {
 /// Row for an artist-aware album list entry — same-named albums by different
 /// artists are separate rows, told apart by the artist caption.
 struct AlbumGroupRow: View {
+    @EnvironmentObject var store: MPDStore
     let group: AlbumGroup
+    private var isPlaying: Bool {
+        isCurrentAlbum(rowArtist: group.artist, rowAlbum: group.base, current: store.currentSong)
+    }
     var body: some View {
         NavigationLink(destination:AlbumDetailView(album:group.variants[0],
                                                    artist:group.artist.isEmpty ? nil : group.artist,
@@ -193,12 +203,14 @@ struct AlbumGroupRow: View {
                 Label {
                     VStack(alignment:.leading,spacing:2){
                         Text(group.base.isEmpty ? "(no title)" : group.base)
+                            .foregroundStyle(isPlaying ? Color.accentColor : .primary)
                         if !group.artist.isEmpty {
                             Text(group.artist).font(.caption).foregroundStyle(.secondary)
                         }
                     }
                 } icon: {
-                    Image(systemName:"square.stack")
+                    Image(systemName: isPlaying ? "speaker.wave.2.fill" : "square.stack")
+                        .foregroundStyle(isPlaying ? Color.accentColor : .secondary)
                 }
                 if group.discCount > 1 {
                     Spacer()
@@ -206,6 +218,7 @@ struct AlbumGroupRow: View {
                 }
             }
         }
+        .nowPlayingRow(isPlaying)
     }
 }
 struct AlbumDetailView: View {
@@ -217,7 +230,7 @@ struct AlbumDetailView: View {
     @State private var wiki:String?=nil;@State private var wikiLoading=false;@State private var expanded=false
     @State private var addRequest:AddToPlaylistRequest?=nil
     @State private var mergedTags:[String]=[]  // >1 when sibling disc variants were merged
-    var displayArtist:String{ artist ?? songs.first?.artist ?? "" }
+    var displayArtist:String{ artist ?? songs.first?.displayArtist ?? "" }
     // Show the stripped base title only when variants really merged, so an album
     // legitimately named like a disc marker keeps its raw name.
     var displayAlbum:String{ mergedTags.count > 1 ? albumBaseAndDisc(album).base : album }
@@ -289,7 +302,8 @@ struct AlbumDetailView: View {
     @ViewBuilder
     func trackRows(_ list:[MPDSong]) -> some View {
         ForEach(list){ s in
-            SongRow(song:s, isCurrentlyPlaying: s.file == store.currentSong.file)
+            SongRow(song:s, isCurrentlyPlaying: isCurrentTrack(file: s.file, currentFile: store.currentSong.file))
+                .nowPlayingRow(isCurrentTrack(file: s.file, currentFile: store.currentSong.file))
                 .playableRow{ store.addAndPlay(uri:s.file) }
                 .swipeActions(edge:.trailing){
                     Button{store.add(uri:s.file)} label:{Label("Add",systemImage:"plus")}.tint(.green)
@@ -601,11 +615,12 @@ struct RadioView: View {
                 .frame(width: 24)
             Text(station.name).font(.subheadline)
             Spacer()
-            if station.url == store.currentSong.file {
-                Image(systemName: "speaker.wave.2.fill").font(.caption2).foregroundStyle(.tint)
+            if isCurrentTrack(file: station.url, currentFile: store.currentSong.file) {
+                NowPlayingMarker()
             }
         }
         .padding(.vertical, 2)
+        .nowPlayingRow(isCurrentTrack(file: station.url, currentFile: store.currentSong.file))
     }
 }
 
@@ -671,15 +686,19 @@ struct RecentlyAddedView: View {
                                                                 artist: g.artist.isEmpty ? nil : g.artist,
                                                                 artistTag: g.artistTag)) {
                         HStack(spacing: 10) {
-                            ArtThumbByKey(artist: g.artist, album: g.album, size: 44).cornerRadius(4)
+                            ArtThumbByKey(artist: g.artist, album: g.album, size: 44)
+                                .cornerRadius(4)
+                                .nowPlayingCover(isPlayingAlbum(g), cornerRadius: 4)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(g.album).lineLimit(2)
+                                    .foregroundStyle(isPlayingAlbum(g) ? Color.accentColor : .primary)
                                 if !g.artist.isEmpty {
                                     Text(g.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                                 }
                             }
                         }
                     }
+                    .nowPlayingRow(isPlayingAlbum(g))
                 }
                 .listStyle(.plain)
                 .refreshable { reload() }
@@ -713,6 +732,10 @@ struct RecentlyAddedView: View {
         }
     }
 
+    private func isPlayingAlbum(_ g: AddedAlbum) -> Bool {
+        isCurrentAlbum(rowArtist: g.artist, rowAlbum: g.album, current: store.currentSong)
+    }
+
     @ViewBuilder
     private func albumGridTile(_ g: AddedAlbum) -> some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -721,10 +744,12 @@ struct RecentlyAddedView: View {
                                                         artistTag: g.artistTag)) {
                 ArtThumbByKey(artist: g.artist, album: g.album)
                     .cornerRadius(8)
+                    .nowPlayingCover(isPlayingAlbum(g), cornerRadius: 8)
             }
             .buttonStyle(.plain)
             Text(g.album.isEmpty ? "(no title)" : g.album)
                 .font(.subheadline)
+                .foregroundStyle(isPlayingAlbum(g) ? Color.accentColor : .primary)
                 .lineLimit(2, reservesSpace: true)
             Text(g.artist)
                 .font(.caption).foregroundStyle(.secondary)
@@ -787,8 +812,15 @@ struct CDView: View {
                         Button {
                             store.playCD(track: track.path)
                         } label: {
-                            Label("Track \(i + 1)", systemImage: "opticaldisc")
+                            HStack {
+                                Label("Track \(i + 1)", systemImage: "opticaldisc")
+                                if isCurrentTrack(file: track.path, currentFile: store.currentSong.file) {
+                                    Spacer()
+                                    NowPlayingMarker()
+                                }
+                            }
                         }
+                        .nowPlayingRow(isCurrentTrack(file: track.path, currentFile: store.currentSong.file))
                         .swipeActions(edge: .leading) {
                             Button {
                                 store.playCD(track: track.path)
@@ -868,12 +900,10 @@ struct SongRow: View {
             if !song.track.isEmpty { Text(song.track.components(separatedBy:"/").first ?? song.track).font(.caption2).foregroundStyle(.secondary).frame(minWidth:24,alignment:.trailing) }
             VStack(alignment:.leading,spacing:1){
                 Text(song.displayTitle).font(.subheadline).lineLimit(1)
-                if !song.artist.isEmpty { Text(song.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+                if !song.displayArtist.isEmpty { Text(song.displayArtist).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
             }
             Spacer()
-            if isCurrentlyPlaying {
-                Image(systemName: "speaker.wave.2.fill").font(.caption2).foregroundStyle(.tint)
-            }
+            if isCurrentlyPlaying { NowPlayingMarker() }
             Text(formatTime(song.duration)).font(.caption2).foregroundStyle(.secondary)
         }.padding(.vertical,2)
     }

@@ -119,9 +119,13 @@ nonisolated final class SnapcastSocket: @unchecked Sendable {
             stateLock.unlock()
             guard current else { break }
 
-            let line: String
-            do { line = try readOneLine(fd: fd, buf: &buf) }
+            let received: String?
+            do { received = try readOneLine(fd: fd, buf: &buf) }
             catch { break }
+            // nil = the receive timeout elapsed on an idle connection. Loop back
+            // to the state check above rather than treating it as an error: that
+            // check is the thread's only way to notice it has been superseded.
+            guard let line = received else { continue }
 
             stateLock.lock()
             let stillCurrent = _connected && _generation == gen
@@ -214,6 +218,13 @@ nonisolated final class SnapcastSocket: @unchecked Sendable {
         _ = fcntl(s, F_SETFL, flags)
         var tv = timeval(tv_sec: 5, tv_usec: 0)
         setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+        // A receive timeout too, matching MPDSocket. Without it the reader Thread
+        // blocks in recv() indefinitely and can only be stopped from outside, by
+        // disconnect()'s shutdown(). With it, the loop resurfaces every 5 s to
+        // re-check whether it is still the current connection, so the thread can
+        // always end itself. Snapcast is push-based and often idle, so a timeout
+        // is the normal case, not an error — see readOneLine.
+        setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
         return s
     }
 
@@ -226,7 +237,12 @@ nonisolated final class SnapcastSocket: @unchecked Sendable {
         }
     }
 
-    private func readOneLine(fd: Int32, buf: inout Data) throws -> String {
+    /// One newline-terminated line, or nil when the receive timeout elapsed with
+    /// nothing to read. Returning on timeout rather than looping internally is
+    /// what lets `readLoop` re-check whether this connection is still current —
+    /// looping here would keep the thread inside this call forever on an idle
+    /// connection, which is exactly the state a stale reader gets stuck in.
+    private func readOneLine(fd: Int32, buf: inout Data) throws -> String? {
         while true {
             if let nl = buf.firstIndex(of: 10) {
                 let line = String(data: buf[buf.startIndex..<nl], encoding: .utf8) ?? ""
@@ -240,7 +256,8 @@ nonisolated final class SnapcastSocket: @unchecked Sendable {
             } else if n == 0 {
                 throw SnapcastError.io("Connection closed")
             } else {
-                if errno == EAGAIN || errno == EWOULDBLOCK { continue }
+                if errno == EAGAIN || errno == EWOULDBLOCK { return nil }
+                if errno == EINTR { continue }
                 throw SnapcastError.io("recv failed (errno=\(errno))")
             }
         }

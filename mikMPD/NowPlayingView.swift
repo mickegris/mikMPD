@@ -17,6 +17,10 @@ struct NowPlayingView: View {
     enum Pane { case art, lyrics, queue }
     @State private var pane: Pane = .art
 
+    // Synced lyrics keep the active line centered while this is on. View-local
+    // and unpersisted on purpose — see `lyricsFollowToggle`.
+    @State private var lyricsFollow = true
+
     // Presents the shared "Add to Playlist" sheet for the current song
     @State private var addRequest: AddToPlaylistRequest?
 
@@ -279,10 +283,9 @@ struct NowPlayingView: View {
                 ScrollViewReader { proxy in
                     List {
                         ForEach(store.queue) { qSong in
-                            QueueRow(song: qSong, isCurrent: qSong.pos == store.playlistPos)
+                            QueueRow(song: qSong, isCurrent: isCurrentQueueRow(pos: qSong.pos, playlistPos: store.playlistPos))
                                 .playableRow{ store.play(at: qSong.pos) }
-                                .listRowBackground(qSong.pos == store.playlistPos
-                                    ? Color.accentColor.opacity(0.12) : Color.clear)
+                                .nowPlayingRow(isCurrentQueueRow(pos: qSong.pos, playlistPos: store.playlistPos))
                                 .id(qSong.pos)
                         }
                         .onDelete { store.delete(at: $0) }
@@ -310,6 +313,12 @@ struct NowPlayingView: View {
             RoundedRectangle(cornerRadius: 14).fill(Color(.systemGray6))
             lyricsContent.padding(16)
         }
+        .overlay(alignment: .bottomTrailing) {
+            lyricsFollowToggle.padding(8)
+        }
+        // Following is per-track, not a stored preference: it is "how I want to
+        // read *this* song". A new song starts following again.
+        .onChange(of: store.currentSongID) { _, _ in lyricsFollow = true }
     }
 
     @ViewBuilder
@@ -345,10 +354,16 @@ struct NowPlayingView: View {
         }
     }
 
-    /// Scrolling synced lyrics with the active line highlighted, kept centered.
+    /// Scrolling synced lyrics with the active line highlighted.
+    ///
+    /// Following is opt-out: while `lyricsFollow` is on, the pane keeps the
+    /// active line centered, which is what makes synced lyrics worth having and
+    /// also what makes the pane unreadable anywhere else — scrolling back to an
+    /// earlier verse used to survive only until the song reached the next line.
+    /// The highlight stays in both modes: scrolled away, it is the only
+    /// indication of where the song actually is.
     func syncedLyricsView(_ lines: [LyricLine]) -> some View {
-        let t = store.elapsed - LyricsService.syncOffset
-        let active = lines.lastIndex { $0.secs <= t }
+        let active = activeLyricLine(lines, elapsed: store.elapsed)
         return ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
@@ -364,20 +379,57 @@ struct NowPlayingView: View {
             }
             .animation(.easeInOut(duration: 0.2), value: active)
             .onChange(of: active) { _, newValue in
-                guard let newValue else { return }
+                guard lyricsFollow, let newValue else { return }
                 withAnimation(.easeInOut(duration: 0.3)) {
                     proxy.scrollTo(newValue, anchor: .center)
                 }
             }
+            // Re-enabling has to snap now, not at the next line change —
+            // otherwise turning Sync back on appears to do nothing for seconds.
+            .onChange(of: lyricsFollow) { _, following in
+                guard following, let active else { return }
+                withAnimation(.easeInOut(duration: 0.3)) {
+                    proxy.scrollTo(active, anchor: .center)
+                }
+            }
+        }
+    }
+
+    /// Sync/Scroll switch, shown only when the current lyrics are synced —
+    /// plain lyrics have no autoscroll to disable, so the button would be inert.
+    ///
+    /// Deliberately not automatic: detecting a manual scroll and stopping there
+    /// feeds back on itself, because the scroll observer also fires for the
+    /// pane's own programmatic scrolling, so it switches itself off immediately.
+    @ViewBuilder
+    var lyricsFollowToggle: some View {
+        if case .loaded(let lyrics) = store.lyricsState,
+           let synced = lyrics.synced, !synced.isEmpty, !lyrics.instrumental {
+            Button {
+                lyricsFollow.toggle()
+                Haptics.tap()
+            } label: {
+                Label(lyricsFollow ? "Sync" : "Scroll",
+                      systemImage: lyricsFollow ? "arrow.down.circle.fill" : "hand.draw")
+                    .font(.caption2)
+                    .labelStyle(.titleAndIcon)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(.thinMaterial, in: Capsule())
+                    .foregroundStyle(lyricsFollow ? Color.accentColor : Color.secondary)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(lyricsFollow ? "Following the song; tap to scroll freely"
+                                             : "Scrolling freely; tap to follow the song")
         }
     }
 
     var songInfo: some View {
         VStack(spacing: 4) {
             MarqueeText(text: song.displayTitle, font: .title2.bold(), color: .primary)
-            if !song.artist.isEmpty {
-                NavigationLink(destination: ArtistDetailView(artist: song.artist)) {
-                    Text(song.artist)
+            if !song.displayArtist.isEmpty {
+                NavigationLink(destination: ArtistDetailView(artist: song.displayArtist)) {
+                    Text(song.displayArtist)
                         .font(.subheadline).foregroundStyle(.secondary)
                         .underline()
                 }
@@ -386,7 +438,7 @@ struct NowPlayingView: View {
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             if !song.album.isEmpty {
-                NavigationLink(destination: AlbumDetailView(album: song.album, artist: song.artist.isEmpty ? nil : song.artist)) {
+                NavigationLink(destination: AlbumDetailView(album: song.album, artist: song.displayArtist.isEmpty ? nil : song.displayArtist)) {
                     MarqueeText(text: song.album, font: .caption, color: .secondary, underlined: true)
                 }
             }
@@ -602,6 +654,14 @@ struct RecentlyPlayedSheet: View {
         }
     }
 
+    /// An album-less tile (a radio stream or a loose file) is keyed on its file,
+    /// so it marks by URI; a real album marks when the playing track belongs to it.
+    private func isPlayingRecentAlbum(_ ra: RecentAlbum) -> Bool {
+        ra.albumless
+            ? isCurrentTrack(file: ra.file, currentFile: store.currentSong.file)
+            : isCurrentAlbum(rowArtist: ra.artist, rowAlbum: ra.album, current: store.currentSong)
+    }
+
     @ViewBuilder
     private func albumTile(_ ra: RecentAlbum) -> some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -609,18 +669,22 @@ struct RecentlyPlayedSheet: View {
                 if ra.albumless {
                     Button { store.addAndPlay(uri: ra.file) } label: {
                         ArtThumbByKey(artist: ra.artist, album: ra.album, size: 110).cornerRadius(8)
+                            .nowPlayingCover(isCurrentTrack(file: ra.file, currentFile: store.currentSong.file),
+                                             cornerRadius: 8)
                     }
                     .buttonStyle(.plain)
                 } else {
                     NavigationLink(destination: AlbumDetailView(
                         album: ra.album, artist: ra.artist.isEmpty ? nil : ra.artist)) {
                         ArtThumbByKey(artist: ra.artist, album: ra.album, size: 110).cornerRadius(8)
+                            .nowPlayingCover(isPlayingRecentAlbum(ra), cornerRadius: 8)
                     }
                     .buttonStyle(.plain)
                 }
             }
             Text(ra.albumless ? ra.title : ra.album)
                 .font(.subheadline).lineLimit(2)
+                .foregroundStyle(isPlayingRecentAlbum(ra) ? Color.accentColor : .primary)
             if !ra.artist.isEmpty {
                 Text(ra.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
@@ -671,12 +735,13 @@ struct RecentlyPlayedSheet: View {
                     }
                 }
                 Spacer()
-                if entry.file == store.currentSong.file {
-                    Image(systemName: "speaker.wave.2.fill").font(.caption2).foregroundStyle(.tint)
+                if isCurrentTrack(file: entry.file, currentFile: store.currentSong.file) {
+                    NowPlayingMarker()
                 }
                 Text(relativeDay(entry.playedAt))
                     .font(.caption2).foregroundStyle(.secondary)
             }
+            .nowPlayingRow(isCurrentTrack(file: entry.file, currentFile: store.currentSong.file))
             .playableRow{ store.addAndPlay(uri: entry.file) }
             .swipeActions(edge: .trailing) {
                 Button { store.add(uri: entry.file) } label: {

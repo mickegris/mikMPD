@@ -4,8 +4,11 @@
 import SwiftUI
 
 struct DiagnosticsView: View {
+    @EnvironmentObject var store: MPDStore
     @State private var entries: [MPDCommandLogEntry] = []
     @State private var copied = false
+    @State private var confirmClearArt = false
+    @State private var artCleared = false
 
     private static let timeFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -46,6 +49,13 @@ struct DiagnosticsView: View {
             } footer: {
                 Text("Newest first, up to 250 entries. Anything slower than 2 s is highlighted — that is where to look first if the server stalls or stops responding.")
             }
+            Section {
+                Button(role: .destructive) { confirmClearArt = true } label: {
+                    Label("Clear Album Art Cache", systemImage: "photo.badge.arrow.down")
+                }
+            } footer: {
+                Text("Deletes every cached cover and every \"no art found\" marker. Albums whose art failed to load are not retried for 7 days, so clearing the cache is the way to make them try again.")
+            }
         }
         .listStyle(.insetGrouped)
         .navigationTitle("Diagnostics")
@@ -71,6 +81,18 @@ struct DiagnosticsView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text("The command log is on the clipboard.")
+        }
+        .alert("Clear Album Art Cache?", isPresented: $confirmClearArt) {
+            Button("Clear", role: .destructive) {
+                store.clearAlbumArtCache()
+                artCleared = true
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Covers will be fetched again as you browse. This can take a while on a large library.")
+        }
+        .alert("Album Art Cache Cleared", isPresented: $artCleared) {
+            Button("OK", role: .cancel) {}
         }
         .onAppear { entries = MPDCommandLog.shared.recent }
     }

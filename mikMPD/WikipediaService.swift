@@ -128,9 +128,12 @@ actor WikipediaService {
         let aboutAlbum = Self.titleMatchesAlbum(title: titleLower, album: albumLower)
             || extractLower.contains(albumLower)
         let artistLower = artist.normalizedForLookup.lowercased()
+        // The letters-only comparison folds diacritics and tolerates mojibake —
+        // Wikipedia extracts keep their accents ("Blue Öyster Cult") where tags
+        // often do not, or mangle them differently. See `artistCreditMatches`.
         let aboutArtist = artist.isEmpty
             || extractLower.contains(artistLower)
-            || extractLower.filter(\.isLetter).contains(artistLower.filter(\.isLetter))
+            || artistCreditMatches(extractLower, artistLower)
         return aboutAlbum && aboutArtist
     }
 

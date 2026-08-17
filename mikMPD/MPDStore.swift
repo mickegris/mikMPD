@@ -49,7 +49,28 @@ final class MPDStore: ObservableObject {
     @Published var partitions:     [String]        = []
     @Published var browseItems:    [MPDBrowseItem] = []
     @Published var searchResults:  [MPDSong]       = []
-    @Published var playbackContext: String?        = nil  // stored-playlist name; nil = unknown/other
+    /// Stored-playlist name the queue was built from; nil = unknown/other.
+    ///
+    /// Persisted per server. It used to be plain in-memory state, so it was lost
+    /// on every relaunch — including the silent one after iOS reclaims a
+    /// backgrounded app. Starting a playlist and coming back later, which is
+    /// exactly what shuffling one is for, therefore showed no "Playing from"
+    /// label even though nothing had gone wrong.
+    @Published var playbackContext: String? = nil {
+        didSet {
+            guard !activeServerID.isEmpty else { return }
+            let key = "playbackContext_\(activeServerID)"
+            if let playbackContext {
+                UserDefaults.standard.set(playbackContext, forKey: key)
+            } else {
+                UserDefaults.standard.removeObject(forKey: key)
+            }
+        }
+    }
+    /// True once the restored context has been checked against the live queue.
+    /// Reset per connection, since the queue can be replaced by another client
+    /// while this app is not running.
+    private var playbackContextVerified = false
     @Published var albumArtCache:  [String: UIImage] = [:]
     private var artAccessOrder: [String] = []
     private let artCacheLimit = 400   // grid working set is ~800 albums; 100 thrashed
@@ -129,6 +150,7 @@ final class MPDStore: ObservableObject {
         }
         loadServersMigratingIfNeeded()
         loadRecentlyPlayed()
+        loadPlaybackContext()
         connect()
     }
 
@@ -176,9 +198,17 @@ final class MPDStore: ObservableObject {
             pendingRestore = saved
         }
         let restorePartition = pendingRestore
+        // A restored "Playing from" label describes a queue this app did not
+        // watch being built — another client may have replaced it entirely.
+        // Check it once per connection, not per poll: two commands, and a queue
+        // does not silently change identity between polls.
+        let contextToVerify = playbackContextVerified ? nil : playbackContext
         Q.async { [weak self] in
             guard let self else { return }
             do {
+                // Capability probes are per-connection: a different server, or
+                // the same one after an upgrade, may answer differently.
+                self.playlistSearchAvailable = nil
                 try self.socket.connect(host: h, port: p, password: pw)
                 // MPD accepts connections without auth even when a password is
                 // required — commands then all ACK with a permission error.
@@ -197,6 +227,7 @@ final class MPDStore: ObservableObject {
                     _ = try? self.socket.command("partition \"\(part.esc)\"")
                 }
                 self.poll()
+                if let contextToVerify { self.verifyPlaybackContext(contextToVerify) }
                 DispatchQueue.main.async {
                     self.isConnected = true
                     self.startTimers()
@@ -268,6 +299,7 @@ final class MPDStore: ObservableObject {
         servers.removeAll { $0.id == profile.id }
         KeychainHelper.save(key: "mpd_password_\(profile.id.uuidString)", value: "")  // removes the entry
         UserDefaults.standard.removeObject(forKey: "recentlyPlayed_\(profile.id.uuidString)")
+        UserDefaults.standard.removeObject(forKey: "playbackContext_\(profile.id.uuidString)")
         if profile.id.uuidString == activeServerID {
             if let next = servers.first {
                 switchToServer(next, force: true)
@@ -302,6 +334,37 @@ final class MPDStore: ObservableObject {
         recentlyPlayed = prunedRecentHistory(decoded, now: Date())
     }
 
+    /// Restore the active server's "Playing from" label, unverified until the
+    /// next connection checks it against the queue.
+    private func loadPlaybackContext() {
+        playbackContextVerified = false
+        guard !activeServerID.isEmpty else { playbackContext = nil; return }
+        playbackContext = UserDefaults.standard.string(forKey: "playbackContext_\(activeServerID)")
+    }
+
+    /// Set the "Playing from" label from an action taken in this app. No
+    /// verification is needed — we just built that queue ourselves.
+    private func setPlaybackContext(_ name: String?) {
+        playbackContext = name
+        playbackContextVerified = true
+    }
+
+    /// Confirm a restored context still describes the queue, once per connection.
+    /// `listplaylist` returns URIs only — cheaper than `listplaylistinfo`.
+    nonisolated private func verifyPlaybackContext(_ name: String) {
+        let playlistFiles = Set((try? socket.command("listplaylist \"\(name.esc)\""))?
+            .compactMap { $0["file"] } ?? [])
+        let queueFiles = Set((try? socket.command("playlistinfo"))?
+            .compactMap { $0["file"] } ?? [])
+        let stillValid = playbackContextStillValid(queueFiles: queueFiles,
+                                                   playlistFiles: playlistFiles)
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.playbackContext == name else { return }
+            self.playbackContextVerified = true
+            if !stillValid { self.playbackContext = nil }
+        }
+    }
+
     private func pushRecent(_ entry: RecentlyPlayedEntry) {
         recentlyPlayed = prunedRecentHistory([entry] + recentlyPlayed, now: entry.playedAt)
     }
@@ -327,6 +390,7 @@ final class MPDStore: ObservableObject {
         lastUsedPartitionName = profile.lastPartition.isEmpty ? nil : profile.lastPartition
         resetServerState()
         loadRecentlyPlayed()
+        loadPlaybackContext()   // must follow resetServerState, which clears it
         connect()
     }
 
@@ -338,6 +402,8 @@ final class MPDStore: ObservableObject {
         searchResults = []; browseItems = []; playlists = []
         elapsed = 0; duration = 0; isPlaying = false; isPaused = false
         playlistPos = -1; bitrate = ""; audioFmt = ""; currentPartition = ""
+        // playbackContext is cleared here and restored by loadPlaybackContext()
+        // immediately after — it is per-server persisted state, not live state.
         lyricsState = .unavailable; playbackContext = nil
         replayGainMode = "off"; crossfadeSeconds = 0
         serverStats = nil; statsError = nil; isUpdatingDB = false
@@ -890,7 +956,7 @@ final class MPDStore: ObservableObject {
             _ = try? self.socket.command("add \"\(uri.esc)\"")
             _ = try? self.socket.command("play 0")
             self.poll()
-            DispatchQueue.main.async { self.playbackContext = nil; self.loadQueue() }
+            DispatchQueue.main.async { self.setPlaybackContext(nil); self.loadQueue() }
         }
     }
 
@@ -975,14 +1041,14 @@ final class MPDStore: ObservableObject {
         Q.async { [weak self] in
             _ = try? self?.socket.command("clear")
             // Reset playlistPos immediately so addNext doesn't insert at a stale position.
-            DispatchQueue.main.async { self?.playbackContext = nil; self?.playlistPos = -1; self?.loadQueue() }
+            DispatchQueue.main.async { self?.setPlaybackContext(nil); self?.playlistPos = -1; self?.loadQueue() }
         }
     }
 
     func add(uri: String) {
         Q.async { [weak self] in
             _ = try? self?.socket.command("add \"\(uri.esc)\"")
-            DispatchQueue.main.async { self?.playbackContext = nil; self?.loadQueue() }
+            DispatchQueue.main.async { self?.setPlaybackContext(nil); self?.loadQueue() }
         }
     }
 
@@ -1004,7 +1070,7 @@ final class MPDStore: ObservableObject {
             _ = try? self.socket.command("add \"\(uri.esc)\"")
             _ = try? self.socket.command("play \(before)")
             self.poll()
-            DispatchQueue.main.async { self.playbackContext = nil; self.loadQueue() }
+            DispatchQueue.main.async { self.setPlaybackContext(nil); self.loadQueue() }
         }
     }
 
@@ -1036,6 +1102,10 @@ final class MPDStore: ObservableObject {
     func loadPlaylist(_ name: String, replace: Bool = false, play: Bool = false) {
         Q.async { [weak self] in
             guard let self else { return }
+            // "Add" to an *empty* queue leaves the queue holding exactly this
+            // playlist, so the label is accurate and should be shown. Adding to
+            // a queue that already has songs genuinely loses the context.
+            let ontoEmptyQueue = !replace && self.playlistLength() == 0
             if replace { _ = try? self.socket.command("clear") }
             _ = try? self.socket.command("load \"\(name.esc)\"")
             if play {
@@ -1043,7 +1113,7 @@ final class MPDStore: ObservableObject {
                 self.poll()
             }
             DispatchQueue.main.async {
-                self.playbackContext = (replace || play) ? name : nil
+                self.setPlaybackContext((replace || play || ontoEmptyQueue) ? name : nil)
                 self.loadQueue()
             }
         }
@@ -1059,7 +1129,7 @@ final class MPDStore: ObservableObject {
             _ = try? self.socket.command("shuffle")
             _ = try? self.socket.command("play 0")
             self.poll()
-            DispatchQueue.main.async { self.playbackContext = name; self.loadQueue() }
+            DispatchQueue.main.async { self.setPlaybackContext(name); self.loadQueue() }
         }
     }
 
@@ -1089,7 +1159,7 @@ final class MPDStore: ObservableObject {
                 self.poll()
             }
             DispatchQueue.main.async {
-                if replace { self.playbackContext = nil }
+                if replace { self.setPlaybackContext(nil) }
                 self.loadQueue()
             }
         }
@@ -1104,7 +1174,7 @@ final class MPDStore: ObservableObject {
             if playFirst || replace { _ = try? self.socket.command("play \(before)") }
             if playFirst || replace { self.poll() }
             DispatchQueue.main.async {
-                if replace { self.playbackContext = nil }
+                if replace { self.setPlaybackContext(nil) }
                 self.loadQueue()
             }
         }
@@ -1188,6 +1258,75 @@ final class MPDStore: ObservableObject {
         }
     }
 
+    /// nil = not probed yet on this connection. `searchplaylist` is MPD 0.24+,
+    /// and an *unknown* command can close the connection outright on some builds
+    /// rather than ACKing — see the caveat in `MPDSocket.command` — so the probe
+    /// checks `socket.connected` and falls back permanently for this connection.
+    ///
+    /// Q-only, same invariant as the socket itself: every access happens on the
+    /// store's serial queue.
+    nonisolated(unsafe) private var playlistSearchAvailable: Bool? = nil
+
+    /// Bumped per search so a superseded fan-out's results are dropped rather
+    /// than landing after a newer query's. Main-thread only.
+    private var playlistSearchGeneration = 0
+
+    /// Search stored playlists by name and by contents.
+    ///
+    /// Bounded on three axes, each mirroring a rule this app already learned the
+    /// hard way: at most `limit` playlists are scanned (a fan-out of one command
+    /// per playlist is how "Play All" once starved the poll for minutes), each
+    /// scan takes a `window` (an unbounded query can outrun the socket's 5 s read
+    /// timeout), and a generation counter drops results from a superseded query
+    /// so a fast typist cannot have an old fan-out land last.
+    func searchPlaylists(query: String, limit: Int = 20,
+                         completion: @escaping @MainActor ([PlaylistMatch]) -> Void) {
+        let trimmed = query.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { completion([]); return }
+        playlistSearchGeneration &+= 1
+        let generation = playlistSearchGeneration
+        Q.async { [weak self] in
+            guard let self else { return }
+            let names = (try? self.socket.command("listplaylists"))?
+                .compactMap { $0["playlist"] } ?? []
+            var matches: [PlaylistMatch] = []
+            for name in names.prefix(limit) {
+                let nameHit = name.localizedCaseInsensitiveContains(trimmed)
+                let hits = self.matchingTrackCount(playlist: name, query: trimmed)
+                if nameHit || hits > 0 {
+                    matches.append(PlaylistMatch(name: name, nameMatched: nameHit, trackCount: hits))
+                }
+            }
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.playlistSearchGeneration == generation else { return }
+                completion(matches)
+            }
+        }
+    }
+
+    /// Rows in one playlist matching `query`, capped. Uses `searchplaylist` when
+    /// the server has it, else pulls the playlist and filters client-side —
+    /// same number of round trips, much larger payloads, so it is the fallback.
+    nonisolated private func matchingTrackCount(playlist: String, query: String,
+                                                limit: Int = 50) -> Int {
+        if playlistSearchAvailable != false {
+            let cmd = searchPlaylistCommand(name: playlist, query: query, limit: limit)
+            if let rows = try? socket.command(cmd) {
+                playlistSearchAvailable = true
+                return rows.filter { $0["file"] != nil }.count
+            }
+            // ACK (unsupported/bad syntax) or a dropped connection. Either way,
+            // stop trying it — and let the reconnect loop handle the socket.
+            playlistSearchAvailable = false
+            guard socket.connected else { return 0 }
+        }
+        let rows = (try? socket.command("listplaylistinfo \"\(playlist.esc)\"")) ?? []
+        return rows.filter { r in
+            [r["title"], r["artist"], r["album"], r["albumartist"], r["file"]]
+                .contains { $0?.localizedCaseInsensitiveContains(query) == true }
+        }.prefix(limit).count
+    }
+
     func playlistSongs(name: String, completion: @escaping @MainActor ([MPDSong]) -> Void) {
         Q.async { [weak self] in
             guard let self else { return }
@@ -1269,7 +1408,7 @@ final class MPDStore: ObservableObject {
             _ = try? self.socket.command("load \"\(name.esc)\"")
             _ = try? self.socket.command("play \(index)")
             self.poll()
-            DispatchQueue.main.async { self.playbackContext = name; self.loadQueue() }
+            DispatchQueue.main.async { self.setPlaybackContext(name); self.loadQueue() }
         }
     }
 
@@ -1469,9 +1608,13 @@ final class MPDStore: ObservableObject {
 
     func fetchArtIfNeeded(for song: MPDSong) { fetchArt(for: song) }
 
+    /// Art for an album known only by name — grid tiles and list rows, whose
+    /// artist comes from `list album group albumartist`. Set it as the
+    /// albumartist so `artKey` (which keys on `groupingArtist`) agrees with the
+    /// key a real song from that album produces.
     func fetchArtIfNeeded(artist: String, album: String) {
         var song = MPDSong()
-        song.artist = artist
+        song.albumArtist = artist
         song.album = album
         fetchArt(for: song)
     }
@@ -1488,7 +1631,9 @@ final class MPDStore: ObservableObject {
             lyricsState = .unavailable; return
         }
         let title  = song.title.isEmpty ? song.displayTitle : song.title
-        let artist = song.artist, album = song.album, dur = song.duration
+        // LRCLIB matches on the performing artist; the fallback keeps
+        // albumartist-only files from sending a blank artist and always missing.
+        let artist = song.displayArtist, album = song.album, dur = song.duration
         lyricsState = .loading
         Task { [weak self] in
             let result = await LyricsService.shared.fetch(artist: artist, title: title, album: album, duration: dur)
@@ -1512,7 +1657,10 @@ final class MPDStore: ObservableObject {
         guard !Self.hasRecentMiss(key: key) else { return }
         artPending.insert(key)
         let file = song.file
-        let artist = song.artist, album = song.album
+        // Must be the same artist `artKey` was built from, or the lookup and the
+        // cache entry it fills disagree — and it is the right one to ask about
+        // anyway: cover art belongs to the album, not to a guest track artist.
+        let artist = song.groupingArtist, album = song.album
         Task { [weak self] in
             guard let self else { return }
             // Bound how many fetches run at once — a grid of 800 tiles otherwise
@@ -1555,10 +1703,23 @@ final class MPDStore: ObservableObject {
         await withCheckedContinuation { cont in
             Q.async { [weak self] in
                 guard let self else { cont.resume(returning: ""); return }
-                var cmd = "find album \"\(album.esc)\""
-                if !artist.isEmpty { cmd += " artist \"\(artist.esc)\"" }
-                cmd += " window 0:1"
-                let file = (try? self.socket.command(cmd))?.first?["file"] ?? ""
+                func probe(_ tag: String?) -> String {
+                    var cmd = "find album \"\(album.esc)\""
+                    if let tag, !artist.isEmpty { cmd += " \(tag) \"\(artist.esc)\"" }
+                    cmd += " window 0:1"
+                    return (try? self.socket.command(cmd))?.first?["file"] ?? ""
+                }
+                // Callers hand us whichever artist their row carries. Album rows
+                // and grid tiles come from `list album group albumartist`, so a
+                // filter on `artist` matches nothing on any album where the two
+                // tags differ — every compilation, and every album with guest
+                // artists. That failed silently: no representative file meant no
+                // readpicture/albumart attempt at all, and the fetch fell through
+                // to MusicBrainz. The retry only costs a round trip in the case
+                // that previously returned nothing.
+                var file = probe("artist")
+                if file.isEmpty, !artist.isEmpty { file = probe("albumartist") }
+                if file.isEmpty, !artist.isEmpty { file = probe(nil) }
                 cont.resume(returning: file)
             }
         }
@@ -1635,6 +1796,25 @@ final class MPDStore: ObservableObject {
         try? Data().write(to: missMarkerPath(key: key), options: .atomic)
     }
 
+    /// Empty both art caches, including the `.miss` markers.
+    ///
+    /// Without this there is no way to force a re-fetch from inside the app: a
+    /// failed lookup is remembered for 7 days, so fixing a lookup bug appears to
+    /// change nothing until the markers age out. Changing an art *key* (as the
+    /// albumartist fallback does) has the same effect from the other direction —
+    /// the old entries become unreachable rather than wrong.
+    func clearAlbumArtCache() {
+        albumArtCache.removeAll()
+        artPending.removeAll()
+        let fm = FileManager.default
+        let dir = Self.artDiskCacheDir
+        for url in (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? [] {
+            try? fm.removeItem(at: url)
+        }
+        // Re-fetch what is on screen right now rather than waiting for a scroll.
+        if !currentSong.file.isEmpty { fetchArt(for: currentSong) }
+    }
+
     private static func saveArtToDisk(key: String, image: UIImage) {
         guard let data = image.jpegData(compressionQuality: 0.85) else { return }
         try? data.write(to: artDiskPath(key: key), options: .atomic)
@@ -1654,6 +1834,12 @@ final class MPDStore: ObservableObject {
 
     func startPhoneStream() {
         guard let url = Self.parseStreamURL(httpStreamURL) else { return }
+        // Tear down *before* touching the session. This used to run after
+        // setActive(true), so every start activated the session and then
+        // immediately deactivated it — firing a spurious "others may resume"
+        // notification at the apps we were about to interrupt, and calling
+        // play() on a session that had just been switched off.
+        stopPhoneStream()
         do {
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.playback, mode: .default)
@@ -1662,7 +1848,6 @@ final class MPDStore: ObservableObject {
             connectionError = "Audio session: \(error.localizedDescription)"
             return
         }
-        stopPhoneStream()
         let item = AVPlayerItem(url: url)
         item.preferredForwardBufferDuration = 30  // buffer 30s ahead for poor connections
         let player = AVPlayer(playerItem: item)
@@ -1721,14 +1906,33 @@ final class MPDStore: ObservableObject {
         center.togglePlayPauseCommand.removeTarget(nil)
         center.nextTrackCommand.removeTarget(nil)
         center.previousTrackCommand.removeTarget(nil)
+        // Clearing the info alone leaves the system's idea of playback state
+        // behind, which is what keeps a stale mikMPD card in Control Center
+        // after the stream ends (or after a force-quit, where nothing else runs).
+        MPNowPlayingInfoCenter.default().playbackState = .stopped
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+    }
+
+    /// Entering the background.
+    ///
+    /// Streaming is the one reason to keep the connection alive, but a stream
+    /// that has failed or been stopped by the server leaves `isPhoneStreaming`
+    /// true with nothing actually playing — and that state held the audio session
+    /// open (so other apps were never told they could resume) and skipped the
+    /// disconnect below, indefinitely. `.waitingToPlayAtSpecifiedRate` is a
+    /// stream still buffering, which is worth keeping.
+    func handleEnteringBackground() {
+        if isPhoneStreaming, streamPlayer?.timeControlStatus == .paused {
+            stopPhoneStream()
+        }
+        if !isPhoneStreaming { disconnect() }
     }
 
     func updateNowPlayingInfo() {
         guard isPhoneStreaming else { return }
         var info = [String: Any]()
         info[MPMediaItemPropertyTitle] = currentSong.displayTitle
-        info[MPMediaItemPropertyArtist] = currentSong.artist
+        info[MPMediaItemPropertyArtist] = currentSong.displayArtist
         info[MPMediaItemPropertyAlbumTitle] = currentSong.album
         info[MPMediaItemPropertyPlaybackDuration] = duration
         info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = elapsed
@@ -1739,6 +1943,11 @@ final class MPDStore: ObservableObject {
             info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: img.size) { @Sendable _ in img }
         }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+        // The playback *rate* alone isn't enough: the system reads playbackState
+        // to know whether this app is still the playing one. It was never set,
+        // which is why the now-playing entry could outlive the stream.
+        MPNowPlayingInfoCenter.default().playbackState =
+            isPlaying ? .playing : (isPaused ? .paused : .stopped)
     }
 
     nonisolated static func parseStreamURL(_ s: String) -> URL? {
@@ -1775,9 +1984,8 @@ final class MPDStore: ObservableObject {
             // 3. Album only — handles misspelled artists like "ACDC" for "AC/DC"
             "release:\"\(luceneEscape(album))\"",
         ]
-        let strippedArtist = artist.lowercased().filter(\.isLetter)
         for query in queries {
-            let mbids = await searchMusicBrainz(query: query, expectedArtist: strippedArtist, expectedAlbum: album)
+            let mbids = await searchMusicBrainz(query: query, expectedArtist: artist, expectedAlbum: album)
             for mbid in mbids {
                 if let img = await fetchCoverArt(mbid: mbid) { return img }
             }
@@ -1786,7 +1994,8 @@ final class MPDStore: ObservableObject {
     }
 
     /// Search MusicBrainz for releases. Returns MBIDs of matching releases (up to 5).
-    /// When `expectedArtist` is non-empty, filters to releases whose artist matches;
+    /// When `expectedArtist` is non-empty (a plain artist name, compared through
+    /// `artistCreditMatches`), filters to releases whose artist matches;
     /// release titles must also name the album (same word-level check as Wikipedia),
     /// so "Best of the Doors" can't return the debut album's cover.
     private static func searchMusicBrainz(query: String, expectedArtist: String, expectedAlbum: String) async -> [String] {
@@ -1821,8 +2030,7 @@ final class MPDStore: ObservableObject {
             if !expectedArtist.isEmpty,
                let credits = release["artist-credit"] as? [[String: Any]],
                let mbArtist = credits.first?["name"] as? String {
-                let strippedMB = mbArtist.lowercased().filter(\.isLetter)
-                guard strippedMB.contains(expectedArtist) || expectedArtist.contains(strippedMB) else { continue }
+                guard artistCreditMatches(mbArtist, expectedArtist) else { continue }
             }
             mbids.append(mbid)
         }
@@ -1853,6 +2061,11 @@ extension String {
             .replacingOccurrences(of: "\u{201D}", with: "\"")  // right double quote
             .replacingOccurrences(of: "\u{2013}", with: "-")   // en dash
             .replacingOccurrences(of: "\u{2014}", with: "-")   // em dash
+        // Collapse whitespace runs. A real tag in this library reads
+        // "Blue  Oyster Cult" with two spaces, which otherwise survives into the
+        // Wikipedia URL and the MusicBrainz query.
+        s = s.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         // Move trailing sort-order articles to front: "Name, The" → "The Name"
         for suffix in [", The", ", A", ", An"] {
             if s.lowercased().hasSuffix(suffix.lowercased()) {

@@ -6,6 +6,7 @@ struct SearchView: View {
     @State private var selectedSongs: Set<String> = []
     @State private var artists: [String] = []
     @State private var albums: [(artist: String, album: String, discCount: Int)] = []
+    @State private var playlistMatches: [PlaylistMatch] = []
     @State private var isSearching = false
     @State private var searchTask: Task<Void, Never>?
     @State private var addRequest: AddToPlaylistRequest?
@@ -25,7 +26,8 @@ struct SearchView: View {
                         description: Text("Search for songs, artists, and albums")
                     )
                     Spacer()
-                } else if store.searchResults.isEmpty && artists.isEmpty && albums.isEmpty {
+                } else if store.searchResults.isEmpty && artists.isEmpty && albums.isEmpty
+                            && playlistMatches.isEmpty {
                     ContentUnavailableView.search(text: query)
                     Spacer()
                 } else {
@@ -80,14 +82,19 @@ struct SearchView: View {
                         NavigationLink {
                             AlbumDetailView(album: item.album, artist: item.artist)
                         } label: {
+                            let playing = isCurrentAlbum(rowArtist: item.artist,
+                                                        rowAlbum: item.album,
+                                                        current: store.currentSong)
                             HStack(spacing: 12) {
                                 // Album art thumbnail
                                 ArtThumbByKey(artist: item.artist, album: item.album, size: 50)
                                     .cornerRadius(6)
-                                
+                                    .nowPlayingCover(playing)
+
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(item.discCount > 1 ? albumBaseAndDisc(item.album).base : item.album)
                                         .font(.subheadline)
+                                        .foregroundStyle(playing ? Color.accentColor : .primary)
                                     if !item.artist.isEmpty {
                                         Text(item.artist)
                                             .font(.caption)
@@ -103,9 +110,61 @@ struct SearchView: View {
                             }
                             .padding(.vertical, 4)
                         }
+                        .nowPlayingRow(isCurrentAlbum(rowArtist: item.artist,
+                                                      rowAlbum: item.album,
+                                                      current: store.currentSong))
                     }
                 } header: {
                     Text("Albums (\(albums.count))")
+                }
+            }
+
+            // Playlists section — matched by name and by contents
+            if !playlistMatches.isEmpty {
+                Section {
+                    ForEach(playlistMatches) { pl in
+                        let isPlaying = store.playbackContext == pl.name
+                        NavigationLink(destination: PlaylistDetailView(name: pl.name)) {
+                            HStack(spacing: 12) {
+                                Image(systemName: isPlaying ? "speaker.wave.2.fill" : "music.note.list")
+                                    .foregroundStyle(isPlaying ? Color.accentColor : .secondary)
+                                    .frame(width: 24)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(pl.name).font(.subheadline).lineLimit(2)
+                                        .foregroundStyle(isPlaying ? Color.accentColor : .primary)
+                                    if pl.trackCount > 0 {
+                                        Text("\(pl.trackCount) matching track\(pl.trackCount == 1 ? "" : "s")")
+                                            .font(.caption).foregroundStyle(.secondary)
+                                    } else {
+                                        Text("Name matches").font(.caption).foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                            .padding(.vertical, 2)
+                        }
+                        .nowPlayingRow(isPlaying)
+                        .swipeActions(edge: .trailing) {
+                            Button { store.loadPlaylist(pl.name, replace: true, play: true) } label: {
+                                Label("Play", systemImage: "play.fill")
+                            }.tint(.blue)
+                            Button { store.loadPlaylist(pl.name) } label: {
+                                Label("Add", systemImage: "plus")
+                            }.tint(.green)
+                        }
+                        .contextMenu {
+                            Button { store.loadPlaylist(pl.name, replace: true, play: true) } label: {
+                                Label("Play Playlist", systemImage: "play.fill")
+                            }
+                            Button { store.shufflePlayPlaylist(pl.name) } label: {
+                                Label("Shuffle Play", systemImage: "shuffle")
+                            }
+                            Button { store.loadPlaylist(pl.name) } label: {
+                                Label("Add to Queue", systemImage: "plus")
+                            }
+                        }
+                    }
+                } header: {
+                    Text("Playlists (\(playlistMatches.count))")
                 }
             }
             
@@ -114,7 +173,8 @@ struct SearchView: View {
                 Section {
                     ForEach(store.searchResults) { song in
                         SearchRow(song: song, selected: selectedSongs.contains(song.id),
-                                  isCurrentlyPlaying: song.file == store.currentSong.file)
+                                  isCurrentlyPlaying: isCurrentTrack(file: song.file, currentFile: store.currentSong.file))
+                            .nowPlayingRow(isCurrentTrack(file: song.file, currentFile: store.currentSong.file))
                             .contentShape(Rectangle())
                             .background(
                                 RoundedRectangle(cornerRadius: 8)
@@ -198,6 +258,7 @@ struct SearchView: View {
         selectedSongs.removeAll()
 
         store.search(field: "any", query: query)
+        store.searchPlaylists(query: query) { self.playlistMatches = $0 }
 
         store.listTag("artist") { allArtists in
             let matchingArtists = allArtists.filter { $0.localizedCaseInsensitiveContains(query) }
@@ -264,6 +325,7 @@ struct SearchView: View {
         store.searchResults = []
         artists = []
         albums = []
+        playlistMatches = []
         selectedSongs.removeAll()
     }
 }
@@ -286,16 +348,16 @@ struct SearchRow: View {
                     .lineLimit(1)
 
                 HStack(spacing: 4) {
-                    if !song.artist.isEmpty {
-                        NavigationLink(destination:ArtistDetailView(artist:song.artist)){
-                            Text(song.artist).foregroundStyle(.secondary).underline()
+                    if !song.displayArtist.isEmpty {
+                        NavigationLink(destination:ArtistDetailView(artist:song.displayArtist)){
+                            Text(song.displayArtist).foregroundStyle(.secondary).underline()
                         }.buttonStyle(.plain)
                     }
-                    if !song.artist.isEmpty && !song.album.isEmpty {
+                    if !song.displayArtist.isEmpty && !song.album.isEmpty {
                         Text("·").foregroundStyle(.secondary)
                     }
                     if !song.album.isEmpty {
-                        NavigationLink(destination:AlbumDetailView(album:song.album,artist:song.artist.isEmpty ? nil : song.artist)){
+                        NavigationLink(destination:AlbumDetailView(album:song.album,artist:song.displayArtist.isEmpty ? nil : song.displayArtist)){
                             Text(song.album).foregroundStyle(.secondary).underline()
                         }.buttonStyle(.plain)
                     }
@@ -306,11 +368,7 @@ struct SearchRow: View {
 
             Spacer()
 
-            if isCurrentlyPlaying {
-                Image(systemName: "speaker.wave.2.fill")
-                    .font(.caption)
-                    .foregroundStyle(.tint)
-            }
+            if isCurrentlyPlaying { NowPlayingMarker() }
             Text(formatTime(song.duration))
                 .font(.caption)
                 .foregroundStyle(.secondary)

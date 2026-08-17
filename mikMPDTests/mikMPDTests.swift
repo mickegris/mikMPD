@@ -96,6 +96,275 @@ import Testing
 
 // MARK: - artCacheKey
 
+@Suite struct SearchPlaylistCommandTests {
+    @Test func plainQuery() {
+        #expect(searchPlaylistCommand(name: "Rock 2024", query: "marillion", limit: 50)
+                == "searchplaylist \"Rock 2024\" \"(any contains \\\"marillion\\\")\" window 0:50")
+    }
+
+    // Both levels of quoting have to survive: the value's quotes sit inside the
+    // already-quoted filter argument. Getting this wrong produces an ACK.
+    @Test func quotesInTheQueryAreEscapedTwice() {
+        let cmd = searchPlaylistCommand(name: "P", query: "say \"hi\"", limit: 10)
+        #expect(cmd == "searchplaylist \"P\" \"(any contains \\\"say \\\\\\\"hi\\\\\\\"\\\")\" window 0:10")
+    }
+
+    @Test func backslashesAndQuotesInTheNameAreEscaped() {
+        let cmd = searchPlaylistCommand(name: "a\\b\"c", query: "x", limit: 5)
+        #expect(cmd.hasPrefix("searchplaylist \"a\\\\b\\\"c\" "))
+    }
+
+    @Test func windowCarriesTheLimit() {
+        #expect(searchPlaylistCommand(name: "P", query: "x", limit: 7).hasSuffix(" window 0:7"))
+    }
+}
+
+@Suite struct PlaylistMatchTests {
+    @Test func nameOnlyMatchHasNoTrackCount() {
+        let m = PlaylistMatch(name: "Marillion Live", nameMatched: true, trackCount: 0)
+        #expect(m.trackCount == 0)
+        #expect(m.nameMatched)
+        #expect(m.id == "Marillion Live")
+    }
+
+    @Test func contentMatchCarriesACount() {
+        let m = PlaylistMatch(name: "Rock 2024", nameMatched: false, trackCount: 12)
+        #expect(!m.nameMatched)
+        #expect(m.trackCount == 12)
+    }
+}
+
+@Suite struct PlaybackContextValidationTests {
+    private let playlist: Set<String> = ["a.flac", "b.flac", "c.flac"]
+
+    // The case the label most needs to survive: `shuffle` reorders the queue on
+    // purpose, so a sequence comparison would throw the context away every time.
+    @Test func shuffledOrderIsStillTheSamePlaylist() {
+        #expect(playbackContextStillValid(queueFiles: ["c.flac", "a.flac", "b.flac"],
+                                          playlistFiles: playlist))
+    }
+
+    @Test func aSubsetIsStillValid() {
+        // Songs removed from the queue, or consume mode eating them.
+        #expect(playbackContextStillValid(queueFiles: ["b.flac"], playlistFiles: playlist))
+    }
+
+    @Test func anExtraTrackInvalidatesIt() {
+        #expect(!playbackContextStillValid(queueFiles: ["a.flac", "z.flac"],
+                                           playlistFiles: playlist))
+    }
+
+    @Test func aDifferentQueueInvalidatesIt() {
+        #expect(!playbackContextStillValid(queueFiles: ["x.flac"], playlistFiles: playlist))
+    }
+
+    @Test func emptyEitherSideIsInvalid() {
+        #expect(!playbackContextStillValid(queueFiles: [], playlistFiles: playlist))
+        #expect(!playbackContextStillValid(queueFiles: ["a.flac"], playlistFiles: []))
+    }
+}
+
+@Suite struct CurrentTrackMatchTests {
+    @Test func matchesTheSameURI() {
+        #expect(isCurrentTrack(file: "a/b.flac", currentFile: "a/b.flac"))
+        #expect(!isCurrentTrack(file: "a/b.flac", currentFile: "a/c.flac"))
+    }
+
+    // Nothing playing leaves currentSong.file empty; it must not mark rows that
+    // happen to lack a URI.
+    @Test func emptyMatchesNothing() {
+        #expect(!isCurrentTrack(file: "", currentFile: ""))
+        #expect(!isCurrentTrack(file: "", currentFile: "a/b.flac"))
+        #expect(!isCurrentTrack(file: "a/b.flac", currentFile: ""))
+    }
+
+    @Test func queueMatchesByPosition() {
+        #expect(isCurrentQueueRow(pos: 3, playlistPos: 3))
+        #expect(!isCurrentQueueRow(pos: 4, playlistPos: 3))
+    }
+
+    // playlistPos is -1 when the queue has no current song.
+    @Test func noCurrentQueuePositionMatchesNothing() {
+        #expect(!isCurrentQueueRow(pos: -1, playlistPos: -1))
+        #expect(!isCurrentQueueRow(pos: 0, playlistPos: -1))
+    }
+
+    // THE trap this helper exists for: a stored-playlist row's `pos` is the
+    // playlist index, unrelated to the queue position. Matching on it would
+    // light up an arbitrary row — wrong highlighting, not missing highlighting.
+    @Test func aPlaylistRowAtThePlayingQueuePositionDoesNotMatch() {
+        let playlistRowPos = 3, playingQueuePos = 3
+        #expect(playlistRowPos == playingQueuePos)   // they collide…
+        #expect(!isCurrentTrack(file: "playlist/track.flac", currentFile: "queue/other.flac"))
+    }
+
+    // Accepted consequence of a URI rule: the same file twice in one listing
+    // marks both rows. Asserted so it stays a decision.
+    @Test func duplicateURIsInOneListingBothMatch() {
+        let rows = ["a/b.flac", "a/b.flac"]
+        #expect(rows.allSatisfy { isCurrentTrack(file: $0, currentFile: "a/b.flac") })
+    }
+}
+
+@Suite struct CurrentAlbumMatchTests {
+    private func playing(artist: String = "", albumArtist: String = "", album: String,
+                         file: String = "x/y.flac") -> MPDSong {
+        var s = MPDSong()
+        s.artist = artist; s.albumArtist = albumArtist; s.album = album; s.file = file
+        return s
+    }
+
+    @Test func matchesItsOwnAlbum() {
+        let cur = playing(artist: "Marillion", album: "Misplaced Childhood")
+        #expect(isCurrentAlbum(rowArtist: "Marillion", rowAlbum: "Misplaced Childhood", current: cur))
+    }
+
+    // The row shows the disc-collapsed base, so a playing disc 2 must light up
+    // the single collapsed row — including the real tag shape from this library.
+    @Test func playingDiscTwoMarksTheCollapsedRow() {
+        let cur = playing(artist: "Marillion", album: "Misplaced Childhood [24-bit Remaster CD 2]")
+        #expect(isCurrentAlbum(rowArtist: "Marillion",
+                               rowAlbum: "Misplaced Childhood [24-bit Remaster]", current: cur))
+    }
+
+    @Test func punctuationVariantsStillMatch() {
+        let cur = playing(artist: "The Beatles", album: "1967\u{2013}1970")
+        #expect(isCurrentAlbum(rowArtist: "The Beatles", rowAlbum: "1967-1970", current: cur))
+    }
+
+    @Test func sameTitleByAnotherArtistDoesNotMatch() {
+        let cur = playing(artist: "Queen", album: "Greatest Hits")
+        #expect(!isCurrentAlbum(rowArtist: "ABBA", rowAlbum: "Greatest Hits", current: cur))
+    }
+
+    // Album rows carry an albumartist, so a compilation track has to match
+    // through groupingArtist rather than its own artist tag.
+    @Test func compilationTrackMatchesItsAlbumArtistRow() {
+        let cur = playing(artist: "Buck Dharma", albumArtist: "Blue Öyster Cult",
+                          album: "Fire of Unknown Origin")
+        #expect(isCurrentAlbum(rowArtist: "Blue Öyster Cult",
+                               rowAlbum: "Fire of Unknown Origin", current: cur))
+    }
+
+    // A radio stream has no album and no artist; without this it marked every
+    // untagged album at once.
+    @Test func aTracklessOrAlbumlessCurrentMarksNothing() {
+        #expect(!isCurrentAlbum(rowArtist: "Marillion", rowAlbum: "Misplaced Childhood",
+                                current: playing(album: "")))
+        #expect(!isCurrentAlbum(rowArtist: "", rowAlbum: "", current: playing(album: "")))
+        #expect(!isCurrentAlbum(rowArtist: "Marillion", rowAlbum: "Misplaced Childhood",
+                                current: playing(artist: "Marillion", album: "Misplaced Childhood",
+                                                 file: "")))
+    }
+
+    @Test func caseInsensitiveOnBothHalves() {
+        let cur = playing(artist: "marillion", album: "misplaced childhood")
+        #expect(isCurrentAlbum(rowArtist: "Marillion", rowAlbum: "Misplaced Childhood", current: cur))
+    }
+
+    // Genre listings can be artist-less; fall back to matching on the album
+    // alone rather than never matching.
+    @Test func artistLessRowMatchesOnAlbumAlone() {
+        let cur = playing(artist: "Marillion", album: "Misplaced Childhood")
+        #expect(isCurrentAlbum(rowArtist: "", rowAlbum: "Misplaced Childhood", current: cur))
+    }
+}
+
+@Suite struct ArtistFallbackTests {
+    private func song(artist: String, albumArtist: String, album: String = "X") -> MPDSong {
+        var s = MPDSong()
+        s.artist = artist; s.albumArtist = albumArtist; s.album = album
+        return s
+    }
+
+    @Test func bothTagsPresent() {
+        let s = song(artist: "Buck Dharma", albumArtist: "Blue Öyster Cult")
+        #expect(s.displayArtist == "Buck Dharma")
+        #expect(s.groupingArtist == "Blue Öyster Cult")
+    }
+
+    @Test func albumArtistOnlyStillDisplaysAName() {
+        let s = song(artist: "", albumArtist: "Blue Öyster Cult")
+        #expect(s.displayArtist == "Blue Öyster Cult")
+        #expect(s.groupingArtist == "Blue Öyster Cult")
+    }
+
+    @Test func artistOnlyFillsBothDirections() {
+        let s = song(artist: "Marillion", albumArtist: "")
+        #expect(s.displayArtist == "Marillion")
+        #expect(s.groupingArtist == "Marillion")
+    }
+
+    @Test func neitherTagLeavesItEmpty() {
+        let s = song(artist: "", albumArtist: "")
+        #expect(s.displayArtist.isEmpty)
+        #expect(s.groupingArtist.isEmpty)
+    }
+
+    // A present-but-blank tag must count as absent: a chain that stops at ""
+    // renders an empty cell, which reads as a rendering fault, not missing data.
+    @Test func blankTagCountsAsAbsent() {
+        #expect(song(artist: "   ", albumArtist: "Blue Öyster Cult").displayArtist == "Blue Öyster Cult")
+        #expect(song(artist: "Buck Dharma", albumArtist: "  ").groupingArtist == "Buck Dharma")
+        #expect(song(artist: "\n", albumArtist: "").displayArtist == "")
+    }
+
+    // Trimming here would change groupingArtist, which feeds artCacheKey, and
+    // orphan the cached art of every file with a padded tag.
+    @Test func fallbackReturnsTheUntrimmedOriginal() {
+        #expect(song(artist: " Marillion ", albumArtist: "").displayArtist == " Marillion ")
+    }
+
+    // A grid tile keyed from the albumartist and a track keyed from its own
+    // artist must land in the same art-cache entry.
+    @Test func artKeyAgreesBetweenTileAndTrack() {
+        let track = song(artist: "Buck Dharma", albumArtist: "Blue Öyster Cult", album: "Fire of Unknown Origin")
+        #expect(track.artKey == artCacheKey(artist: "Blue Öyster Cult", album: "Fire of Unknown Origin"))
+    }
+}
+
+@Suite struct ArtistCreditMatchTests {
+    @Test func exactAndCaseInsensitive() {
+        #expect(artistCreditMatches("Marillion", "marillion"))
+    }
+
+    @Test func punctuationIsIgnored() {
+        #expect(artistCreditMatches("AC/DC", "ACDC"))
+        #expect(artistCreditMatches("Blue Öyster Cult", "BlueÖysterCult"))
+    }
+
+    // The ordinary case: an external source keeps its accents, the tag does not.
+    @Test func diacriticsFold() {
+        #expect(artistCreditMatches("Motörhead", "Motorhead"))
+        #expect(artistCreditMatches("Blue Öyster Cult", "Blue Oyster Cult"))
+    }
+
+    // Mojibake: the two sides disagree about *which* accented letter it is, so
+    // folding gives i-vs-o and still misses. Dropping non-ASCII letters leaves
+    // "blueystercult" on both sides.
+    @Test func mojibakeMatchesByDroppingNonASCII() {
+        #expect(artistCreditMatches("Blue Îyster Cult", "Blue Öyster Cult"))
+    }
+
+    @Test func substringEitherWay() {
+        #expect(artistCreditMatches("Marillion feat. Fish", "Marillion"))
+        #expect(artistCreditMatches("Marillion", "Marillion feat. Fish"))
+    }
+
+    @Test func unrelatedArtistsDoNotMatch() {
+        #expect(!artistCreditMatches("Marillion", "Metallica"))
+        #expect(!artistCreditMatches("", "Marillion"))
+        #expect(!artistCreditMatches("Marillion", ""))
+    }
+
+    // The lossy ASCII-only comparison is length-guarded, so two short names
+    // cannot collide once their accented letters are dropped.
+    @Test func shortNamesDoNotCollideThroughTheLossyPath() {
+        #expect(!artistCreditMatches("Ö", "A"))
+        #expect(!artistCreditMatches("Öd", "Ad"))
+    }
+}
+
 @Suite struct ArtCacheKeyTests {
     @Test func trimsWhitespace() {
         #expect(artCacheKey(artist: " The Beatles ", album: "\tAbbey Road\n") == "the beatles|abbey road")
@@ -786,6 +1055,42 @@ import Testing
 
 // MARK: - Recently played recorder
 
+@Suite struct ActiveLyricLineTests {
+    private let lines = [
+        LyricLine(secs: 10, text: "first"),
+        LyricLine(secs: 20, text: "second"),
+        LyricLine(secs: 30, text: "third"),
+    ]
+
+    // Real tracks routinely open with 20–30 s of intro, so this is the normal
+    // opening state rather than an edge case.
+    @Test func beforeTheFirstLineNothingIsActive() {
+        #expect(activeLyricLine(lines, elapsed: 0) == nil)
+        #expect(activeLyricLine(lines, elapsed: 9) == nil)
+    }
+
+    @Test func betweenLinesHoldsThePrevious() {
+        #expect(activeLyricLine(lines, elapsed: 15) == 0)
+        #expect(activeLyricLine(lines, elapsed: 25) == 1)
+    }
+
+    @Test func pastTheLastLineHoldsIt() {
+        #expect(activeLyricLine(lines, elapsed: 300) == 2)
+    }
+
+    @Test func emptyInput() {
+        #expect(activeLyricLine([], elapsed: 42) == nil)
+    }
+
+    // The offset must DELAY the advance. A flipped sign makes the highlight lead
+    // the song and still looks plausible, so pin the direction here.
+    @Test func syncOffsetDelaysRatherThanLeads() {
+        #expect(LyricsService.syncOffset > 0)
+        #expect(activeLyricLine(lines, elapsed: 10.2) == nil)   // not yet: 10.2 - 0.5 < 10
+        #expect(activeLyricLine(lines, elapsed: 10.6) == 0)     // now: 10.6 - 0.5 > 10
+    }
+}
+
 @Suite struct RecentlyPlayedRecorderTests {
     private let t0 = Date(timeIntervalSince1970: 1_000_000)
 
@@ -1001,6 +1306,43 @@ import Testing
         #expect(r.disc == nil)
     }
 
+    // MARK: – Marker at the tail of a qualifier bracket
+    //
+    // The real shape of this library's Marillion remasters. Stripping the marker
+    // naively leaves "X [24-bit Remaster" — an unbalanced tag that was shown in
+    // the UI and sent to Wikipedia and MusicBrainz, which know no such album.
+    // Only the marker goes; the qualifier bracket is re-closed, because a
+    // remaster is a distinct library album from the plain edition.
+
+    @Test func markerInsideQualifierBracketReclosesIt() {
+        let r = albumBaseAndDisc("Clutching at Straws [24-bit Remaster CD 1]")
+        #expect(r.base == "Clutching at Straws [24-bit Remaster]")
+        #expect(r.disc == 1)
+    }
+
+    @Test func bothDiscsOfAQualifiedAlbumShareABase() {
+        let one = albumBaseAndDisc("Misplaced Childhood [24-bit Remaster CD 1]")
+        let two = albumBaseAndDisc("Misplaced Childhood [24-bit Remaster CD 2]")
+        #expect(one.base == two.base)
+        #expect(one.disc == 1)
+        #expect(two.disc == 2)
+        // …so they collapse into one album row rather than two.
+        #expect(albumGroupingKey("Misplaced Childhood [24-bit Remaster CD 1]")
+                == albumGroupingKey("Misplaced Childhood [24-bit Remaster CD 2]"))
+    }
+
+    @Test func balancedBaseIsNotTouched() {
+        // The ordinary case must not gain a stray bracket.
+        #expect(albumBaseAndDisc("Blast from the Past [Disc 1]").base == "Blast from the Past")
+        #expect(albumBaseAndDisc("Album (CD 1)").base == "Album")
+        #expect(albumBaseAndDisc("S&M (Symphony & Metallica) [Disc 2]").base
+                == "S&M (Symphony & Metallica)")
+    }
+
+    @Test func reclosingNeverLeavesAnEmptyBracket() {
+        #expect(albumBaseAndDisc("X [ - CD 1]").base == "X")
+    }
+
     @Test func markerOnlyPassesThrough() {
         let r = albumBaseAndDisc("Disc 1")
         #expect(r.base == "Disc 1")
@@ -1072,6 +1414,26 @@ import Testing
 
 // MARK: - Edition qualifiers (external lookups only)
 
+@Suite struct NormalizedForLookupTests {
+    // A real tag in this library reads "Blue  Oyster Cult" with two spaces,
+    // which otherwise survives into the Wikipedia URL and the MusicBrainz query.
+    @Test func whitespaceRunsCollapse() {
+        #expect("Blue  Oyster Cult".normalizedForLookup == "Blue Oyster Cult")
+        #expect("Blue\t Oyster   Cult".normalizedForLookup == "Blue Oyster Cult")
+        #expect("  Marillion  ".normalizedForLookup == "Marillion")
+    }
+
+    @Test func sortOrderArticleStillMoves() {
+        #expect("Beatles, The".normalizedForLookup == "The Beatles")
+        #expect("Beatles,  The".normalizedForLookup == "The Beatles")
+    }
+
+    @Test func punctuationFoldingUnchanged() {
+        #expect("Peace Sells\u{2026}".normalizedForLookup == "Peace Sells...")
+        #expect("1967\u{2013}1970".normalizedForLookup == "1967-1970")
+    }
+}
+
 @Suite struct AlbumLookupTitleTests {
     @Test func bitRemaster() {
         #expect(albumLookupTitle("Clutching at Straws [24-bit remaster]") == "Clutching at Straws")
@@ -1128,6 +1490,15 @@ import Testing
         let r = albumBaseAndDisc("X {Disc 1}")
         #expect(r.base == "X")
         #expect(r.disc == 1)
+    }
+
+    // The end-to-end path for the reported bug: the raw tag reaches Wikipedia
+    // and MusicBrainz as a bare album title, with both the disc marker and the
+    // remaster bracket gone.
+    @Test func discMarkerNestedInQualifierBracket() {
+        #expect(albumLookupTitle("Clutching at Straws [24-bit Remaster CD 1]") == "Clutching at Straws")
+        #expect(albumLookupTitle("Clutching at Straws [24-bit Remaster CD 2]") == "Clutching at Straws")
+        #expect(albumLookupTitle("Misplaced Childhood [24-bit Remaster CD 1]") == "Misplaced Childhood")
     }
 
     @Test func partNumberIsNotAQualifier() {

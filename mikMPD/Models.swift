@@ -24,8 +24,36 @@ nonisolated private enum DiscMarker {
         options: [.caseInsensitive])
 }
 
+/// Re-closes a bracket that stripping a disc marker broke open.
+///
+/// Real tags put the marker at the *tail of a qualifier bracket*:
+/// "Clutching at Straws [24-bit Remaster CD 1]". The marker regex matches from
+/// the space before "CD", which leaves the base as
+/// "Clutching at Straws [24-bit Remaster" — an unbalanced tag that is then shown
+/// in the UI, used as the art-cache key, and (fatally) sent to Wikipedia and
+/// MusicBrainz, neither of which knows an album by that name.
+///
+/// Only the marker is removed, never the bracket around it: a remaster is a
+/// distinct library album, and dropping the whole bracket would fold it into the
+/// plain edition, which the library may hold separately. Closers are appended
+/// only for openers left genuinely unmatched, so a balanced base is untouched.
+nonisolated private func reclosingBrokenBracket(_ s: String) -> String {
+    let closer: [Character: Character] = ["(": ")", "[": "]", "{": "}"]
+    var stack: [Character] = []
+    for ch in s {
+        if let c = closer[ch] {
+            stack.append(c)
+        } else if ch == ")" || ch == "]" || ch == "}" {
+            if stack.last == ch { stack.removeLast() }
+        }
+    }
+    guard !stack.isEmpty else { return s }
+    return s + String(stack.reversed())
+}
+
 /// Splits a disc marker off an album tag: "Blast from the Past [Disc 1]" →
-/// ("Blast from the Past", 1); "101 [Disc B]" → ("101", 2). Tags without a
+/// ("Blast from the Past", 1); "101 [Disc B]" → ("101", 2);
+/// "X [24-bit Remaster CD 1]" → ("X [24-bit Remaster]", 1). Tags without a
 /// marker — or that are nothing but a marker — come back unchanged with a nil disc.
 nonisolated func albumBaseAndDisc(_ album: String) -> (base: String, disc: Int?) {
     let ns = album as NSString
@@ -44,9 +72,15 @@ nonisolated func albumBaseAndDisc(_ album: String) -> (base: String, disc: Int?)
     } else {
         return (album, nil)
     }
-    let base = ns.substring(to: markerStart).trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !base.isEmpty else { return (album, nil) }
-    return (base, disc)
+    let stripped = ns.substring(to: markerStart).trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !stripped.isEmpty else { return (album, nil) }
+    let base = reclosingBrokenBracket(stripped)
+    // Re-closing can leave nothing but an empty bracket ("X []"): that means the
+    // marker *was* the whole bracket, so drop it.
+    return (base.hasSuffix("()") || base.hasSuffix("[]") || base.hasSuffix("{}")
+            ? String(base.dropLast(2)).trimmingCharacters(in: .whitespacesAndNewlines)
+            : base,
+            disc)
 }
 
 /// Extra cleaning for *external lookups only* (Wikipedia/MusicBrainz), never for
@@ -266,6 +300,40 @@ nonisolated func titleTokensMatch(candidate: String, query: String) -> Bool {
     return hits * 3 >= queryTokens.count * 2 && hits >= 2
 }
 
+/// Two comparison forms for an artist name, letters only and lowercased:
+/// `folded` has diacritics folded to ASCII, `asciiOnly` has every non-ASCII
+/// letter dropped.
+///
+/// Both are needed. Folding handles the ordinary disagreement between a tag and
+/// an external source ("Motorhead" vs "Motörhead"). Dropping handles *mojibake*,
+/// where the two sides disagree about which accented letter it is: this library
+/// holds "Blue Îyster Cult", a mangling of "Blue Öyster Cult", where folding
+/// gives i-vs-o and still misses, while dropping leaves "blueystercult" on both
+/// sides. The previous comparison used `filter(\.isLetter)`, which keeps "ö" and
+/// "î" — it stripped punctuation but preserved the very characters in dispute.
+nonisolated func artistFingerprints(_ s: String) -> (folded: String, asciiOnly: String) {
+    let letters = s.lowercased().filter(\.isLetter)
+    // `asciiOnly` drops from the *unfolded* letters, deliberately. Folding first
+    // would turn "î" into an ASCII "i" that then survives the drop, leaving
+    // i-vs-o against "ö" — which is exactly the case this form exists for.
+    return (letters.folding(options: .diacriticInsensitive, locale: nil),
+            letters.filter(\.isASCII))
+}
+
+/// Whether two artist names plausibly name the same artist. Containment either
+/// way, so "ACDC" still matches "AC/DC" and "Marillion" matches
+/// "Marillion feat. Fish".
+///
+/// The lossy `asciiOnly` comparison is length-guarded: dropping accented letters
+/// shortens a name, and two short unrelated names could otherwise collide.
+nonisolated func artistCreditMatches(_ a: String, _ b: String) -> Bool {
+    let x = artistFingerprints(a), y = artistFingerprints(b)
+    guard !x.folded.isEmpty, !y.folded.isEmpty else { return false }
+    if x.folded.contains(y.folded) || y.folded.contains(x.folded) { return true }
+    guard x.asciiOnly.count >= 6, y.asciiOnly.count >= 6 else { return false }
+    return x.asciiOnly.contains(y.asciiOnly) || y.asciiOnly.contains(x.asciiOnly)
+}
+
 nonisolated enum PlaybackSourceKind {
     case library
     case radio
@@ -300,6 +368,17 @@ nonisolated(unsafe) let mpdDateParser = ISO8601DateFormatter()
 /// Format-only; called on the main actor (loadRecentlyAdded cutoff string).
 nonisolated(unsafe) let mpdDateFormatter = ISO8601DateFormatter()
 
+/// First non-blank of two tags. A present-but-blank tag counts as **absent**: a
+/// chain that stops at "" renders an empty cell, which reads as a rendering
+/// fault rather than as missing data.
+///
+/// Returns the *original* value, deliberately untrimmed. Trimming here would
+/// change `groupingArtist`, which feeds `artCacheKey`, and silently orphan the
+/// cached art of every file with a padded tag.
+nonisolated func tagOr(_ primary: String, _ fallback: String) -> String {
+    primary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? fallback : primary
+}
+
 nonisolated struct MPDSong: Identifiable, Equatable {
     var file:     String = ""
     var title:    String = ""
@@ -322,8 +401,22 @@ nonisolated struct MPDSong: Identifiable, Equatable {
     var effectiveDisc: Int { discNumber > 0 ? discNumber : (albumBaseAndDisc(album).disc ?? 0) }
     /// Album-identity artist: the albumartist tag when present (keeps
     /// compilations together), else the plain artist.
-    var groupingArtist: String { albumArtist.isEmpty ? artist : albumArtist }
-    var artKey: String { artCacheKey(artist: artist, album: album) }
+    var groupingArtist: String { tagOr(albumArtist, artist) }
+    /// Artist for display and for external lookups: the track artist, else the
+    /// album artist. Mirror image of `groupingArtist`, so the two agree on any
+    /// file carrying only one of the tags. Files with an `AlbumArtist` and no
+    /// `Artist` are common on rips where only the album-level tag was written;
+    /// those used to read as "Unknown Artist" in the queue and every track list
+    /// while the album page — which groups by albumartist — showed the name fine,
+    /// so the name was present in the library and absent in the app. It matters
+    /// beyond display too: this is what is sent to Wikipedia, MusicBrainz and
+    /// LRCLIB, so the fallback turns a guaranteed-miss lookup into one that can
+    /// match.
+    var displayArtist: String { tagOr(artist, albumArtist) }
+    /// Keyed on `groupingArtist`, not the raw `artist` tag: album rows come from
+    /// `list album group albumartist`, so a compilation track keyed by its own
+    /// artist landed in a different cache entry than its own album's tile.
+    var artKey: String { artCacheKey(artist: groupingArtist, album: album) }
     var sourceKind: PlaybackSourceKind {
         let trimmedFile = file.trimmingCharacters(in: .whitespacesAndNewlines)
         let lowercasedFile = trimmedFile.lowercased()
@@ -489,8 +582,10 @@ nonisolated struct RecentlyPlayedRecorder {
         let threshold = song.duration > 0 ? min(30, max(5, song.duration / 2)) : 30
         guard accumulated >= threshold else { return nil }
         committed = true
+        // `groupingArtist`: history rows show album tiles keyed by `artCacheKey`,
+        // so the artist stored here has to be the one that key is built from.
         return RecentlyPlayedEntry(file: song.file, title: song.displayTitle,
-                                   artist: song.artist, album: song.album, playedAt: now)
+                                   artist: song.groupingArtist, album: song.album, playedAt: now)
     }
 }
 
@@ -533,6 +628,38 @@ nonisolated func recentAlbumGroups(_ entries: [RecentlyPlayedEntry]) -> [RecentA
         ))
     }
     return result
+}
+
+/// Whether a remembered "Playing from <playlist>" label still describes the queue.
+///
+/// Compares as **sets**, not sequences: after `shuffle` the queue's order
+/// deliberately differs from the playlist's, and that is the case this label
+/// most needs to survive. The queue must be a *subset* — a superset means tracks
+/// were added afterwards, so the queue is no longer just that playlist and the
+/// label would be a lie.
+nonisolated func playbackContextStillValid(queueFiles: Set<String>,
+                                           playlistFiles: Set<String>) -> Bool {
+    guard !queueFiles.isEmpty, !playlistFiles.isEmpty else { return false }
+    return queueFiles.isSubset(of: playlistFiles)
+}
+
+/// A stored playlist that matched a search: by its name, by its contents, or both.
+nonisolated struct PlaylistMatch: Identifiable, Equatable {
+    var name: String
+    var nameMatched: Bool
+    var trackCount: Int      // matching tracks; 0 when only the name matched
+    var id: String { name }
+}
+
+/// `searchplaylist NAME "(any contains "QUERY")"`.
+///
+/// Extracted as a free function so the nesting is testable without a socket —
+/// the inner quotes around the value sit inside the already-quoted filter
+/// argument, so both levels need escaping, and getting that wrong produces an
+/// ACK rather than a wrong answer.
+nonisolated func searchPlaylistCommand(name: String, query: String, limit: Int) -> String {
+    let filter = "(any contains \"\(query.esc)\")"
+    return "searchplaylist \"\(name.esc)\" \"\(filter.esc)\" window 0:\(limit)"
 }
 
 nonisolated struct MPDBrowseItem: Identifiable {

@@ -28,6 +28,20 @@ nonisolated struct Lyrics: Equatable, Codable {
     var isEmpty: Bool { plain == nil && synced == nil && !instrumental }
 }
 
+/// Index of the line that should be highlighted at `elapsed`, or nil when the
+/// track has not reached the first line yet. Expects `lines` sorted by time.
+///
+/// The offset **delays** the advance — LRCLIB timestamps mark where a line
+/// starts, slightly ahead of the audible vocal. A flipped sign would make the
+/// highlight lead the song and still look plausible, which is why the direction
+/// is pinned by a test rather than left to the call site. Real tracks routinely
+/// open with 20–30 s of intro, so "no line active yet" is the normal opening
+/// state, not an edge case.
+nonisolated func activeLyricLine(_ lines: [LyricLine], elapsed: Double) -> Int? {
+    let t = elapsed - LyricsService.syncOffset
+    return lines.lastIndex { $0.secs <= t }
+}
+
 /// Load state for the current track's lyrics, consumed by the view.
 enum LyricsState: Equatable {
     case loading
