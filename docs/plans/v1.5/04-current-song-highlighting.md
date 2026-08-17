@@ -3,6 +3,13 @@
 **Request:** "Current playing song should be highlighted in all views the song
 exists in."
 
+> **Status: implemented.** Parts A–D all landed, including album-level marking,
+> which winrmpc had deferred. The plan's read was right: the position-vs-URI
+> rule was already correct in all eight views that highlighted, so the visible
+> problem was presentation, not matching — only the Queue tinted its row, and
+> five row types drew their own marker at different sizes. Search's album rows
+> were added beyond the plan's list, since they show albums too.
+
 `../winrmpc/docs/plans/current-song-highlighting.md` is this feature, already
 designed and shipped there. This plan follows it, adjusted for what mikMPD
 already has — which is more than winrmpc had at the same point.

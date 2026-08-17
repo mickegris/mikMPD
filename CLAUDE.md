@@ -179,7 +179,7 @@ More → Statistics reads MPD's `stats` into `MPDStats` (`loadStats`, `@Publishe
 
 `SnapcastView` (More tab) connects to a Snapcast server's JSON-RPC 2.0 control port (default 1705, TCP, newline-delimited). The Snapcast host/port are per-server-profile (`snapcastHost`/`snapcastPort` on `MPDServerProfile`); host defaults to the MPD host when blank.
 
-**Transport** — `SnapcastSocket` (`nonisolated @unchecked Sendable`, same pattern as MPDSocket) owns the raw Darwin POSIX TCP socket. Access invariant: `connect()` and `request()` only from `SnapcastStore`'s serial queue `Q`; `disconnect()` is thread-safe (callable from any thread). A dedicated reader Thread (started inside `connect()`) runs continuously, reading newline-delimited JSON lines and routing them:
+**Transport** — `SnapcastSocket` (`nonisolated @unchecked Sendable`, same pattern as MPDSocket) owns the raw Darwin POSIX TCP socket. It sets **both** `SO_SNDTIMEO` and `SO_RCVTIMEO` (5 s), like MPDSocket: with a send timeout only, the reader Thread blocked in `recv()` indefinitely and could be stopped solely from outside, by `disconnect()`'s `shutdown()`. Snapcast is push-based and usually idle, so a receive timeout is the *normal* case — `readOneLine` returns nil on it (letting `readLoop` re-check whether it is still the current connection, which is the thread's only way to end itself) and retries on `EINTR` rather than tearing down. Access invariant: `connect()` and `request()` only from `SnapcastStore`'s serial queue `Q`; `disconnect()` is thread-safe (callable from any thread). A dedicated reader Thread (started inside `connect()`) runs continuously, reading newline-delimited JSON lines and routing them:
 - Lines with a matching `"id"` → fulfill the `DispatchSemaphore` in the waiting `request()` call on Q.
 - Lines with a `"method"` but no `"id"` → Snapcast push notifications; dispatched via `onNotification: (@Sendable (String, Data) -> Void)?` (params serialized to `Data` for Sendable compliance).
 - `disconnect()` calls `Darwin.shutdown(fd, SHUT_RDWR)` to unblock any blocking `recv()` in the reader Thread, then closes the fd and fails all pending semaphores.
@@ -197,7 +197,16 @@ More → Statistics reads MPD's `stats` into `MPDStats` (`loadStats`, `@Publishe
 
 ### Connection lifecycle
 
-Disconnects on background, reconnects on foreground resume — **unless phone streaming is active** (`isPhoneStreaming` guards the disconnect in `MPDClientApp`). Partition is restored automatically. 3-second retry on connection loss, guarded by `isReconnecting` to prevent stacking.
+Disconnects on background, reconnects on foreground resume — **unless phone streaming is active**. Partition is restored automatically. 3-second retry on connection loss, guarded by `isReconnecting` to prevent stacking.
+
+`MPDClientApp` calls `store.handleEnteringBackground()` rather than testing `isPhoneStreaming` inline, because that flag alone is not evidence of playback: a stream that failed or was stopped by the server left it true forever, which held the audio session open (so other apps were never told they could resume) and suppressed the disconnect indefinitely. The check is `streamPlayer?.timeControlStatus == .paused` → stop the stream; `.waitingToPlayAtSpecifiedRate` is a stream still buffering and is left alone.
+
+**Nothing runs on termination.** There is no AppDelegate, no `applicationWillTerminate`, and no `deinit` anywhere — a force-quit is a SIGKILL, so the only defence against leaving system-level state behind is not to depend on cleanup running. Two consequences to preserve:
+
+- `startPhoneStream` tears down **before** touching the audio session. It used to activate the session and then call `stopPhoneStream()`, which deactivated it again with `.notifyOthersOnDeactivation` — telling the very apps it was about to interrupt that they could resume — and then called `play()` on a just-deactivated session.
+- `MPNowPlayingInfoCenter.playbackState` is set alongside `nowPlayingInfo`, and to `.stopped` when clearing it. The playback *rate* in the info dict is not enough: the system reads `playbackState` to decide whether this app is still the playing one, and without it a stale mikMPD card can outlive the stream in Control Center.
+
+**More → Diagnostics → Clear Album Art Cache** deletes every cached cover *and* every `.miss` marker, then re-fetches the current song's art. It exists because a failed art lookup is remembered for 7 days, so fixing a lookup bug otherwise appears to change nothing; changing an art *key* has the same effect from the other direction, leaving old entries unreachable.
 
 ## Conventions
 

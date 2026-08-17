@@ -1,4 +1,4 @@
-# mikMPD v1.2 — Manual Test Checklist
+# mikMPD v1.5 — Manual Test Checklist
 
 Work top to bottom; the first two need a **fresh install** (delete the app first), the
 rest can run on your normal install. Kill and relaunch the app before re-checking
@@ -84,3 +84,76 @@ Wikipedia results — wrong/empty lookups are cached in memory per session.
 - [ ] Phone streaming: starts/stops, lock-screen controls + artwork, survives backgrounding
 - [ ] Server switch: partition remembered (if enabled), no stale data flash
 - [ ] Background → foreground: reconnects (unless streaming, which keeps the connection)
+
+## 11. Album lookups for decorated tags (v1.5)
+
+Tags in this library put the disc marker *inside* a qualifier bracket
+(`Clutching at Straws [24-bit Remaster CD 1]`, `Misplaced Childhood [24-bit
+Remaster, CD 1]`). Clear the art cache first — a failed lookup is remembered
+for 7 days, so a fix otherwise looks like it changed nothing.
+
+- [ ] More → Diagnostics → **Clear Album Art Cache** completes and confirms
+- [ ] Both Marillion remasters appear **once** each, captioned "2 discs"
+- [ ] The title reads `… [24-bit Remaster]` — balanced, no dangling `[`
+- [ ] Both show cover art and an **About** section
+- [ ] A remaster and a plain edition of the same album stay separate rows
+
+## 12. Artist tags (v1.5)
+
+- [ ] A file with an AlbumArtist and no Artist shows the name (not "Unknown
+      Artist") in Now Playing, the queue, album track lists, search and playlists
+- [ ] Tapping that name opens the artist page rather than an empty one
+- [ ] Blue Öyster Cult albums get art and a Wikipedia summary despite the
+      library holding four spellings of the name
+- [ ] Compilation albums (guest track artists) still show one cover per album
+
+## 13. Playlist search (v1.5)
+
+- [ ] Searching a playlist's **name** lists it under Playlists
+- [ ] Searching an artist/song only *inside* a playlist lists it, with an
+      "N matching tracks" caption
+- [ ] A query matching only a playlist does **not** show "no results"
+- [ ] Swipe a result to play/add; long press for play, shuffle, add
+- [ ] Typing quickly never leaves results from an earlier query on screen
+- [ ] Searching stays responsive with many playlists (watch Diagnostics)
+
+## 14. Now-playing markers (v1.5)
+
+- [ ] Play a track, then open its album, a playlist containing it, a search that
+      returns it, and its browser folder — the same row is marked in all four
+- [ ] The queue marks the playing row even when the same file appears twice
+- [ ] Albums list **and** grid mark exactly one album; so do Artist detail,
+      Genre detail, Recently Added and Recently Played
+- [ ] Playing disc 2 of a multi-disc set marks the single collapsed row
+- [ ] A **radio stream** marks no album anywhere (this was the failure case)
+- [ ] Stopped playback marks nothing
+- [ ] CD tracks and radio stations are marked in their own lists
+
+## 15. Lyrics Sync/Scroll (v1.5)
+
+- [ ] On a track with synced lyrics, the capsule reads **Sync** and the pane follows
+- [ ] Scrolling back stays put — it is not yanked back at the next line
+- [ ] Tapping **Sync** snaps to the current line immediately
+- [ ] The highlight stays visible in both modes
+- [ ] No capsule on plain lyrics or instrumentals
+- [ ] Changing track returns to Sync
+
+## 16. "Playing from <playlist>" (v1.5)
+
+- [ ] Play a playlist → label appears; **shuffle** a playlist → label appears
+- [ ] Force-quit and relaunch → the label is still there
+- [ ] Add a playlist to an **empty** queue → label appears
+- [ ] Add a playlist to a **non-empty** queue → no label
+- [ ] Replace the queue from another client, then reconnect → label disappears
+- [ ] The playing playlist is marked in the Playlists list
+- [ ] Switching servers switches the label with it
+
+## 17. Audio session and shutdown (v1.5)
+
+- [ ] Start "Listen on phone" while another app is playing → it stops cleanly
+- [ ] Stop the stream → the other app is free to resume
+- [ ] Lock screen shows title/artist/art and the transport controls work
+- [ ] Force-quit while streaming → no lingering mikMPD card in Control Center
+- [ ] Kill the MPD httpd output mid-stream, then background the app → the app
+      disconnects instead of holding the audio session open
+- [ ] Open the Snapcast screen, leave it, return — controls still work

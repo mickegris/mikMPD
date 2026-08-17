@@ -13,6 +13,15 @@ cannot be verified right now.
 | 5 | Toggle between synced and freely scrollable lyrics | [05-lyrics-sync-scroll-toggle.md](05-lyrics-sync-scroll-toggle.md) | No (LRCLIB is internet-only) |
 | 6 | "Playing from <playlist>" after shuffling a playlist | [06-playlist-context-shuffle.md](06-playlist-context-shuffle.md) | **Yes** — the obvious cause is already ruled out by code reading |
 
+> **Status: all six implemented and merged to main (v1.5, build 35).** Each
+> plan carries its own status note recording where it was wrong. The two
+> diagnoses that changed once real data arrived: item 1's tags were well-formed
+> (the unbalanced title was the app's own output), and item 6's missing
+> assignment was never missing — the context simply was not persisted.
+> Verified against the live server: the Marillion tag shapes and their Wikipedia
+> summaries end to end, `searchplaylist` support, and the four Blue Öyster Cult
+> spellings.
+
 ## Prior art in `../winrmpc/`
 
 Four of the six are already solved, wholly or partly, in the sibling Rust

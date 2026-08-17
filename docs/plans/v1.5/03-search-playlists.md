@@ -2,6 +2,14 @@
 
 **Request:** "Make sure search also searches in playlists."
 
+> **Status: implemented, and `searchplaylist` is supported on this server** —
+> confirmed by the Group B capability probe (5 hits in 'Spellista 1'), so the
+> `listplaylistinfo` fallback is unused here and exists for other servers. One
+> deviation: the section-footer hint was added as specified and then removed at
+> the user's request — four stacked result sections make a footer read as
+> clutter. Swipe actions and the context menu stay, and CLAUDE.md now records
+> Search as exempt from the footer half of that convention.
+
 ## What the request covers
 
 Two different matches, both reasonable, with very different costs:

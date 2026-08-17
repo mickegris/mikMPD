@@ -4,7 +4,7 @@ A lightweight iOS/iPadOS client for [Music Player Daemon](https://www.musicpd.or
 
 ## Features
 
-**Now Playing** — Album art (fetched from MusicBrainz/CoverArtArchive), synced lyrics (via LRCLIB), seek bar, transport controls (play/pause, stop, previous, next), volume slider, and mode toggles (repeat, shuffle, single, consume). Shows bitrate and audio format info, plus replay gain and crossfade controls. The square pane flips between artwork, lyrics and the live queue, and shows which playlist the current song is playing from. Quick buttons reach outputs and partition switching without leaving the screen. Add the current song to a playlist with one tap.
+**Now Playing** — Album art (fetched from MusicBrainz/CoverArtArchive), synced lyrics (via LRCLIB), seek bar, transport controls (play/pause, stop, previous, next), volume slider, and mode toggles (repeat, shuffle, single, consume). Shows bitrate and audio format info, plus replay gain and crossfade controls. The square pane flips between artwork, lyrics and the live queue, and shows which playlist the current song is playing from — a label that survives shuffling the playlist and restarting the app. Synced lyrics follow the song by default; a Sync/Scroll switch lets you read ahead without being pulled back to the current line. Quick buttons reach outputs and partition switching without leaving the screen. Add the current song to a playlist with one tap.
 
 **Library** — Browse by albums, artists, genres, playlists or recently added, with search filtering and sorting. Albums can be shown as a list or an album-art grid. Album and artist detail views include Wikipedia summaries. Play or enqueue entire albums/artists with one tap. Multi-disc albums are collapsed into a single row with a disc count, whether the discs are marked in the album name or only in the tracks' disc tags.
 
@@ -20,7 +20,7 @@ A lightweight iOS/iPadOS client for [Music Player Daemon](https://www.musicpd.or
 
 **File Browser** — Navigate the MPD directory tree. Single-tap enters directories, double-tap plays files. Swipe actions for add/play.
 
-**Search** — Concurrent search across songs, artists, and albums with debounced input, batch selection, and album art thumbnails.
+**Search** — Concurrent search across songs, artists, albums and stored playlists with debounced input, batch selection, and album art thumbnails. Playlists match both by name and by what they contain, so searching an artist finds the playlists holding their tracks.
 
 **Queue** — View and manage the current playlist. Double-tap to jump to a song, drag to reorder, swipe to delete, shuffle the queue in place, clear all, toggle consume mode. "Add Next" (from album, search and playlist rows) queues a track right after the one playing.
 
@@ -34,7 +34,9 @@ A lightweight iOS/iPadOS client for [Music Player Daemon](https://www.musicpd.or
 
 **Server Statistics** — Library totals (songs, albums, artists, total playing time) and server uptime, playtime and last database update, from the More tab. Trigger a database update or a full rescan from the same screen; the figures refresh themselves when the scan finishes.
 
-**Diagnostics** — An optional rolling log of recent MPD commands with timings, under More (off by default). Slow commands are highlighted and the whole log can be copied, which makes a stalled or unresponsive server far easier to pin down.
+**Diagnostics** — An optional rolling log of recent MPD commands with timings, under More (off by default). Slow commands are highlighted and the whole log can be copied, which makes a stalled or unresponsive server far easier to pin down. The same screen can clear the album-art cache, which forces covers that failed to load to be fetched again.
+
+**Now-playing markers** — Whatever is playing is marked wherever it appears: the track in the queue, album, playlist, search results, file browser, radio and CD lists, and the album it belongs to in every album list and grid. A multi-disc album is marked on its single collapsed row, whichever disc is playing.
 
 ## Requirements
 

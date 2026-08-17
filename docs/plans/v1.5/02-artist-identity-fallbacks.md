@@ -3,6 +3,19 @@
 **Symptom:** artists show as unknown or behave oddly; Blue Öyster Cult given as
 the example.
 
+> **Status: implemented.** All three parts landed. Two corrections the live
+> library forced. First, `artistFingerprints` must drop non-ASCII from the
+> **unfolded** letters: folding first turns `î` into an ASCII `i` that then
+> survives the drop, leaving i-vs-o — the exact miss the form exists to fix.
+> Second, the contract is tag-vs-*external source*, not tag-vs-tag. This library
+> holds four spellings (`Blue Oyster Cult`, `Blue  Oyster Cult` with two spaces,
+> `Blue Oyster Cult feat. Robby Krieger`, and the mojibake `Blue Îyster Cult`);
+> all four match the canonical accented form MusicBrainz and Wikipedia return,
+> but the mojibake and the plain-ASCII spelling do **not** match each other —
+> dropping removes the `î` from one side and leaves the `o` on the other.
+> Closing that would need fuzzy matching with real false-positive risk, and
+> nothing in the app compares one tag to another, so it was left alone.
+
 ## Diagnosis
 
 There are three separate defects here that all present as "the artist is

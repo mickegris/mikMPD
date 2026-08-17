@@ -2,6 +2,12 @@
 
 **Request:** "Add possibility to toggle synced/scrollable lyrics."
 
+> **Status: implemented.** One of the plan's own warnings turned out to be
+> stale rather than a constraint: CLAUDE.md claimed the panes carry a
+> tap-to-flip gesture that a button would have to avoid, but that gesture had
+> already been removed, so the toggle sits in the pane unobstructed. CLAUDE.md
+> has been corrected.
+
 ## Diagnosis
 
 `syncedLyricsView` ([NowPlayingView.swift:349](../../../mikMPD/NowPlayingView.swift))
