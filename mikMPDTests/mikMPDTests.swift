@@ -96,6 +96,36 @@ import Testing
 
 // MARK: - artCacheKey
 
+@Suite struct PlaybackContextValidationTests {
+    private let playlist: Set<String> = ["a.flac", "b.flac", "c.flac"]
+
+    // The case the label most needs to survive: `shuffle` reorders the queue on
+    // purpose, so a sequence comparison would throw the context away every time.
+    @Test func shuffledOrderIsStillTheSamePlaylist() {
+        #expect(playbackContextStillValid(queueFiles: ["c.flac", "a.flac", "b.flac"],
+                                          playlistFiles: playlist))
+    }
+
+    @Test func aSubsetIsStillValid() {
+        // Songs removed from the queue, or consume mode eating them.
+        #expect(playbackContextStillValid(queueFiles: ["b.flac"], playlistFiles: playlist))
+    }
+
+    @Test func anExtraTrackInvalidatesIt() {
+        #expect(!playbackContextStillValid(queueFiles: ["a.flac", "z.flac"],
+                                           playlistFiles: playlist))
+    }
+
+    @Test func aDifferentQueueInvalidatesIt() {
+        #expect(!playbackContextStillValid(queueFiles: ["x.flac"], playlistFiles: playlist))
+    }
+
+    @Test func emptyEitherSideIsInvalid() {
+        #expect(!playbackContextStillValid(queueFiles: [], playlistFiles: playlist))
+        #expect(!playbackContextStillValid(queueFiles: ["a.flac"], playlistFiles: []))
+    }
+}
+
 @Suite struct CurrentTrackMatchTests {
     @Test func matchesTheSameURI() {
         #expect(isCurrentTrack(file: "a/b.flac", currentFile: "a/b.flac"))

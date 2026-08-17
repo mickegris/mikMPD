@@ -28,9 +28,19 @@ struct PlaylistListView: View {
                 List {
                     Section {
                         ForEach(shown) { pl in
+                            // The app knows what it is playing from, so the list
+                            // of playlists should say so too.
+                            let isPlaying = store.playbackContext == pl.name
                             NavigationLink(destination: PlaylistDetailView(name: pl.name)) {
-                                Label(pl.name, systemImage: "music.note.list").lineLimit(2)
+                                Label {
+                                    Text(pl.name).lineLimit(2)
+                                        .foregroundStyle(isPlaying ? Color.accentColor : .primary)
+                                } icon: {
+                                    Image(systemName: isPlaying ? "speaker.wave.2.fill" : "music.note.list")
+                                        .foregroundStyle(isPlaying ? Color.accentColor : .secondary)
+                                }
                             }
+                            .nowPlayingRow(isPlaying)
                             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                                 Button(role: .destructive) { playlistToDelete = pl } label: {
                                     Label("Delete", systemImage: "trash")

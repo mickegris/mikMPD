@@ -630,6 +630,19 @@ nonisolated func recentAlbumGroups(_ entries: [RecentlyPlayedEntry]) -> [RecentA
     return result
 }
 
+/// Whether a remembered "Playing from <playlist>" label still describes the queue.
+///
+/// Compares as **sets**, not sequences: after `shuffle` the queue's order
+/// deliberately differs from the playlist's, and that is the case this label
+/// most needs to survive. The queue must be a *subset* — a superset means tracks
+/// were added afterwards, so the queue is no longer just that playlist and the
+/// label would be a lie.
+nonisolated func playbackContextStillValid(queueFiles: Set<String>,
+                                           playlistFiles: Set<String>) -> Bool {
+    guard !queueFiles.isEmpty, !playlistFiles.isEmpty else { return false }
+    return queueFiles.isSubset(of: playlistFiles)
+}
+
 nonisolated struct MPDBrowseItem: Identifiable {
     enum Kind { case directory, file, playlist }
     var kind: Kind

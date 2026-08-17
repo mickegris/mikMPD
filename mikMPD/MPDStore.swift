@@ -49,7 +49,28 @@ final class MPDStore: ObservableObject {
     @Published var partitions:     [String]        = []
     @Published var browseItems:    [MPDBrowseItem] = []
     @Published var searchResults:  [MPDSong]       = []
-    @Published var playbackContext: String?        = nil  // stored-playlist name; nil = unknown/other
+    /// Stored-playlist name the queue was built from; nil = unknown/other.
+    ///
+    /// Persisted per server. It used to be plain in-memory state, so it was lost
+    /// on every relaunch — including the silent one after iOS reclaims a
+    /// backgrounded app. Starting a playlist and coming back later, which is
+    /// exactly what shuffling one is for, therefore showed no "Playing from"
+    /// label even though nothing had gone wrong.
+    @Published var playbackContext: String? = nil {
+        didSet {
+            guard !activeServerID.isEmpty else { return }
+            let key = "playbackContext_\(activeServerID)"
+            if let playbackContext {
+                UserDefaults.standard.set(playbackContext, forKey: key)
+            } else {
+                UserDefaults.standard.removeObject(forKey: key)
+            }
+        }
+    }
+    /// True once the restored context has been checked against the live queue.
+    /// Reset per connection, since the queue can be replaced by another client
+    /// while this app is not running.
+    private var playbackContextVerified = false
     @Published var albumArtCache:  [String: UIImage] = [:]
     private var artAccessOrder: [String] = []
     private let artCacheLimit = 400   // grid working set is ~800 albums; 100 thrashed
@@ -129,6 +150,7 @@ final class MPDStore: ObservableObject {
         }
         loadServersMigratingIfNeeded()
         loadRecentlyPlayed()
+        loadPlaybackContext()
         connect()
     }
 
@@ -176,6 +198,11 @@ final class MPDStore: ObservableObject {
             pendingRestore = saved
         }
         let restorePartition = pendingRestore
+        // A restored "Playing from" label describes a queue this app did not
+        // watch being built — another client may have replaced it entirely.
+        // Check it once per connection, not per poll: two commands, and a queue
+        // does not silently change identity between polls.
+        let contextToVerify = playbackContextVerified ? nil : playbackContext
         Q.async { [weak self] in
             guard let self else { return }
             do {
@@ -197,6 +224,7 @@ final class MPDStore: ObservableObject {
                     _ = try? self.socket.command("partition \"\(part.esc)\"")
                 }
                 self.poll()
+                if let contextToVerify { self.verifyPlaybackContext(contextToVerify) }
                 DispatchQueue.main.async {
                     self.isConnected = true
                     self.startTimers()
@@ -268,6 +296,7 @@ final class MPDStore: ObservableObject {
         servers.removeAll { $0.id == profile.id }
         KeychainHelper.save(key: "mpd_password_\(profile.id.uuidString)", value: "")  // removes the entry
         UserDefaults.standard.removeObject(forKey: "recentlyPlayed_\(profile.id.uuidString)")
+        UserDefaults.standard.removeObject(forKey: "playbackContext_\(profile.id.uuidString)")
         if profile.id.uuidString == activeServerID {
             if let next = servers.first {
                 switchToServer(next, force: true)
@@ -302,6 +331,37 @@ final class MPDStore: ObservableObject {
         recentlyPlayed = prunedRecentHistory(decoded, now: Date())
     }
 
+    /// Restore the active server's "Playing from" label, unverified until the
+    /// next connection checks it against the queue.
+    private func loadPlaybackContext() {
+        playbackContextVerified = false
+        guard !activeServerID.isEmpty else { playbackContext = nil; return }
+        playbackContext = UserDefaults.standard.string(forKey: "playbackContext_\(activeServerID)")
+    }
+
+    /// Set the "Playing from" label from an action taken in this app. No
+    /// verification is needed — we just built that queue ourselves.
+    private func setPlaybackContext(_ name: String?) {
+        playbackContext = name
+        playbackContextVerified = true
+    }
+
+    /// Confirm a restored context still describes the queue, once per connection.
+    /// `listplaylist` returns URIs only — cheaper than `listplaylistinfo`.
+    nonisolated private func verifyPlaybackContext(_ name: String) {
+        let playlistFiles = Set((try? socket.command("listplaylist \"\(name.esc)\""))?
+            .compactMap { $0["file"] } ?? [])
+        let queueFiles = Set((try? socket.command("playlistinfo"))?
+            .compactMap { $0["file"] } ?? [])
+        let stillValid = playbackContextStillValid(queueFiles: queueFiles,
+                                                   playlistFiles: playlistFiles)
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.playbackContext == name else { return }
+            self.playbackContextVerified = true
+            if !stillValid { self.playbackContext = nil }
+        }
+    }
+
     private func pushRecent(_ entry: RecentlyPlayedEntry) {
         recentlyPlayed = prunedRecentHistory([entry] + recentlyPlayed, now: entry.playedAt)
     }
@@ -327,6 +387,7 @@ final class MPDStore: ObservableObject {
         lastUsedPartitionName = profile.lastPartition.isEmpty ? nil : profile.lastPartition
         resetServerState()
         loadRecentlyPlayed()
+        loadPlaybackContext()   // must follow resetServerState, which clears it
         connect()
     }
 
@@ -338,6 +399,8 @@ final class MPDStore: ObservableObject {
         searchResults = []; browseItems = []; playlists = []
         elapsed = 0; duration = 0; isPlaying = false; isPaused = false
         playlistPos = -1; bitrate = ""; audioFmt = ""; currentPartition = ""
+        // playbackContext is cleared here and restored by loadPlaybackContext()
+        // immediately after — it is per-server persisted state, not live state.
         lyricsState = .unavailable; playbackContext = nil
         replayGainMode = "off"; crossfadeSeconds = 0
         serverStats = nil; statsError = nil; isUpdatingDB = false
@@ -890,7 +953,7 @@ final class MPDStore: ObservableObject {
             _ = try? self.socket.command("add \"\(uri.esc)\"")
             _ = try? self.socket.command("play 0")
             self.poll()
-            DispatchQueue.main.async { self.playbackContext = nil; self.loadQueue() }
+            DispatchQueue.main.async { self.setPlaybackContext(nil); self.loadQueue() }
         }
     }
 
@@ -975,14 +1038,14 @@ final class MPDStore: ObservableObject {
         Q.async { [weak self] in
             _ = try? self?.socket.command("clear")
             // Reset playlistPos immediately so addNext doesn't insert at a stale position.
-            DispatchQueue.main.async { self?.playbackContext = nil; self?.playlistPos = -1; self?.loadQueue() }
+            DispatchQueue.main.async { self?.setPlaybackContext(nil); self?.playlistPos = -1; self?.loadQueue() }
         }
     }
 
     func add(uri: String) {
         Q.async { [weak self] in
             _ = try? self?.socket.command("add \"\(uri.esc)\"")
-            DispatchQueue.main.async { self?.playbackContext = nil; self?.loadQueue() }
+            DispatchQueue.main.async { self?.setPlaybackContext(nil); self?.loadQueue() }
         }
     }
 
@@ -1004,7 +1067,7 @@ final class MPDStore: ObservableObject {
             _ = try? self.socket.command("add \"\(uri.esc)\"")
             _ = try? self.socket.command("play \(before)")
             self.poll()
-            DispatchQueue.main.async { self.playbackContext = nil; self.loadQueue() }
+            DispatchQueue.main.async { self.setPlaybackContext(nil); self.loadQueue() }
         }
     }
 
@@ -1036,6 +1099,10 @@ final class MPDStore: ObservableObject {
     func loadPlaylist(_ name: String, replace: Bool = false, play: Bool = false) {
         Q.async { [weak self] in
             guard let self else { return }
+            // "Add" to an *empty* queue leaves the queue holding exactly this
+            // playlist, so the label is accurate and should be shown. Adding to
+            // a queue that already has songs genuinely loses the context.
+            let ontoEmptyQueue = !replace && self.playlistLength() == 0
             if replace { _ = try? self.socket.command("clear") }
             _ = try? self.socket.command("load \"\(name.esc)\"")
             if play {
@@ -1043,7 +1110,7 @@ final class MPDStore: ObservableObject {
                 self.poll()
             }
             DispatchQueue.main.async {
-                self.playbackContext = (replace || play) ? name : nil
+                self.setPlaybackContext((replace || play || ontoEmptyQueue) ? name : nil)
                 self.loadQueue()
             }
         }
@@ -1059,7 +1126,7 @@ final class MPDStore: ObservableObject {
             _ = try? self.socket.command("shuffle")
             _ = try? self.socket.command("play 0")
             self.poll()
-            DispatchQueue.main.async { self.playbackContext = name; self.loadQueue() }
+            DispatchQueue.main.async { self.setPlaybackContext(name); self.loadQueue() }
         }
     }
 
@@ -1089,7 +1156,7 @@ final class MPDStore: ObservableObject {
                 self.poll()
             }
             DispatchQueue.main.async {
-                if replace { self.playbackContext = nil }
+                if replace { self.setPlaybackContext(nil) }
                 self.loadQueue()
             }
         }
@@ -1104,7 +1171,7 @@ final class MPDStore: ObservableObject {
             if playFirst || replace { _ = try? self.socket.command("play \(before)") }
             if playFirst || replace { self.poll() }
             DispatchQueue.main.async {
-                if replace { self.playbackContext = nil }
+                if replace { self.setPlaybackContext(nil) }
                 self.loadQueue()
             }
         }
@@ -1269,7 +1336,7 @@ final class MPDStore: ObservableObject {
             _ = try? self.socket.command("load \"\(name.esc)\"")
             _ = try? self.socket.command("play \(index)")
             self.poll()
-            DispatchQueue.main.async { self.playbackContext = name; self.loadQueue() }
+            DispatchQueue.main.async { self.setPlaybackContext(name); self.loadQueue() }
         }
     }
 
