@@ -12,11 +12,10 @@ struct QueueView: View {
                     List {
                         Section {
                             ForEach(store.queue) { song in
-                                QueueRow(song: song, isCurrent: song.pos == store.playlistPos)
+                                QueueRow(song: song, isCurrent: isCurrentQueueRow(pos: song.pos, playlistPos: store.playlistPos))
                                     .contentShape(Rectangle())
                                     .onTapGesture(count: 2) { store.play(at: song.pos) }
-                                    .listRowBackground(song.pos == store.playlistPos
-                                        ? Color.accentColor.opacity(0.12) : Color.clear)
+                                    .nowPlayingRow(isCurrentQueueRow(pos: song.pos, playlistPos: store.playlistPos))
                                     .swipeActions(edge: .leading) {
                                         Button { addRequest = AddToPlaylistRequest(uris: [song.file]) } label: {
                                             Label("Playlist", systemImage: "music.note.list")
@@ -75,7 +74,7 @@ struct QueueRow: View {
     var body: some View {
         HStack(spacing: 10) {
             Group {
-                if isCurrent { Image(systemName: "speaker.wave.2.fill").foregroundColor(.accentColor) }
+                if isCurrent { NowPlayingMarker() }
                 else { Text("\(song.pos + 1)").foregroundColor(.secondary).frame(minWidth: 28, alignment: .trailing) }
             }.font(.caption)
             VStack(alignment: .leading, spacing: 2) {

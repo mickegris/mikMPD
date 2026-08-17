@@ -7,7 +7,9 @@ struct BrowserView: View {
                 if store.browseItems.isEmpty { ContentUnavailableView("Empty", systemImage:"folder") }
                 else {
                     List(store.browseItems) { item in
-                        BrowserRow(item:item, isCurrentlyPlaying: item.kind == .file && item.path == store.currentSong.file).contentShape(Rectangle())
+                        BrowserRow(item:item, isCurrentlyPlaying: item.kind == .file && isCurrentTrack(file: item.path, currentFile: store.currentSong.file))
+                            .nowPlayingRow(item.kind == .file && isCurrentTrack(file: item.path, currentFile: store.currentSong.file))
+                            .contentShape(Rectangle())
                             .onTapGesture(count:2) { doubleTap(item) }
                             .onTapGesture { if item.kind == .directory { store.browse(item.path) } }
                             .swipeActions(edge:.trailing) {
@@ -53,9 +55,7 @@ struct BrowserRow: View {
             Image(systemName:item.sfSymbol).foregroundColor(color).frame(width:24)
             Text(item.displayName).lineLimit(2).font(.subheadline)
             Spacer()
-            if isCurrentlyPlaying {
-                Image(systemName: "speaker.wave.2.fill").font(.caption2).foregroundStyle(.tint)
-            }
+            if isCurrentlyPlaying { NowPlayingMarker() }
             if item.kind == .directory { Image(systemName:"chevron.right").font(.caption).foregroundColor(.secondary) }
         }.padding(.vertical,2)
     }

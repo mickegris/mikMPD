@@ -283,10 +283,9 @@ struct NowPlayingView: View {
                 ScrollViewReader { proxy in
                     List {
                         ForEach(store.queue) { qSong in
-                            QueueRow(song: qSong, isCurrent: qSong.pos == store.playlistPos)
+                            QueueRow(song: qSong, isCurrent: isCurrentQueueRow(pos: qSong.pos, playlistPos: store.playlistPos))
                                 .playableRow{ store.play(at: qSong.pos) }
-                                .listRowBackground(qSong.pos == store.playlistPos
-                                    ? Color.accentColor.opacity(0.12) : Color.clear)
+                                .nowPlayingRow(isCurrentQueueRow(pos: qSong.pos, playlistPos: store.playlistPos))
                                 .id(qSong.pos)
                         }
                         .onDelete { store.delete(at: $0) }
@@ -655,6 +654,14 @@ struct RecentlyPlayedSheet: View {
         }
     }
 
+    /// An album-less tile (a radio stream or a loose file) is keyed on its file,
+    /// so it marks by URI; a real album marks when the playing track belongs to it.
+    private func isPlayingRecentAlbum(_ ra: RecentAlbum) -> Bool {
+        ra.albumless
+            ? isCurrentTrack(file: ra.file, currentFile: store.currentSong.file)
+            : isCurrentAlbum(rowArtist: ra.artist, rowAlbum: ra.album, current: store.currentSong)
+    }
+
     @ViewBuilder
     private func albumTile(_ ra: RecentAlbum) -> some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -662,18 +669,22 @@ struct RecentlyPlayedSheet: View {
                 if ra.albumless {
                     Button { store.addAndPlay(uri: ra.file) } label: {
                         ArtThumbByKey(artist: ra.artist, album: ra.album, size: 110).cornerRadius(8)
+                            .nowPlayingCover(isCurrentTrack(file: ra.file, currentFile: store.currentSong.file),
+                                             cornerRadius: 8)
                     }
                     .buttonStyle(.plain)
                 } else {
                     NavigationLink(destination: AlbumDetailView(
                         album: ra.album, artist: ra.artist.isEmpty ? nil : ra.artist)) {
                         ArtThumbByKey(artist: ra.artist, album: ra.album, size: 110).cornerRadius(8)
+                            .nowPlayingCover(isPlayingRecentAlbum(ra), cornerRadius: 8)
                     }
                     .buttonStyle(.plain)
                 }
             }
             Text(ra.albumless ? ra.title : ra.album)
                 .font(.subheadline).lineLimit(2)
+                .foregroundStyle(isPlayingRecentAlbum(ra) ? Color.accentColor : .primary)
             if !ra.artist.isEmpty {
                 Text(ra.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
@@ -724,12 +735,13 @@ struct RecentlyPlayedSheet: View {
                     }
                 }
                 Spacer()
-                if entry.file == store.currentSong.file {
-                    Image(systemName: "speaker.wave.2.fill").font(.caption2).foregroundStyle(.tint)
+                if isCurrentTrack(file: entry.file, currentFile: store.currentSong.file) {
+                    NowPlayingMarker()
                 }
                 Text(relativeDay(entry.playedAt))
                     .font(.caption2).foregroundStyle(.secondary)
             }
+            .nowPlayingRow(isCurrentTrack(file: entry.file, currentFile: store.currentSong.file))
             .playableRow{ store.addAndPlay(uri: entry.file) }
             .swipeActions(edge: .trailing) {
                 Button { store.add(uri: entry.file) } label: {

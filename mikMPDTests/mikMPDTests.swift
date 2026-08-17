@@ -96,6 +96,112 @@ import Testing
 
 // MARK: - artCacheKey
 
+@Suite struct CurrentTrackMatchTests {
+    @Test func matchesTheSameURI() {
+        #expect(isCurrentTrack(file: "a/b.flac", currentFile: "a/b.flac"))
+        #expect(!isCurrentTrack(file: "a/b.flac", currentFile: "a/c.flac"))
+    }
+
+    // Nothing playing leaves currentSong.file empty; it must not mark rows that
+    // happen to lack a URI.
+    @Test func emptyMatchesNothing() {
+        #expect(!isCurrentTrack(file: "", currentFile: ""))
+        #expect(!isCurrentTrack(file: "", currentFile: "a/b.flac"))
+        #expect(!isCurrentTrack(file: "a/b.flac", currentFile: ""))
+    }
+
+    @Test func queueMatchesByPosition() {
+        #expect(isCurrentQueueRow(pos: 3, playlistPos: 3))
+        #expect(!isCurrentQueueRow(pos: 4, playlistPos: 3))
+    }
+
+    // playlistPos is -1 when the queue has no current song.
+    @Test func noCurrentQueuePositionMatchesNothing() {
+        #expect(!isCurrentQueueRow(pos: -1, playlistPos: -1))
+        #expect(!isCurrentQueueRow(pos: 0, playlistPos: -1))
+    }
+
+    // THE trap this helper exists for: a stored-playlist row's `pos` is the
+    // playlist index, unrelated to the queue position. Matching on it would
+    // light up an arbitrary row — wrong highlighting, not missing highlighting.
+    @Test func aPlaylistRowAtThePlayingQueuePositionDoesNotMatch() {
+        let playlistRowPos = 3, playingQueuePos = 3
+        #expect(playlistRowPos == playingQueuePos)   // they collide…
+        #expect(!isCurrentTrack(file: "playlist/track.flac", currentFile: "queue/other.flac"))
+    }
+
+    // Accepted consequence of a URI rule: the same file twice in one listing
+    // marks both rows. Asserted so it stays a decision.
+    @Test func duplicateURIsInOneListingBothMatch() {
+        let rows = ["a/b.flac", "a/b.flac"]
+        #expect(rows.allSatisfy { isCurrentTrack(file: $0, currentFile: "a/b.flac") })
+    }
+}
+
+@Suite struct CurrentAlbumMatchTests {
+    private func playing(artist: String = "", albumArtist: String = "", album: String,
+                         file: String = "x/y.flac") -> MPDSong {
+        var s = MPDSong()
+        s.artist = artist; s.albumArtist = albumArtist; s.album = album; s.file = file
+        return s
+    }
+
+    @Test func matchesItsOwnAlbum() {
+        let cur = playing(artist: "Marillion", album: "Misplaced Childhood")
+        #expect(isCurrentAlbum(rowArtist: "Marillion", rowAlbum: "Misplaced Childhood", current: cur))
+    }
+
+    // The row shows the disc-collapsed base, so a playing disc 2 must light up
+    // the single collapsed row — including the real tag shape from this library.
+    @Test func playingDiscTwoMarksTheCollapsedRow() {
+        let cur = playing(artist: "Marillion", album: "Misplaced Childhood [24-bit Remaster CD 2]")
+        #expect(isCurrentAlbum(rowArtist: "Marillion",
+                               rowAlbum: "Misplaced Childhood [24-bit Remaster]", current: cur))
+    }
+
+    @Test func punctuationVariantsStillMatch() {
+        let cur = playing(artist: "The Beatles", album: "1967\u{2013}1970")
+        #expect(isCurrentAlbum(rowArtist: "The Beatles", rowAlbum: "1967-1970", current: cur))
+    }
+
+    @Test func sameTitleByAnotherArtistDoesNotMatch() {
+        let cur = playing(artist: "Queen", album: "Greatest Hits")
+        #expect(!isCurrentAlbum(rowArtist: "ABBA", rowAlbum: "Greatest Hits", current: cur))
+    }
+
+    // Album rows carry an albumartist, so a compilation track has to match
+    // through groupingArtist rather than its own artist tag.
+    @Test func compilationTrackMatchesItsAlbumArtistRow() {
+        let cur = playing(artist: "Buck Dharma", albumArtist: "Blue Öyster Cult",
+                          album: "Fire of Unknown Origin")
+        #expect(isCurrentAlbum(rowArtist: "Blue Öyster Cult",
+                               rowAlbum: "Fire of Unknown Origin", current: cur))
+    }
+
+    // A radio stream has no album and no artist; without this it marked every
+    // untagged album at once.
+    @Test func aTracklessOrAlbumlessCurrentMarksNothing() {
+        #expect(!isCurrentAlbum(rowArtist: "Marillion", rowAlbum: "Misplaced Childhood",
+                                current: playing(album: "")))
+        #expect(!isCurrentAlbum(rowArtist: "", rowAlbum: "", current: playing(album: "")))
+        #expect(!isCurrentAlbum(rowArtist: "Marillion", rowAlbum: "Misplaced Childhood",
+                                current: playing(artist: "Marillion", album: "Misplaced Childhood",
+                                                 file: "")))
+    }
+
+    @Test func caseInsensitiveOnBothHalves() {
+        let cur = playing(artist: "marillion", album: "misplaced childhood")
+        #expect(isCurrentAlbum(rowArtist: "Marillion", rowAlbum: "Misplaced Childhood", current: cur))
+    }
+
+    // Genre listings can be artist-less; fall back to matching on the album
+    // alone rather than never matching.
+    @Test func artistLessRowMatchesOnAlbumAlone() {
+        let cur = playing(artist: "Marillion", album: "Misplaced Childhood")
+        #expect(isCurrentAlbum(rowArtist: "", rowAlbum: "Misplaced Childhood", current: cur))
+    }
+}
+
 @Suite struct ArtistFallbackTests {
     private func song(artist: String, albumArtist: String, album: String = "X") -> MPDSong {
         var s = MPDSong()

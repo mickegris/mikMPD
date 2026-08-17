@@ -80,14 +80,19 @@ struct SearchView: View {
                         NavigationLink {
                             AlbumDetailView(album: item.album, artist: item.artist)
                         } label: {
+                            let playing = isCurrentAlbum(rowArtist: item.artist,
+                                                        rowAlbum: item.album,
+                                                        current: store.currentSong)
                             HStack(spacing: 12) {
                                 // Album art thumbnail
                                 ArtThumbByKey(artist: item.artist, album: item.album, size: 50)
                                     .cornerRadius(6)
-                                
+                                    .nowPlayingCover(playing)
+
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(item.discCount > 1 ? albumBaseAndDisc(item.album).base : item.album)
                                         .font(.subheadline)
+                                        .foregroundStyle(playing ? Color.accentColor : .primary)
                                     if !item.artist.isEmpty {
                                         Text(item.artist)
                                             .font(.caption)
@@ -103,6 +108,9 @@ struct SearchView: View {
                             }
                             .padding(.vertical, 4)
                         }
+                        .nowPlayingRow(isCurrentAlbum(rowArtist: item.artist,
+                                                      rowAlbum: item.album,
+                                                      current: store.currentSong))
                     }
                 } header: {
                     Text("Albums (\(albums.count))")
@@ -114,7 +122,8 @@ struct SearchView: View {
                 Section {
                     ForEach(store.searchResults) { song in
                         SearchRow(song: song, selected: selectedSongs.contains(song.id),
-                                  isCurrentlyPlaying: song.file == store.currentSong.file)
+                                  isCurrentlyPlaying: isCurrentTrack(file: song.file, currentFile: store.currentSong.file))
+                            .nowPlayingRow(isCurrentTrack(file: song.file, currentFile: store.currentSong.file))
                             .contentShape(Rectangle())
                             .background(
                                 RoundedRectangle(cornerRadius: 8)
@@ -306,11 +315,7 @@ struct SearchRow: View {
 
             Spacer()
 
-            if isCurrentlyPlaying {
-                Image(systemName: "speaker.wave.2.fill")
-                    .font(.caption)
-                    .foregroundStyle(.tint)
-            }
+            if isCurrentlyPlaying { NowPlayingMarker() }
             Text(formatTime(song.duration))
                 .font(.caption)
                 .foregroundStyle(.secondary)

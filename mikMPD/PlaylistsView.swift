@@ -158,7 +158,11 @@ struct PlaylistDetailView: View {
                     Text("Empty playlist").foregroundStyle(.secondary)
                 } else {
                     ForEach(songs) { s in
-                        SearchRow(song: s, selected: false, isCurrentlyPlaying: s.file == store.currentSong.file)
+                        // Matches on the URI, never on `s.pos`: that is the
+                        // *playlist* index, unrelated to the queue position.
+                        SearchRow(song: s, selected: false,
+                                  isCurrentlyPlaying: isCurrentTrack(file: s.file, currentFile: store.currentSong.file))
+                            .nowPlayingRow(isCurrentTrack(file: s.file, currentFile: store.currentSong.file))
                             .playableRow{ store.playPlaylist(name: name, at: s.pos) }
                             .swipeActions(edge: .leading) {
                                 Button { store.add(uri: s.file) } label: {
