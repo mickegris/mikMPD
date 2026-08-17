@@ -165,8 +165,6 @@ struct SearchView: View {
                     }
                 } header: {
                     Text("Playlists (\(playlistMatches.count))")
-                } footer: {
-                    Text("Long press or swipe a playlist to play, shuffle, or add it to the queue.")
                 }
             }
             
