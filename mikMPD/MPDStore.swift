@@ -1834,6 +1834,12 @@ final class MPDStore: ObservableObject {
 
     func startPhoneStream() {
         guard let url = Self.parseStreamURL(httpStreamURL) else { return }
+        // Tear down *before* touching the session. This used to run after
+        // setActive(true), so every start activated the session and then
+        // immediately deactivated it — firing a spurious "others may resume"
+        // notification at the apps we were about to interrupt, and calling
+        // play() on a session that had just been switched off.
+        stopPhoneStream()
         do {
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.playback, mode: .default)
@@ -1842,7 +1848,6 @@ final class MPDStore: ObservableObject {
             connectionError = "Audio session: \(error.localizedDescription)"
             return
         }
-        stopPhoneStream()
         let item = AVPlayerItem(url: url)
         item.preferredForwardBufferDuration = 30  // buffer 30s ahead for poor connections
         let player = AVPlayer(playerItem: item)
@@ -1901,7 +1906,26 @@ final class MPDStore: ObservableObject {
         center.togglePlayPauseCommand.removeTarget(nil)
         center.nextTrackCommand.removeTarget(nil)
         center.previousTrackCommand.removeTarget(nil)
+        // Clearing the info alone leaves the system's idea of playback state
+        // behind, which is what keeps a stale mikMPD card in Control Center
+        // after the stream ends (or after a force-quit, where nothing else runs).
+        MPNowPlayingInfoCenter.default().playbackState = .stopped
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+    }
+
+    /// Entering the background.
+    ///
+    /// Streaming is the one reason to keep the connection alive, but a stream
+    /// that has failed or been stopped by the server leaves `isPhoneStreaming`
+    /// true with nothing actually playing — and that state held the audio session
+    /// open (so other apps were never told they could resume) and skipped the
+    /// disconnect below, indefinitely. `.waitingToPlayAtSpecifiedRate` is a
+    /// stream still buffering, which is worth keeping.
+    func handleEnteringBackground() {
+        if isPhoneStreaming, streamPlayer?.timeControlStatus == .paused {
+            stopPhoneStream()
+        }
+        if !isPhoneStreaming { disconnect() }
     }
 
     func updateNowPlayingInfo() {
@@ -1919,6 +1943,11 @@ final class MPDStore: ObservableObject {
             info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: img.size) { @Sendable _ in img }
         }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+        // The playback *rate* alone isn't enough: the system reads playbackState
+        // to know whether this app is still the playing one. It was never set,
+        // which is why the now-playing entry could outlive the stream.
+        MPNowPlayingInfoCenter.default().playbackState =
+            isPlaying ? .playing : (isPaused ? .paused : .stopped)
     }
 
     nonisolated static func parseStreamURL(_ s: String) -> URL? {
