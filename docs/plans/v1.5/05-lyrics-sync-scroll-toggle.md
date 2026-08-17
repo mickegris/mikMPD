@@ -59,19 +59,15 @@ change — otherwise re-enabling appears to do nothing for several seconds.
 **The highlight stays in both modes.** While scrolled away it is the only
 indication of where the song actually is.
 
-### The control, and one trap
+### The control
 
-CLAUDE.md records that the pane's tap gesture lives on the art/lyrics panes
-themselves, *not* on the shared container, because a container gesture swallows
-the queue list's row taps. A control placed inside `lyricsPane` sits under that
-same tap-to-flip gesture, so it must be added carefully:
+CLAUDE.md says the pane's tap gesture lives on the art/lyrics panes themselves,
+so a control inside `lyricsPane` would sit under a tap-to-flip gesture. **That
+is stale** — the gesture was since removed ("No tap-to-toggle on the panes:
+accidental art taps kept flipping to lyrics. The flanking buttons are the only
+toggles"), so a button in the pane is unobstructed. CLAUDE.md needs correcting.
 
-- Put the button in an `.overlay(alignment: .topTrailing)` on the lyrics pane
-  with its own `Button`, and verify a tap on it does **not** also flip the pane
-  back to artwork. If the gesture wins, move the tap gesture off the lyrics
-  pane's background onto the text stack, or attach it with
-  `.simultaneousGesture` discipline — do not "fix" it by moving the tap to the
-  container, which is the arrangement CLAUDE.md warns against.
+- Put the button in an `.overlay` on the lyrics pane with its own `Button`.
 - Size it like the existing pane-flanking buttons and label it with
   `arrow.up.arrow.down.circle` / `arrow.up.arrow.down.circle.fill` (or
   `text.aligncenter` vs `arrow.down.circle`), tinted accent when following —

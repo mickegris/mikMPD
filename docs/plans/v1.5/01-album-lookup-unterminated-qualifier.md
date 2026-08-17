@@ -3,6 +3,22 @@
 **Symptom:** Marillion's *Clutching at Straws* and *Misplaced Childhood*, both
 tagged as 24-bit remasters, get neither cover art nor a Wikipedia summary.
 
+> **Status: implemented, with a corrected diagnosis.** The real tags are
+> `Clutching at Straws [24-bit Remaster CD 1]` and `[… CD 2]` — well-formed,
+> with the disc marker *inside* the qualifier bracket. The unterminated string
+> in the original report was the app's own output, not the tag: the disc-marker
+> regex strips from the space before `CD`, leaving
+> `Clutching at Straws [24-bit Remaster`, which is what the UI displayed and
+> what the lookups were sent. So the fix went into `albumBaseAndDisc` (re-close
+> the bracket the strip broke open) rather than into `albumLookupTitle`, and the
+> speculative "tolerate an unterminated bracket in the tag" change below was
+> **not** made — there is no evidence such tags exist, and it would widen
+> stripping with nothing to justify it. Everything else in this plan stands: the
+> keyword gate, the cache-invalidation hazard, and the Diagnostics action all
+> landed as written. See the same case in `../winrmpc/CLAUDE.md` § Album
+> identity, which documents it as "a marker sitting at the tail of a qualifier
+> bracket".
+
 ## Diagnosis
 
 Both albums were reported with the qualifier bracket **unterminated** —

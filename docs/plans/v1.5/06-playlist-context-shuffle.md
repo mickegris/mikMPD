@@ -4,6 +4,12 @@
 shuffled the playlist (by pressing the shuffle button in playlist view). It
 only works if you press play in the playlist view."
 
+> **Status: implemented.** All three parts (persist, verify, "Add" to an empty
+> queue) landed, plus the playlist-list marker. Hypothesis 1 was not confirmed
+> against the server — it could not be, without one — but the fix makes the
+> symptom impossible under any of the four hypotheses, which is why it was worth
+> doing rather than waiting for a reproduction.
+
 ## Start here: the obvious fix is already in the code
 
 The natural assumption is that `shufflePlayPlaylist` forgot to set the context.
