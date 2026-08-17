@@ -96,6 +96,101 @@ import Testing
 
 // MARK: - artCacheKey
 
+@Suite struct ArtistFallbackTests {
+    private func song(artist: String, albumArtist: String, album: String = "X") -> MPDSong {
+        var s = MPDSong()
+        s.artist = artist; s.albumArtist = albumArtist; s.album = album
+        return s
+    }
+
+    @Test func bothTagsPresent() {
+        let s = song(artist: "Buck Dharma", albumArtist: "Blue Öyster Cult")
+        #expect(s.displayArtist == "Buck Dharma")
+        #expect(s.groupingArtist == "Blue Öyster Cult")
+    }
+
+    @Test func albumArtistOnlyStillDisplaysAName() {
+        let s = song(artist: "", albumArtist: "Blue Öyster Cult")
+        #expect(s.displayArtist == "Blue Öyster Cult")
+        #expect(s.groupingArtist == "Blue Öyster Cult")
+    }
+
+    @Test func artistOnlyFillsBothDirections() {
+        let s = song(artist: "Marillion", albumArtist: "")
+        #expect(s.displayArtist == "Marillion")
+        #expect(s.groupingArtist == "Marillion")
+    }
+
+    @Test func neitherTagLeavesItEmpty() {
+        let s = song(artist: "", albumArtist: "")
+        #expect(s.displayArtist.isEmpty)
+        #expect(s.groupingArtist.isEmpty)
+    }
+
+    // A present-but-blank tag must count as absent: a chain that stops at ""
+    // renders an empty cell, which reads as a rendering fault, not missing data.
+    @Test func blankTagCountsAsAbsent() {
+        #expect(song(artist: "   ", albumArtist: "Blue Öyster Cult").displayArtist == "Blue Öyster Cult")
+        #expect(song(artist: "Buck Dharma", albumArtist: "  ").groupingArtist == "Buck Dharma")
+        #expect(song(artist: "\n", albumArtist: "").displayArtist == "")
+    }
+
+    // Trimming here would change groupingArtist, which feeds artCacheKey, and
+    // orphan the cached art of every file with a padded tag.
+    @Test func fallbackReturnsTheUntrimmedOriginal() {
+        #expect(song(artist: " Marillion ", albumArtist: "").displayArtist == " Marillion ")
+    }
+
+    // A grid tile keyed from the albumartist and a track keyed from its own
+    // artist must land in the same art-cache entry.
+    @Test func artKeyAgreesBetweenTileAndTrack() {
+        let track = song(artist: "Buck Dharma", albumArtist: "Blue Öyster Cult", album: "Fire of Unknown Origin")
+        #expect(track.artKey == artCacheKey(artist: "Blue Öyster Cult", album: "Fire of Unknown Origin"))
+    }
+}
+
+@Suite struct ArtistCreditMatchTests {
+    @Test func exactAndCaseInsensitive() {
+        #expect(artistCreditMatches("Marillion", "marillion"))
+    }
+
+    @Test func punctuationIsIgnored() {
+        #expect(artistCreditMatches("AC/DC", "ACDC"))
+        #expect(artistCreditMatches("Blue Öyster Cult", "BlueÖysterCult"))
+    }
+
+    // The ordinary case: an external source keeps its accents, the tag does not.
+    @Test func diacriticsFold() {
+        #expect(artistCreditMatches("Motörhead", "Motorhead"))
+        #expect(artistCreditMatches("Blue Öyster Cult", "Blue Oyster Cult"))
+    }
+
+    // Mojibake: the two sides disagree about *which* accented letter it is, so
+    // folding gives i-vs-o and still misses. Dropping non-ASCII letters leaves
+    // "blueystercult" on both sides.
+    @Test func mojibakeMatchesByDroppingNonASCII() {
+        #expect(artistCreditMatches("Blue Îyster Cult", "Blue Öyster Cult"))
+    }
+
+    @Test func substringEitherWay() {
+        #expect(artistCreditMatches("Marillion feat. Fish", "Marillion"))
+        #expect(artistCreditMatches("Marillion", "Marillion feat. Fish"))
+    }
+
+    @Test func unrelatedArtistsDoNotMatch() {
+        #expect(!artistCreditMatches("Marillion", "Metallica"))
+        #expect(!artistCreditMatches("", "Marillion"))
+        #expect(!artistCreditMatches("Marillion", ""))
+    }
+
+    // The lossy ASCII-only comparison is length-guarded, so two short names
+    // cannot collide once their accented letters are dropped.
+    @Test func shortNamesDoNotCollideThroughTheLossyPath() {
+        #expect(!artistCreditMatches("Ö", "A"))
+        #expect(!artistCreditMatches("Öd", "Ad"))
+    }
+}
+
 @Suite struct ArtCacheKeyTests {
     @Test func trimsWhitespace() {
         #expect(artCacheKey(artist: " The Beatles ", album: "\tAbbey Road\n") == "the beatles|abbey road")
@@ -1108,6 +1203,26 @@ import Testing
 }
 
 // MARK: - Edition qualifiers (external lookups only)
+
+@Suite struct NormalizedForLookupTests {
+    // A real tag in this library reads "Blue  Oyster Cult" with two spaces,
+    // which otherwise survives into the Wikipedia URL and the MusicBrainz query.
+    @Test func whitespaceRunsCollapse() {
+        #expect("Blue  Oyster Cult".normalizedForLookup == "Blue Oyster Cult")
+        #expect("Blue\t Oyster   Cult".normalizedForLookup == "Blue Oyster Cult")
+        #expect("  Marillion  ".normalizedForLookup == "Marillion")
+    }
+
+    @Test func sortOrderArticleStillMoves() {
+        #expect("Beatles, The".normalizedForLookup == "The Beatles")
+        #expect("Beatles,  The".normalizedForLookup == "The Beatles")
+    }
+
+    @Test func punctuationFoldingUnchanged() {
+        #expect("Peace Sells\u{2026}".normalizedForLookup == "Peace Sells...")
+        #expect("1967\u{2013}1970".normalizedForLookup == "1967-1970")
+    }
+}
 
 @Suite struct AlbumLookupTitleTests {
     @Test func bitRemaster() {

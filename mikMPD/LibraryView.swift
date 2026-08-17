@@ -217,7 +217,7 @@ struct AlbumDetailView: View {
     @State private var wiki:String?=nil;@State private var wikiLoading=false;@State private var expanded=false
     @State private var addRequest:AddToPlaylistRequest?=nil
     @State private var mergedTags:[String]=[]  // >1 when sibling disc variants were merged
-    var displayArtist:String{ artist ?? songs.first?.artist ?? "" }
+    var displayArtist:String{ artist ?? songs.first?.displayArtist ?? "" }
     // Show the stripped base title only when variants really merged, so an album
     // legitimately named like a disc marker keeps its raw name.
     var displayAlbum:String{ mergedTags.count > 1 ? albumBaseAndDisc(album).base : album }
@@ -868,7 +868,7 @@ struct SongRow: View {
             if !song.track.isEmpty { Text(song.track.components(separatedBy:"/").first ?? song.track).font(.caption2).foregroundStyle(.secondary).frame(minWidth:24,alignment:.trailing) }
             VStack(alignment:.leading,spacing:1){
                 Text(song.displayTitle).font(.subheadline).lineLimit(1)
-                if !song.artist.isEmpty { Text(song.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+                if !song.displayArtist.isEmpty { Text(song.displayArtist).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
             }
             Spacer()
             if isCurrentlyPlaying {

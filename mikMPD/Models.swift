@@ -300,6 +300,40 @@ nonisolated func titleTokensMatch(candidate: String, query: String) -> Bool {
     return hits * 3 >= queryTokens.count * 2 && hits >= 2
 }
 
+/// Two comparison forms for an artist name, letters only and lowercased:
+/// `folded` has diacritics folded to ASCII, `asciiOnly` has every non-ASCII
+/// letter dropped.
+///
+/// Both are needed. Folding handles the ordinary disagreement between a tag and
+/// an external source ("Motorhead" vs "Motörhead"). Dropping handles *mojibake*,
+/// where the two sides disagree about which accented letter it is: this library
+/// holds "Blue Îyster Cult", a mangling of "Blue Öyster Cult", where folding
+/// gives i-vs-o and still misses, while dropping leaves "blueystercult" on both
+/// sides. The previous comparison used `filter(\.isLetter)`, which keeps "ö" and
+/// "î" — it stripped punctuation but preserved the very characters in dispute.
+nonisolated func artistFingerprints(_ s: String) -> (folded: String, asciiOnly: String) {
+    let letters = s.lowercased().filter(\.isLetter)
+    // `asciiOnly` drops from the *unfolded* letters, deliberately. Folding first
+    // would turn "î" into an ASCII "i" that then survives the drop, leaving
+    // i-vs-o against "ö" — which is exactly the case this form exists for.
+    return (letters.folding(options: .diacriticInsensitive, locale: nil),
+            letters.filter(\.isASCII))
+}
+
+/// Whether two artist names plausibly name the same artist. Containment either
+/// way, so "ACDC" still matches "AC/DC" and "Marillion" matches
+/// "Marillion feat. Fish".
+///
+/// The lossy `asciiOnly` comparison is length-guarded: dropping accented letters
+/// shortens a name, and two short unrelated names could otherwise collide.
+nonisolated func artistCreditMatches(_ a: String, _ b: String) -> Bool {
+    let x = artistFingerprints(a), y = artistFingerprints(b)
+    guard !x.folded.isEmpty, !y.folded.isEmpty else { return false }
+    if x.folded.contains(y.folded) || y.folded.contains(x.folded) { return true }
+    guard x.asciiOnly.count >= 6, y.asciiOnly.count >= 6 else { return false }
+    return x.asciiOnly.contains(y.asciiOnly) || y.asciiOnly.contains(x.asciiOnly)
+}
+
 nonisolated enum PlaybackSourceKind {
     case library
     case radio
@@ -334,6 +368,17 @@ nonisolated(unsafe) let mpdDateParser = ISO8601DateFormatter()
 /// Format-only; called on the main actor (loadRecentlyAdded cutoff string).
 nonisolated(unsafe) let mpdDateFormatter = ISO8601DateFormatter()
 
+/// First non-blank of two tags. A present-but-blank tag counts as **absent**: a
+/// chain that stops at "" renders an empty cell, which reads as a rendering
+/// fault rather than as missing data.
+///
+/// Returns the *original* value, deliberately untrimmed. Trimming here would
+/// change `groupingArtist`, which feeds `artCacheKey`, and silently orphan the
+/// cached art of every file with a padded tag.
+nonisolated func tagOr(_ primary: String, _ fallback: String) -> String {
+    primary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? fallback : primary
+}
+
 nonisolated struct MPDSong: Identifiable, Equatable {
     var file:     String = ""
     var title:    String = ""
@@ -356,8 +401,22 @@ nonisolated struct MPDSong: Identifiable, Equatable {
     var effectiveDisc: Int { discNumber > 0 ? discNumber : (albumBaseAndDisc(album).disc ?? 0) }
     /// Album-identity artist: the albumartist tag when present (keeps
     /// compilations together), else the plain artist.
-    var groupingArtist: String { albumArtist.isEmpty ? artist : albumArtist }
-    var artKey: String { artCacheKey(artist: artist, album: album) }
+    var groupingArtist: String { tagOr(albumArtist, artist) }
+    /// Artist for display and for external lookups: the track artist, else the
+    /// album artist. Mirror image of `groupingArtist`, so the two agree on any
+    /// file carrying only one of the tags. Files with an `AlbumArtist` and no
+    /// `Artist` are common on rips where only the album-level tag was written;
+    /// those used to read as "Unknown Artist" in the queue and every track list
+    /// while the album page — which groups by albumartist — showed the name fine,
+    /// so the name was present in the library and absent in the app. It matters
+    /// beyond display too: this is what is sent to Wikipedia, MusicBrainz and
+    /// LRCLIB, so the fallback turns a guaranteed-miss lookup into one that can
+    /// match.
+    var displayArtist: String { tagOr(artist, albumArtist) }
+    /// Keyed on `groupingArtist`, not the raw `artist` tag: album rows come from
+    /// `list album group albumartist`, so a compilation track keyed by its own
+    /// artist landed in a different cache entry than its own album's tile.
+    var artKey: String { artCacheKey(artist: groupingArtist, album: album) }
     var sourceKind: PlaybackSourceKind {
         let trimmedFile = file.trimmingCharacters(in: .whitespacesAndNewlines)
         let lowercasedFile = trimmedFile.lowercased()
@@ -523,8 +582,10 @@ nonisolated struct RecentlyPlayedRecorder {
         let threshold = song.duration > 0 ? min(30, max(5, song.duration / 2)) : 30
         guard accumulated >= threshold else { return nil }
         committed = true
+        // `groupingArtist`: history rows show album tiles keyed by `artCacheKey`,
+        // so the artist stored here has to be the one that key is built from.
         return RecentlyPlayedEntry(file: song.file, title: song.displayTitle,
-                                   artist: song.artist, album: song.album, playedAt: now)
+                                   artist: song.groupingArtist, album: song.album, playedAt: now)
     }
 }
 

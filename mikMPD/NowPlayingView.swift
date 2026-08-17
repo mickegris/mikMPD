@@ -375,9 +375,9 @@ struct NowPlayingView: View {
     var songInfo: some View {
         VStack(spacing: 4) {
             MarqueeText(text: song.displayTitle, font: .title2.bold(), color: .primary)
-            if !song.artist.isEmpty {
-                NavigationLink(destination: ArtistDetailView(artist: song.artist)) {
-                    Text(song.artist)
+            if !song.displayArtist.isEmpty {
+                NavigationLink(destination: ArtistDetailView(artist: song.displayArtist)) {
+                    Text(song.displayArtist)
                         .font(.subheadline).foregroundStyle(.secondary)
                         .underline()
                 }
@@ -386,7 +386,7 @@ struct NowPlayingView: View {
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             if !song.album.isEmpty {
-                NavigationLink(destination: AlbumDetailView(album: song.album, artist: song.artist.isEmpty ? nil : song.artist)) {
+                NavigationLink(destination: AlbumDetailView(album: song.album, artist: song.displayArtist.isEmpty ? nil : song.displayArtist)) {
                     MarqueeText(text: song.album, font: .caption, color: .secondary, underlined: true)
                 }
             }

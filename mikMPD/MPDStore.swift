@@ -1469,9 +1469,13 @@ final class MPDStore: ObservableObject {
 
     func fetchArtIfNeeded(for song: MPDSong) { fetchArt(for: song) }
 
+    /// Art for an album known only by name — grid tiles and list rows, whose
+    /// artist comes from `list album group albumartist`. Set it as the
+    /// albumartist so `artKey` (which keys on `groupingArtist`) agrees with the
+    /// key a real song from that album produces.
     func fetchArtIfNeeded(artist: String, album: String) {
         var song = MPDSong()
-        song.artist = artist
+        song.albumArtist = artist
         song.album = album
         fetchArt(for: song)
     }
@@ -1488,7 +1492,9 @@ final class MPDStore: ObservableObject {
             lyricsState = .unavailable; return
         }
         let title  = song.title.isEmpty ? song.displayTitle : song.title
-        let artist = song.artist, album = song.album, dur = song.duration
+        // LRCLIB matches on the performing artist; the fallback keeps
+        // albumartist-only files from sending a blank artist and always missing.
+        let artist = song.displayArtist, album = song.album, dur = song.duration
         lyricsState = .loading
         Task { [weak self] in
             let result = await LyricsService.shared.fetch(artist: artist, title: title, album: album, duration: dur)
@@ -1512,7 +1518,10 @@ final class MPDStore: ObservableObject {
         guard !Self.hasRecentMiss(key: key) else { return }
         artPending.insert(key)
         let file = song.file
-        let artist = song.artist, album = song.album
+        // Must be the same artist `artKey` was built from, or the lookup and the
+        // cache entry it fills disagree — and it is the right one to ask about
+        // anyway: cover art belongs to the album, not to a guest track artist.
+        let artist = song.groupingArtist, album = song.album
         Task { [weak self] in
             guard let self else { return }
             // Bound how many fetches run at once — a grid of 800 tiles otherwise
@@ -1555,10 +1564,23 @@ final class MPDStore: ObservableObject {
         await withCheckedContinuation { cont in
             Q.async { [weak self] in
                 guard let self else { cont.resume(returning: ""); return }
-                var cmd = "find album \"\(album.esc)\""
-                if !artist.isEmpty { cmd += " artist \"\(artist.esc)\"" }
-                cmd += " window 0:1"
-                let file = (try? self.socket.command(cmd))?.first?["file"] ?? ""
+                func probe(_ tag: String?) -> String {
+                    var cmd = "find album \"\(album.esc)\""
+                    if let tag, !artist.isEmpty { cmd += " \(tag) \"\(artist.esc)\"" }
+                    cmd += " window 0:1"
+                    return (try? self.socket.command(cmd))?.first?["file"] ?? ""
+                }
+                // Callers hand us whichever artist their row carries. Album rows
+                // and grid tiles come from `list album group albumartist`, so a
+                // filter on `artist` matches nothing on any album where the two
+                // tags differ — every compilation, and every album with guest
+                // artists. That failed silently: no representative file meant no
+                // readpicture/albumart attempt at all, and the fetch fell through
+                // to MusicBrainz. The retry only costs a round trip in the case
+                // that previously returned nothing.
+                var file = probe("artist")
+                if file.isEmpty, !artist.isEmpty { file = probe("albumartist") }
+                if file.isEmpty, !artist.isEmpty { file = probe(nil) }
                 cont.resume(returning: file)
             }
         }
@@ -1747,7 +1769,7 @@ final class MPDStore: ObservableObject {
         guard isPhoneStreaming else { return }
         var info = [String: Any]()
         info[MPMediaItemPropertyTitle] = currentSong.displayTitle
-        info[MPMediaItemPropertyArtist] = currentSong.artist
+        info[MPMediaItemPropertyArtist] = currentSong.displayArtist
         info[MPMediaItemPropertyAlbumTitle] = currentSong.album
         info[MPMediaItemPropertyPlaybackDuration] = duration
         info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = elapsed
@@ -1794,9 +1816,8 @@ final class MPDStore: ObservableObject {
             // 3. Album only — handles misspelled artists like "ACDC" for "AC/DC"
             "release:\"\(luceneEscape(album))\"",
         ]
-        let strippedArtist = artist.lowercased().filter(\.isLetter)
         for query in queries {
-            let mbids = await searchMusicBrainz(query: query, expectedArtist: strippedArtist, expectedAlbum: album)
+            let mbids = await searchMusicBrainz(query: query, expectedArtist: artist, expectedAlbum: album)
             for mbid in mbids {
                 if let img = await fetchCoverArt(mbid: mbid) { return img }
             }
@@ -1805,7 +1826,8 @@ final class MPDStore: ObservableObject {
     }
 
     /// Search MusicBrainz for releases. Returns MBIDs of matching releases (up to 5).
-    /// When `expectedArtist` is non-empty, filters to releases whose artist matches;
+    /// When `expectedArtist` is non-empty (a plain artist name, compared through
+    /// `artistCreditMatches`), filters to releases whose artist matches;
     /// release titles must also name the album (same word-level check as Wikipedia),
     /// so "Best of the Doors" can't return the debut album's cover.
     private static func searchMusicBrainz(query: String, expectedArtist: String, expectedAlbum: String) async -> [String] {
@@ -1840,8 +1862,7 @@ final class MPDStore: ObservableObject {
             if !expectedArtist.isEmpty,
                let credits = release["artist-credit"] as? [[String: Any]],
                let mbArtist = credits.first?["name"] as? String {
-                let strippedMB = mbArtist.lowercased().filter(\.isLetter)
-                guard strippedMB.contains(expectedArtist) || expectedArtist.contains(strippedMB) else { continue }
+                guard artistCreditMatches(mbArtist, expectedArtist) else { continue }
             }
             mbids.append(mbid)
         }
@@ -1872,6 +1893,11 @@ extension String {
             .replacingOccurrences(of: "\u{201D}", with: "\"")  // right double quote
             .replacingOccurrences(of: "\u{2013}", with: "-")   // en dash
             .replacingOccurrences(of: "\u{2014}", with: "-")   // em dash
+        // Collapse whitespace runs. A real tag in this library reads
+        // "Blue  Oyster Cult" with two spaces, which otherwise survives into the
+        // Wikipedia URL and the MusicBrainz query.
+        s = s.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         // Move trailing sort-order articles to front: "Name, The" → "The Name"
         for suffix in [", The", ", A", ", An"] {
             if s.lowercased().hasSuffix(suffix.lowercased()) {

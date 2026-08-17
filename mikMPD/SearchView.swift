@@ -286,16 +286,16 @@ struct SearchRow: View {
                     .lineLimit(1)
 
                 HStack(spacing: 4) {
-                    if !song.artist.isEmpty {
-                        NavigationLink(destination:ArtistDetailView(artist:song.artist)){
-                            Text(song.artist).foregroundStyle(.secondary).underline()
+                    if !song.displayArtist.isEmpty {
+                        NavigationLink(destination:ArtistDetailView(artist:song.displayArtist)){
+                            Text(song.displayArtist).foregroundStyle(.secondary).underline()
                         }.buttonStyle(.plain)
                     }
-                    if !song.artist.isEmpty && !song.album.isEmpty {
+                    if !song.displayArtist.isEmpty && !song.album.isEmpty {
                         Text("·").foregroundStyle(.secondary)
                     }
                     if !song.album.isEmpty {
-                        NavigationLink(destination:AlbumDetailView(album:song.album,artist:song.artist.isEmpty ? nil : song.artist)){
+                        NavigationLink(destination:AlbumDetailView(album:song.album,artist:song.displayArtist.isEmpty ? nil : song.displayArtist)){
                             Text(song.album).foregroundStyle(.secondary).underline()
                         }.buttonStyle(.plain)
                     }
