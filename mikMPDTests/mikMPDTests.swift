@@ -881,6 +881,42 @@ import Testing
 
 // MARK: - Recently played recorder
 
+@Suite struct ActiveLyricLineTests {
+    private let lines = [
+        LyricLine(secs: 10, text: "first"),
+        LyricLine(secs: 20, text: "second"),
+        LyricLine(secs: 30, text: "third"),
+    ]
+
+    // Real tracks routinely open with 20–30 s of intro, so this is the normal
+    // opening state rather than an edge case.
+    @Test func beforeTheFirstLineNothingIsActive() {
+        #expect(activeLyricLine(lines, elapsed: 0) == nil)
+        #expect(activeLyricLine(lines, elapsed: 9) == nil)
+    }
+
+    @Test func betweenLinesHoldsThePrevious() {
+        #expect(activeLyricLine(lines, elapsed: 15) == 0)
+        #expect(activeLyricLine(lines, elapsed: 25) == 1)
+    }
+
+    @Test func pastTheLastLineHoldsIt() {
+        #expect(activeLyricLine(lines, elapsed: 300) == 2)
+    }
+
+    @Test func emptyInput() {
+        #expect(activeLyricLine([], elapsed: 42) == nil)
+    }
+
+    // The offset must DELAY the advance. A flipped sign makes the highlight lead
+    // the song and still looks plausible, so pin the direction here.
+    @Test func syncOffsetDelaysRatherThanLeads() {
+        #expect(LyricsService.syncOffset > 0)
+        #expect(activeLyricLine(lines, elapsed: 10.2) == nil)   // not yet: 10.2 - 0.5 < 10
+        #expect(activeLyricLine(lines, elapsed: 10.6) == 0)     // now: 10.6 - 0.5 > 10
+    }
+}
+
 @Suite struct RecentlyPlayedRecorderTests {
     private let t0 = Date(timeIntervalSince1970: 1_000_000)
 

@@ -17,6 +17,10 @@ struct NowPlayingView: View {
     enum Pane { case art, lyrics, queue }
     @State private var pane: Pane = .art
 
+    // Synced lyrics keep the active line centered while this is on. View-local
+    // and unpersisted on purpose — see `lyricsFollowToggle`.
+    @State private var lyricsFollow = true
+
     // Presents the shared "Add to Playlist" sheet for the current song
     @State private var addRequest: AddToPlaylistRequest?
 
@@ -310,6 +314,12 @@ struct NowPlayingView: View {
             RoundedRectangle(cornerRadius: 14).fill(Color(.systemGray6))
             lyricsContent.padding(16)
         }
+        .overlay(alignment: .bottomTrailing) {
+            lyricsFollowToggle.padding(8)
+        }
+        // Following is per-track, not a stored preference: it is "how I want to
+        // read *this* song". A new song starts following again.
+        .onChange(of: store.currentSongID) { _, _ in lyricsFollow = true }
     }
 
     @ViewBuilder
@@ -345,10 +355,16 @@ struct NowPlayingView: View {
         }
     }
 
-    /// Scrolling synced lyrics with the active line highlighted, kept centered.
+    /// Scrolling synced lyrics with the active line highlighted.
+    ///
+    /// Following is opt-out: while `lyricsFollow` is on, the pane keeps the
+    /// active line centered, which is what makes synced lyrics worth having and
+    /// also what makes the pane unreadable anywhere else — scrolling back to an
+    /// earlier verse used to survive only until the song reached the next line.
+    /// The highlight stays in both modes: scrolled away, it is the only
+    /// indication of where the song actually is.
     func syncedLyricsView(_ lines: [LyricLine]) -> some View {
-        let t = store.elapsed - LyricsService.syncOffset
-        let active = lines.lastIndex { $0.secs <= t }
+        let active = activeLyricLine(lines, elapsed: store.elapsed)
         return ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
@@ -364,11 +380,48 @@ struct NowPlayingView: View {
             }
             .animation(.easeInOut(duration: 0.2), value: active)
             .onChange(of: active) { _, newValue in
-                guard let newValue else { return }
+                guard lyricsFollow, let newValue else { return }
                 withAnimation(.easeInOut(duration: 0.3)) {
                     proxy.scrollTo(newValue, anchor: .center)
                 }
             }
+            // Re-enabling has to snap now, not at the next line change —
+            // otherwise turning Sync back on appears to do nothing for seconds.
+            .onChange(of: lyricsFollow) { _, following in
+                guard following, let active else { return }
+                withAnimation(.easeInOut(duration: 0.3)) {
+                    proxy.scrollTo(active, anchor: .center)
+                }
+            }
+        }
+    }
+
+    /// Sync/Scroll switch, shown only when the current lyrics are synced —
+    /// plain lyrics have no autoscroll to disable, so the button would be inert.
+    ///
+    /// Deliberately not automatic: detecting a manual scroll and stopping there
+    /// feeds back on itself, because the scroll observer also fires for the
+    /// pane's own programmatic scrolling, so it switches itself off immediately.
+    @ViewBuilder
+    var lyricsFollowToggle: some View {
+        if case .loaded(let lyrics) = store.lyricsState,
+           let synced = lyrics.synced, !synced.isEmpty, !lyrics.instrumental {
+            Button {
+                lyricsFollow.toggle()
+                Haptics.tap()
+            } label: {
+                Label(lyricsFollow ? "Sync" : "Scroll",
+                      systemImage: lyricsFollow ? "arrow.down.circle.fill" : "hand.draw")
+                    .font(.caption2)
+                    .labelStyle(.titleAndIcon)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(.thinMaterial, in: Capsule())
+                    .foregroundStyle(lyricsFollow ? Color.accentColor : Color.secondary)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(lyricsFollow ? "Following the song; tap to scroll freely"
+                                             : "Scrolling freely; tap to follow the song")
         }
     }
 
