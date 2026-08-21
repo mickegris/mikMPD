@@ -369,7 +369,11 @@ struct AlbumDetailView: View {
             mergedTags = [album]
             store.compilationSongs(album: album, base: base) { found in
                 songs = dedupedAlbumTracks(found); loading = false
-                if let s = songs.first { store.fetchArtIfNeeded(artist: base, album: album) }
+                // The compilation variant, not the plain one: both key on the
+                // directory, but only this one keeps that path out of the
+                // MusicBrainz query, where it matches nothing and would record
+                // a 7-day miss under the key the header art also uses.
+                if !songs.isEmpty { store.fetchArtIfNeeded(compilationBase: base, album: album) }
                 loadWiki()
             }
             return
