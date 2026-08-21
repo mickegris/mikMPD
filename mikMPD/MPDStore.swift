@@ -852,6 +852,57 @@ final class MPDStore: ObservableObject {
         }
     }
 
+    /// Resolve compilations for a small, explicit set of album rows.
+    ///
+    /// `collapseCompilations` decides candidacy from the rows themselves — an
+    /// album owned by more than one artist — which works for the Albums tab
+    /// because `list album group albumartist` yields one row per album artist.
+    /// **Search never produces those rows**: it derives an album's artist from a
+    /// single representative track, so a compilation arrives as one row credited
+    /// to whichever track came first, and there is nothing to collapse. Here the
+    /// candidacy question is asked of the server instead, one cheap `list` per
+    /// album — affordable only because a search returns a handful of albums, and
+    /// bounded by `limit` so it stays that way.
+    func resolveCompilations(_ groups: [AlbumGroup], limit: Int = 15,
+                             completion: @escaping @MainActor ([AlbumGroup]) -> Void) {
+        let pending = groups.prefix(limit).filter {
+            $0.compilationBase == nil && compilationBaseCache[$0.groupingKey] == nil
+        }
+        guard !pending.isEmpty else { completion(applyingCompilationCache(groups)); return }
+        let names = pending.map { (key: $0.groupingKey, base: $0.base) }
+        Q.async { [weak self] in
+            guard let self else { return }
+            var found: [String: String?] = [:]
+            for (key, name) in names {
+                let artists = Set(((try? self.socket.listValues(
+                    "list albumartist album \"\(name.esc)\"", key: "albumartist")) ?? [])
+                    .filter { !$0.isEmpty })
+                guard artists.count > 1 else { found[key] = String?.none; continue }
+                let files = (try? self.socket.command(
+                    "find album \"\(name.esc)\" window 0:200"))?.compactMap { $0["file"] } ?? []
+                found[key] = compilationIdentity(files: files)
+            }
+            DispatchQueue.main.async {
+                for (k, v) in found { self.compilationBaseCache[k] = v }
+                completion(self.applyingCompilationCache(groups))
+            }
+        }
+    }
+
+    /// grouping key → shared directory, or nil for "checked, not a compilation".
+    private var compilationBaseCache: [String: String?] = [:]
+
+    private func applyingCompilationCache(_ groups: [AlbumGroup]) -> [AlbumGroup] {
+        groups.map { g in
+            guard g.compilationBase == nil,
+                  let base = compilationBaseCache[g.groupingKey] ?? nil else { return g }
+            var out = g
+            out.artist = variousArtistsLabel
+            out.compilationBase = base
+            return out
+        }
+    }
+
     /// Album grouping key → its file URIs, for compilation detection.
     private var compilationFileCache: [String: [String]] = [:]
 
