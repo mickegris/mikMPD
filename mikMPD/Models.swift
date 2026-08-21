@@ -413,6 +413,15 @@ nonisolated struct MPDSong: Identifiable, Equatable {
     /// LRCLIB, so the fallback turns a guaranteed-miss lookup into one that can
     /// match.
     var displayArtist: String { tagOr(artist, albumArtist) }
+    /// Where an artist *link* on a song row should navigate: the album artist.
+    ///
+    /// Deliberately different from `displayArtist`, which is what the row shows.
+    /// A track credited "Just D feat. Thåström" belongs to Just D's album; the
+    /// credit names a performance, not an artist with a page of their own, and
+    /// following it lands on a one-track album that is missing from the real one.
+    /// Show the credit, navigate to the artist.
+    var linkArtist: String { groupingArtist }
+
     /// Keyed on `groupingArtist`, not the raw `artist` tag: album rows come from
     /// `list album group albumartist`, so a compilation track keyed by its own
     /// artist landed in a different cache entry than its own album's tile.

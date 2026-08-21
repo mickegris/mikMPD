@@ -739,6 +739,41 @@ final class MPDStore: ObservableObject {
         }
     }
 
+    /// Artists for the Artists tab: every `albumartist`, plus the `artist` of
+    /// files that carry no albumartist at all.
+    ///
+    /// **Album artist is the artist half of an album's identity.** Listing
+    /// `artist` instead makes every per-track featuring credit a standalone
+    /// artist — "Just D feat. Thåström" appeared as its own row — and the album
+    /// it belongs to then splits in two: one page holding that single track, and
+    /// one silently missing it (Tre amigos showed 14 of its 15 tracks). The
+    /// Albums tab already groups on albumartist; this is the same rule applied
+    /// to the path that never got it.
+    ///
+    /// The fallback half is not optional. A library can hold files with an
+    /// artist and no albumartist, and dropping those would trade a visible
+    /// duplicate for a silent disappearance, which is worse. (In this library
+    /// the files lacking an albumartist are untagged entirely, so the fallback
+    /// contributes nothing — but that is a fact about the library, not a rule to
+    /// bake in.)
+    func listArtists(completion: @escaping @MainActor ([String]) -> Void) {
+        Q.async { [weak self] in
+            guard let self else { return }
+            var seen: Set<String> = []
+            var out: [String] = []
+            func add(_ values: [String]) {
+                for v in values where !v.isEmpty {
+                    if seen.insert(v.lowercased()).inserted { out.append(v) }
+                }
+            }
+            add((try? self.socket.listValues("list albumartist", key: "albumartist")) ?? [])
+            let noAlbumArtist = "(albumartist == \"\")"
+            add((try? self.socket.listValues("list artist \"\(noAlbumArtist.esc)\"", key: "artist")) ?? [])
+            let sorted = out.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+            DispatchQueue.main.async { completion(sorted) }
+        }
+    }
+
     func findSongs(tag: String, value: String, album: String? = nil, completion: @escaping @MainActor ([MPDSong]) -> Void) {
         Q.async { [weak self] in
             guard let self else { return }

@@ -323,6 +323,75 @@ import Testing
     }
 }
 
+@Suite struct LinkArtistTests {
+    private func song(artist: String, albumArtist: String) -> MPDSong {
+        var s = MPDSong(); s.artist = artist; s.albumArtist = albumArtist; return s
+    }
+
+    // The row shows the credit; the link goes to the artist whose album it is.
+    // Following the credit lands on a one-track album that is missing from the
+    // real one — the Tre amigos bug.
+    @Test func featuringCreditDisplaysButLinksToTheAlbumArtist() {
+        let s = song(artist: "Just D feat. Thåström", albumArtist: "Just D")
+        #expect(s.displayArtist == "Just D feat. Thåström")
+        #expect(s.linkArtist == "Just D")
+    }
+
+    @Test func withoutAnAlbumArtistTheLinkIsTheArtist() {
+        let s = song(artist: "Marillion", albumArtist: "")
+        #expect(s.displayArtist == "Marillion")
+        #expect(s.linkArtist == "Marillion")
+    }
+
+    @Test func blankAlbumArtistCountsAsAbsent() {
+        #expect(song(artist: "Marillion", albumArtist: "   ").linkArtist == "Marillion")
+    }
+
+    @Test func neitherTagLeavesBothEmpty() {
+        let s = song(artist: "", albumArtist: "")
+        #expect(s.linkArtist.isEmpty)
+        #expect(s.displayArtist.isEmpty)
+    }
+}
+
+@Suite struct ArtistListMergeTests {
+    // Mirrors MPDStore.listArtists: albumartist values first, then the artist of
+    // files with no albumartist, deduped case-insensitively, empties dropped,
+    // first-seen spelling preserved.
+    private func merge(_ groups: [[String]]) -> [String] {
+        var seen: Set<String> = []; var out: [String] = []
+        for g in groups { for v in g where !v.isEmpty {
+            if seen.insert(v.lowercased()).inserted { out.append(v) }
+        } }
+        return out
+    }
+
+    @Test func albumArtistsComeThroughUnchanged() {
+        #expect(merge([["Just D", "Marillion"], []]) == ["Just D", "Marillion"])
+    }
+
+    // The whole point: a per-track featuring credit is not an albumartist, so it
+    // never reaches the list.
+    @Test func featuringCreditIsNotAnArtist() {
+        let out = merge([["Just D"], []])
+        #expect(!out.contains("Just D feat. Thåström"))
+    }
+
+    // ...but an artist that exists only on files with no albumartist must not
+    // vanish. Dropping it would trade a visible duplicate for a silent absence.
+    @Test func artistOnlyFilesAreStillListed() {
+        #expect(merge([["Just D"], ["Some Bootleg Artist"]]) == ["Just D", "Some Bootleg Artist"])
+    }
+
+    @Test func caseInsensitiveDedupeKeepsTheFirstSpelling() {
+        #expect(merge([["TOOL"], ["Tool"]]) == ["TOOL"])
+    }
+
+    @Test func emptyValuesAreDropped() {
+        #expect(merge([["", "Just D"], [""]]) == ["Just D"])
+    }
+}
+
 @Suite struct ArtistCreditMatchTests {
     @Test func exactAndCaseInsensitive() {
         #expect(artistCreditMatches("Marillion", "marillion"))

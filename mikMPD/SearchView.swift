@@ -80,7 +80,8 @@ struct SearchView: View {
                 Section {
                     ForEach(albums, id: \.album) { item in
                         NavigationLink {
-                            AlbumDetailView(album: item.album, artist: item.artist)
+                            AlbumDetailView(album: item.album, artist: item.artist,
+                                            artistTag: "albumartist")
                         } label: {
                             let playing = isCurrentAlbum(rowArtist: item.artist,
                                                         rowAlbum: item.album,
@@ -260,7 +261,9 @@ struct SearchView: View {
         store.search(field: "any", query: query)
         store.searchPlaylists(query: query) { self.playlistMatches = $0 }
 
-        store.listTag("artist") { allArtists in
+        // Album artist, not artist: listing the raw `artist` tag surfaces every
+        // per-track featuring credit as its own artist and splits its album.
+        store.listArtists { allArtists in
             let matchingArtists = allArtists.filter { $0.localizedCaseInsensitiveContains(query) }
             self.artists = matchingArtists
 
@@ -269,7 +272,7 @@ struct SearchView: View {
 
             for artist in matchingArtists.prefix(10) {
                 group.enter()
-                store.listTag("album", filter: "artist", value: artist) { albums in
+                store.listTag("album", filter: "albumartist", value: artist) { albums in
                     for album in albums {
                         albumArtistPairs.append((artist: artist, album: album))
                     }
@@ -285,8 +288,11 @@ struct SearchView: View {
                     group.enter()
                     store.albumSongs(album: album) { songs in
                         if let firstSong = songs.first {
-                            if !albumArtistPairs.contains(where: { $0.album == album && $0.artist == firstSong.artist }) {
-                                albumArtistPairs.append((artist: firstSong.artist, album: album))
+                            // groupingArtist: keyed and navigated by the album's
+                            // artist, so a featuring track can't name the album.
+                            let owner = firstSong.groupingArtist
+                            if !albumArtistPairs.contains(where: { $0.album == album && $0.artist == owner }) {
+                                albumArtistPairs.append((artist: owner, album: album))
                             }
                         }
                         group.leave()
@@ -349,7 +355,8 @@ struct SearchRow: View {
 
                 HStack(spacing: 4) {
                     if !song.displayArtist.isEmpty {
-                        NavigationLink(destination:ArtistDetailView(artist:song.displayArtist)){
+                        // Credit shown, album artist navigated to — see MPDSong.linkArtist.
+                        NavigationLink(destination:ArtistDetailView(artist:song.linkArtist)){
                             Text(song.displayArtist).foregroundStyle(.secondary).underline()
                         }.buttonStyle(.plain)
                     }
@@ -357,7 +364,7 @@ struct SearchRow: View {
                         Text("·").foregroundStyle(.secondary)
                     }
                     if !song.album.isEmpty {
-                        NavigationLink(destination:AlbumDetailView(album:song.album,artist:song.displayArtist.isEmpty ? nil : song.displayArtist)){
+                        NavigationLink(destination:AlbumDetailView(album:song.album,artist:song.linkArtist.isEmpty ? nil : song.linkArtist,artistTag:"albumartist")){
                             Text(song.album).foregroundStyle(.secondary).underline()
                         }.buttonStyle(.plain)
                     }

@@ -392,12 +392,16 @@ struct ArtistListView: View {
                 } label: { Image(systemName: "arrow.up.arrow.down") }
             }
         }
-        .onAppear{ guard artists.isEmpty else{return}; store.listTag("artist"){artists=$0;loading=false} }
+        .onAppear{ guard artists.isEmpty else{return}; store.listArtists{artists=$0;loading=false} }
     }
 }
 struct ArtistDetailView: View {
     @EnvironmentObject var store: MPDStore
     let artist:String
+    /// Which tag this artist's content is scoped by. "albumartist" keeps an
+    /// album whole; "artist" is the fallback for an artist that exists only as a
+    /// track credit on files with no albumartist to group by.
+    @State private var scopeTag = "albumartist"
     @State private var albums:[String]=[];@State private var loading=true
     @State private var wiki:String?=nil;@State private var wikiLoading=false;@State private var expanded=false
     @State private var artistImage:UIImage?=nil
@@ -429,14 +433,14 @@ struct ArtistDetailView: View {
                 }
             }
             Section{
-                Button{ store.enqueueMatching(tag:"artist",value:artist,replace:true,playFirst:true) } label:{Label("Play All",systemImage:"play.fill").frame(maxWidth:.infinity)}.buttonStyle(.borderedProminent)
-                Button{ store.enqueueMatching(tag:"artist",value:artist) } label:{Label("Add All",systemImage:"plus").frame(maxWidth:.infinity)}.buttonStyle(.bordered)
+                Button{ store.enqueueMatching(tag:scopeTag,value:artist,replace:true,playFirst:true) } label:{Label("Play All",systemImage:"play.fill").frame(maxWidth:.infinity)}.buttonStyle(.borderedProminent)
+                Button{ store.enqueueMatching(tag:scopeTag,value:artist) } label:{Label("Add All",systemImage:"plus").frame(maxWidth:.infinity)}.buttonStyle(.bordered)
             }
             Section("Albums"){
                 if loading { HStack{Spacer();ProgressView();Spacer()} }
                 else {
                     ForEach(albumGroups,id:\.base){ g in
-                        NavigationLink(destination:AlbumDetailView(album:g.variants[0],artist:artist)){
+                        NavigationLink(destination:AlbumDetailView(album:g.variants[0],artist:artist,artistTag:scopeTag)){
                             HStack(spacing:10){
                                 ArtThumbByKey(artist:artist,album:g.variants[0],size:44).cornerRadius(4)
                                 Text(g.base.isEmpty ? "(no title)" : g.base)
@@ -457,8 +461,23 @@ struct ArtistDetailView: View {
     }
     func loadAlbums(){
         guard albums.isEmpty else { return }
-        store.listTag("album",filter:"artist",value:artist){albums=$0;loading=false}
-        store.listDiscCounts(filter:"artist",value:artist){tagDiscs=$0}
+        // Scope by albumartist so an album stays whole: filtering on `artist`
+        // drops any track whose artist carries a featuring credit, which is how
+        // Tre amigos came to show 14 of its 15 tracks.
+        store.listTag("album",filter:"albumartist",value:artist){ found in
+            guard found.isEmpty else {
+                albums = found; loading = false
+                store.listDiscCounts(filter:"albumartist",value:artist){tagDiscs=$0}
+                return
+            }
+            // Nothing under that albumartist: this artist exists only as a track
+            // credit on files that carry no albumartist, so `artist` is the only
+            // identity they have. It cannot reintroduce the split — such files
+            // are never part of an albumartist-tagged album.
+            scopeTag = "artist"
+            store.listTag("album",filter:"artist",value:artist){albums=$0;loading=false}
+            store.listDiscCounts(filter:"artist",value:artist){tagDiscs=$0}
+        }
     }
     func loadWiki(){
         guard wiki==nil,!wikiLoading else{return}; wikiLoading=true
