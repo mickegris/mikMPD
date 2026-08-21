@@ -791,6 +791,70 @@ final class MPDStore: ObservableObject {
     /// `artistTag` is "artist" for song-link navigation and "albumartist" when
     /// the album row came from the grouped album list — different tags for
     /// compilations, so the caller decides.
+    /// Every track of a compilation, selected by the directory its files share.
+    ///
+    /// No artist filter can do this: the tracks have no album artist in common —
+    /// that is what makes it a compilation — so `base` is the only handle. MPD's
+    /// filter is verified to work: `((album == "Jackie Brown") AND (base "…"))`
+    /// returns all 17 tracks.
+    func compilationSongs(album: String, base: String,
+                          completion: @escaping @MainActor ([MPDSong]) -> Void) {
+        Q.async { [weak self] in
+            guard let self else { return }
+            let filter = "((album == \"\(album.esc)\") AND (base \"\(base.esc)\"))"
+            let songs = (try? self.socket.command("find \"\(filter.esc)\""))?
+                .map { MPDSong($0) }.filter { !$0.file.isEmpty } ?? []
+            DispatchQueue.main.async { completion(sortedByDiscAndTrack(songs)) }
+        }
+    }
+
+    /// File URIs of an album, for compilation detection. Bounded — the caller
+    /// only needs enough paths to find a common directory.
+    func albumFiles(album: String, limit: Int = 200,
+                    completion: @escaping @MainActor ([String]) -> Void) {
+        Q.async { [weak self] in
+            guard let self else { return }
+            let files = (try? self.socket.command(
+                "find album \"\(album.esc)\" window 0:\(limit)"))?.compactMap { $0["file"] } ?? []
+            DispatchQueue.main.async { completion(files) }
+        }
+    }
+
+    /// Detect compilations among album rows, probing only the ambiguous ones.
+    /// Results are cached for the session — they change only on a DB update.
+    func collapseCompilations(_ groups: [AlbumGroup],
+                              completion: @escaping @MainActor ([AlbumGroup]) -> Void) {
+        var byBase: [String: Set<String>] = [:]
+        for g in groups { byBase[g.groupingKey, default: []].insert(g.artist.lowercased()) }
+        let candidates = groups
+            .filter { (byBase[$0.groupingKey]?.count ?? 0) > 1 }
+            .reduce(into: [String: String]()) { $0[$1.groupingKey] = $1.base }
+        guard !candidates.isEmpty else { completion(groups); return }
+
+        let known = compilationFileCache
+        let missing = candidates.filter { known[$0.key] == nil }
+        guard !missing.isEmpty else {
+            completion(collapsingCompilations(groups) { known[albumGroupingKey($0)] ?? [] })
+            return
+        }
+        Q.async { [weak self] in
+            guard let self else { return }
+            var found: [String: [String]] = [:]
+            for (key, name) in missing {
+                found[key] = (try? self.socket.command(
+                    "find album \"\(name.esc)\" window 0:200"))?.compactMap { $0["file"] } ?? []
+            }
+            DispatchQueue.main.async {
+                for (k, v) in found { self.compilationFileCache[k] = v }
+                let cache = self.compilationFileCache
+                completion(collapsingCompilations(groups) { cache[albumGroupingKey($0)] ?? [] })
+            }
+        }
+    }
+
+    /// Album grouping key → its file URIs, for compilation detection.
+    private var compilationFileCache: [String: [String]] = [:]
+
     func albumSongs(album: String, artist: String? = nil, artistTag: String = "artist", completion: @escaping @MainActor ([MPDSong]) -> Void) {
         Q.async { [weak self] in
             guard let self else { return }
@@ -1674,6 +1738,22 @@ final class MPDStore: ObservableObject {
         fetchArt(for: song)
     }
 
+    /// Art for a compilation, keyed on the directory its tracks share.
+    ///
+    /// The key has to be the directory — the displayed artist is a placeholder
+    /// shared with every other compilation — but the *lookup* must not use it:
+    /// a path matches no MusicBrainz artist credit, and these albums often have
+    /// no embedded picture either (Jackie Brown has neither `readpicture` nor a
+    /// cover file), so the internet is the only source left. An empty artist
+    /// makes it an album-only search, which is the right question for a
+    /// compilation anyway.
+    func fetchArtIfNeeded(compilationBase: String, album: String) {
+        var song = MPDSong()
+        song.albumArtist = compilationBase
+        song.album = album
+        fetchArt(for: song, lookupArtist: "")
+    }
+
     /// Fetch lyrics for the current song from LRCLIB. Prefetched on song change
     /// (like album art) so the Now Playing lyrics view is ready when toggled.
     /// A per-song token prevents a slow response from an old song overwriting a newer one.
@@ -1699,7 +1779,9 @@ final class MPDStore: ObservableObject {
         }
     }
 
-    private func fetchArt(for song: MPDSong) {
+    /// `lookupArtist` overrides what is sent to MPD's `find` and to MusicBrainz,
+    /// without touching the cache key. Only compilations pass it.
+    private func fetchArt(for song: MPDSong, lookupArtist: String? = nil) {
         let key = song.artKey
         guard !key.isEmpty, albumArtCache[key] == nil, !artPending.contains(key) else { return }
         // Check disk cache first
@@ -1715,7 +1797,8 @@ final class MPDStore: ObservableObject {
         // Must be the same artist `artKey` was built from, or the lookup and the
         // cache entry it fills disagree — and it is the right one to ask about
         // anyway: cover art belongs to the album, not to a guest track artist.
-        let artist = song.groupingArtist, album = song.album
+        let artist = lookupArtist ?? song.groupingArtist
+        let album = song.album
         Task { [weak self] in
             guard let self else { return }
             // Bound how many fetches run at once — a grid of 800 tiles otherwise

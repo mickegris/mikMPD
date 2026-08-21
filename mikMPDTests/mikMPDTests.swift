@@ -206,6 +206,149 @@ import Testing
     }
 }
 
+@Suite struct CompilationIdentityTests {
+    // 17 tracks, 14 artists, one directory → one compilation.
+    @Test func oneDirectoryIsACompilation() {
+        let files = (1...17).map { "itunes/Compilations/Jackie Brown/\($0) t.m4a" }
+        #expect(compilationIdentity(files: files) == "itunes/Compilations/Jackie Brown")
+    }
+
+    // THE regression test. Dylan's and RHCP's "Greatest Hits" are two different
+    // albums that share a title; they must never merge. Assert it by name so a
+    // future loosening cannot quietly do it.
+    @Test func twoDirectoriesAreTwoAlbumsNotACompilation() {
+        #expect(compilationIdentity(files: [
+            "Bob Dylan/Greatest Hits/01 a.flac",
+            "Red Hot Chili Peppers - Discography/(2003) Greatest Hits/01 b.flac",
+        ]) == nil)
+    }
+
+    @Test func multiDiscSetSharesItsParent() {
+        #expect(compilationIdentity(files: ["X/CD1/01.flac", "X/CD2/01.flac"]) == "X")
+    }
+
+    @Test func singleFileYieldsItsDirectory() {
+        #expect(compilationIdentity(files: ["A/B/one.flac"]) == "A/B")
+    }
+
+    // Sharing only the library root is not evidence of anything.
+    @Test func rootLevelFilesAreNotACompilation() {
+        #expect(compilationIdentity(files: ["a.flac", "b.flac"]) == nil)
+        #expect(compilationIdentity(files: []) == nil)
+    }
+
+    @Test func aPartialPrefixDoesNotCountAsShared() {
+        // "Abba" and "Abbey" share characters but not a directory component.
+        #expect(compilationIdentity(files: ["Abba/x/1.flac", "Abbey/x/1.flac"]) == nil)
+    }
+}
+
+@Suite struct CollapsingCompilationsTests {
+    private func group(_ artist: String, _ album: String) -> AlbumGroup {
+        AlbumGroup(artist: artist, base: album, variants: [album])
+    }
+
+    @Test func manyArtistsOneDirectoryCollapseToOneRow() {
+        let groups = ["Bobby Womack", "Johnny Cash", "Foxy Brown"].map { group($0, "Jackie Brown") }
+        let out = collapsingCompilations(groups) { _ in
+            ["itunes/Compilations/Jackie Brown/01 a.m4a",
+             "itunes/Compilations/Jackie Brown/02 b.m4a"]
+        }
+        #expect(out.count == 1)
+        #expect(out[0].artist == variousArtistsLabel)
+        #expect(out[0].compilationBase == "itunes/Compilations/Jackie Brown")
+        #expect(out[0].base == "Jackie Brown")
+    }
+
+    // Same shape, two directories: must stay two rows with their real artists.
+    @Test func sameTitleTwoDirectoriesStaysTwoRows() {
+        let groups = [group("Bob Dylan", "Greatest Hits"), group("Red Hot Chili Peppers", "Greatest Hits")]
+        let out = collapsingCompilations(groups) { _ in
+            ["Bob Dylan/Greatest Hits/01 a.flac", "RHCP/Greatest Hits/01 b.flac"]
+        }
+        #expect(out.count == 2)
+        #expect(out.allSatisfy { $0.compilationBase == nil })
+        #expect(out.map(\.artist).sorted() == ["Bob Dylan", "Red Hot Chili Peppers"])
+    }
+
+    // Disc variants of one artist's album share a directory but are not a
+    // compilation — one artist, so the pass must not touch them.
+    @Test func discVariantsOfOneArtistAreLeftAlone() {
+        let groups = [AlbumGroup(artist: "The Who", base: "Quadrophenia",
+                                 variants: ["Quadrophenia [Disc 1]", "Quadrophenia [Disc 2]"])]
+        let out = collapsingCompilations(groups) { _ in ["The Who/Quadrophenia/01.flac"] }
+        #expect(out.count == 1)
+        #expect(out[0].artist == "The Who")
+        #expect(out[0].compilationBase == nil)
+    }
+
+    @Test func ordinaryAlbumsPassThroughUntouched() {
+        let groups = [group("Marillion", "Misplaced Childhood"), group("Just D", "Tre amigos")]
+        let out = collapsingCompilations(groups) { _ in [] }
+        #expect(out.count == 2)
+        #expect(out.allSatisfy { $0.compilationBase == nil })
+    }
+
+    // The merged rows are the same album tag repeated once per track artist, not
+    // disc variants — counting them as variants rendered "14 discs" on screen.
+    @Test func mergingDoesNotInventDiscs() {
+        let groups = [group("A", "Comp"), group("B", "Comp"), group("C", "Comp")]
+        let out = collapsingCompilations(groups) { _ in ["d/1.flac", "d/2.flac"] }
+        #expect(out.count == 1)
+        #expect(out[0].variants == ["Comp"])
+        #expect(out[0].discCount == 1)
+    }
+
+    // A compilation that really does span discs keeps both names.
+    @Test func aGenuinelyMultiDiscCompilationKeepsItsDiscs() {
+        let groups = [AlbumGroup(artist: "A", base: "Comp", variants: ["Comp [Disc 1]"]),
+                      AlbumGroup(artist: "B", base: "Comp", variants: ["Comp [Disc 2]"])]
+        let out = collapsingCompilations(groups) { _ in ["d/1.flac", "d/2.flac"] }
+        #expect(out.count == 1)
+        #expect(out[0].variants.count == 2)
+        #expect(out[0].discCount == 2)
+    }
+}
+
+@Suite struct CompilationNowPlayingTests {
+    private func song(album: String, artist: String, file: String) -> MPDSong {
+        var s = MPDSong(); s.album = album; s.artist = artist; s.file = file; return s
+    }
+
+    // The row says "Various Artists", which matches no song's tags — so the
+    // match has to be the directory.
+    @Test func compilationRowMatchesByDirectory() {
+        let playing = song(album: "Jackie Brown", artist: "Bobby Womack",
+                           file: "itunes/Compilations/Jackie Brown/01 a.m4a")
+        #expect(isCurrentAlbum(rowArtist: variousArtistsLabel, rowAlbum: "Jackie Brown",
+                               compilationBase: "itunes/Compilations/Jackie Brown",
+                               current: playing))
+    }
+
+    @Test func aTrackOutsideTheDirectoryDoesNotMatch() {
+        let playing = song(album: "Jackie Brown", artist: "Bobby Womack",
+                           file: "Bobby Womack/Greatest/01 a.flac")
+        #expect(!isCurrentAlbum(rowArtist: variousArtistsLabel, rowAlbum: "Jackie Brown",
+                                compilationBase: "itunes/Compilations/Jackie Brown",
+                                current: playing))
+    }
+
+    // A directory that is a string prefix of another must not match.
+    @Test func aSiblingDirectoryWithASharedPrefixDoesNotMatch() {
+        let playing = song(album: "Jackie Brown", artist: "X",
+                           file: "itunes/Compilations/Jackie Brown 2/01 a.m4a")
+        #expect(!isCurrentAlbum(rowArtist: variousArtistsLabel, rowAlbum: "Jackie Brown",
+                                compilationBase: "itunes/Compilations/Jackie Brown",
+                                current: playing))
+    }
+
+    @Test func nilBaseFallsBackToTheArtistScopedRule() {
+        let playing = song(album: "Tre amigos", artist: "Just D", file: "Just D/Tre amigos/01.flac")
+        #expect(isCurrentAlbum(rowArtist: "Just D", rowAlbum: "Tre amigos",
+                               compilationBase: nil, current: playing))
+    }
+}
+
 @Suite struct CurrentAlbumMatchTests {
     private func playing(artist: String = "", albumArtist: String = "", album: String,
                          file: String = "x/y.flac") -> MPDSong {

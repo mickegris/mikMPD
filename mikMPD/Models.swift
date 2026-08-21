@@ -190,7 +190,13 @@ nonisolated struct AlbumGroup: Identifiable, Equatable {
     var base: String
     var variants: [String]
     var tagDiscs: Int? = nil          // from listDiscCounts; nil = not yet fetched
-    var id: String { "\(artist.lowercased())|\(base)" }
+    /// Set when this row is a compilation: the directory its tracks share. Nil
+    /// for every ordinary album, so nothing else changes shape.
+    var compilationBase: String? = nil
+    var id: String { "\(compilationBase ?? artist.lowercased())|\(base)" }
+    /// Artist half of the art-cache key. A compilation keys on its directory,
+    /// since its displayed artist is a placeholder shared with every other one.
+    var artKeyArtist: String { compilationBase ?? artist }
     /// Punctuation-folded key; use this to look up disc maps, never `base` directly.
     var groupingKey: String { albumGroupingKey(base) }
     var discCount: Int { albumDiscCount(variants: variants, tagDiscs: tagDiscs) }
@@ -377,6 +383,83 @@ nonisolated(unsafe) let mpdDateFormatter = ISO8601DateFormatter()
 /// cached art of every file with a padded tag.
 nonisolated func tagOr(_ primary: String, _ fallback: String) -> String {
     primary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? fallback : primary
+}
+
+/// Placeholder shown where a compilation's many track artists would otherwise
+/// go. Never a real tag value, so it must never be used as a query filter.
+nonisolated let variousArtistsLabel = "Various Artists"
+
+/// Collapse the rows of one album that split only because its tracks carry
+/// different album artists, when the tracks turn out to share a directory.
+///
+/// Applied *after* `groupAlbumVariants` rather than inside it, deliberately:
+/// `AlbumGroup`'s artist-scoped key is relied on everywhere and must not change
+/// shape. `filesFor` is called only for base names owned by more than one
+/// artist — five albums in this library — so the probe cost is bounded.
+nonisolated func collapsingCompilations(_ groups: [AlbumGroup],
+                                        filesFor: (String) -> [String]) -> [AlbumGroup] {
+    var byBase: [String: [Int]] = [:]
+    for (i, g) in groups.enumerated() { byBase[g.groupingKey, default: []].append(i) }
+
+    var replacement: [Int: AlbumGroup] = [:]
+    var drop: Set<Int> = []
+    for (_, idxs) in byBase where idxs.count > 1 {
+        let names = Set(idxs.map { groups[$0].artist.lowercased() })
+        guard names.count > 1 else { continue }          // same artist, just disc variants
+        guard let dir = compilationIdentity(files: filesFor(groups[idxs[0]].base)),
+              !dir.isEmpty else { continue }             // two directories → two albums
+        var merged = groups[idxs[0]]
+        merged.artist = variousArtistsLabel
+        merged.compilationBase = dir
+        // Unique the names: a compilation's rows are the *same* album tag
+        // repeated once per track artist, not disc variants, and counting them
+        // as variants renders "14 discs". A compilation that genuinely spans
+        // discs still keeps its distinct "[Disc 1]"/"[Disc 2]" names.
+        var seenNames: Set<String> = []
+        merged.variants = idxs.flatMap { groups[$0].variants }
+            .filter { seenNames.insert($0.lowercased()).inserted }
+        replacement[idxs[0]] = merged
+        for i in idxs.dropFirst() { drop.insert(i) }
+    }
+    guard !replacement.isEmpty else { return groups }
+    return groups.enumerated().compactMap { i, g in
+        drop.contains(i) ? nil : (replacement[i] ?? g)
+    }
+}
+
+/// The directory an album's tracks share, or nil when they share only the
+/// library root.
+///
+/// This is how a *compilation* is told apart from two different albums that
+/// happen to share a title, and the distinction cannot be made from tags: a
+/// compilation's files often carry no AlbumArtist at all, and MPD substitutes
+/// each track's Artist, so "Jackie Brown" looks like 14 albums by 14 artists.
+/// The filesystem knows better. Measured over this whole library, only five
+/// albums carry more than one album artist, and the directory settles every one:
+///
+/// - `itunes/Compilations/Jackie Brown` — 17 files, 14 artists, one directory →
+///   one compilation.
+/// - `Bob Dylan/Greatest Hits` + `Red Hot Chili Peppers …/… Greatest Hits` —
+///   two artists, two directories → two albums, correctly left alone.
+///
+/// A multi-disc set split across `X/CD1` and `X/CD2` returns `X`, which is also
+/// correct. Returns nil for an empty list, or when the common prefix is empty —
+/// sharing only the root is not evidence of anything.
+nonisolated func compilationIdentity(files: [String]) -> String? {
+    let dirs = files.filter { !$0.isEmpty }.map { uri -> [String] in
+        var parts = uri.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
+        if !parts.isEmpty { parts.removeLast() }   // drop the filename
+        return parts
+    }
+    guard let first = dirs.first, !dirs.isEmpty else { return nil }
+    var common = first
+    for d in dirs.dropFirst() {
+        var i = 0
+        while i < common.count, i < d.count, common[i] == d[i] { i += 1 }
+        common = Array(common.prefix(i))
+        if common.isEmpty { return nil }
+    }
+    return common.isEmpty ? nil : common.joined(separator: "/")
 }
 
 /// How to ask MPD for recently added songs, best first.

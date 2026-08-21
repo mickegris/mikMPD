@@ -74,6 +74,8 @@ struct AlbumListView: View {
     @AppStorage("librarySortAlbums") private var albumSort: AlbumSort = .artistAsc
     @AppStorage("libraryAlbumLayout") private var useGrid: Bool = false
     @State private var discMap: [String: Int] = [:]
+    /// album grouping key → shared directory, for rows detected as compilations
+    @State private var compilations: [String: String] = [:]
 
     var shown: [(artist: String, album: String)] {
         filter.isEmpty ? albums : albums.filter {
@@ -81,7 +83,13 @@ struct AlbumListView: View {
         }
     }
     var groups: [AlbumGroup] {
-        var gs = sortedAlbumGroups(groupAlbumVariants(shown), by: albumSort)
+        let collapsed = compilations.isEmpty ? groupAlbumVariants(shown)
+            : collapsingCompilations(groupAlbumVariants(shown)) { base in
+                // A non-empty stand-in is enough: the directory is already known,
+                // and compilationIdentity only needs files that share it.
+                compilations[albumGroupingKey(base)].map { ["\($0)/x"] } ?? []
+            }
+        var gs = sortedAlbumGroups(collapsed, by: albumSort)
         if !discMap.isEmpty {
             // Only apply tagDiscs when the base name is unambiguous (owned by exactly one
             // artist in the current view), so "Greatest Hits" by two artists never gets
@@ -132,13 +140,36 @@ struct AlbumListView: View {
         }
         .onAppear {
             guard albums.isEmpty else { return }
-            store.listAlbumsByArtist { albums = $0; loading = false }
+            store.listAlbumsByArtist { pairs in
+                albums = pairs
+                loading = false
+                // One probe pass over the handful of albums owned by more than
+                // one artist; the result is a key → directory map the `groups`
+                // computation applies without re-querying on every keystroke.
+                store.collapseCompilations(groupAlbumVariants(pairs)) { merged in
+                    compilations = merged.reduce(into: [:]) { out, g in
+                        if let base = g.compilationBase { out[g.groupingKey] = base }
+                    }
+                }
+            }
             store.listDiscCounts { discMap = $0 }
         }
     }
 
+    /// A compilation has no album artist to filter on, so it loads by directory.
+    private func albumSongs(_ g: AlbumGroup, then use: @escaping @MainActor ([MPDSong]) -> Void) {
+        if let base = g.compilationBase {
+            store.compilationSongs(album: g.base, base: base, completion: use)
+        } else {
+            store.albumSongs(album: g.variants[0],
+                             artist: g.artist.isEmpty ? nil : g.artist,
+                             artistTag: "albumartist", completion: use)
+        }
+    }
+
     private func isPlayingAlbum(_ g: AlbumGroup) -> Bool {
-        isCurrentAlbum(rowArtist: g.artist, rowAlbum: g.base, current: store.currentSong)
+        isCurrentAlbum(rowArtist: g.artist, rowAlbum: g.base,
+                       compilationBase: g.compilationBase, current: store.currentSong)
     }
 
     @ViewBuilder
@@ -146,8 +177,10 @@ struct AlbumListView: View {
         VStack(alignment: .leading, spacing: 4) {
             NavigationLink(destination: AlbumDetailView(album: g.variants[0],
                                                         artist: g.artist.isEmpty ? nil : g.artist,
-                                                        artistTag: "albumartist")) {
-                ArtThumbByKey(artist: g.artist, album: g.variants[0])
+                                                        artistTag: "albumartist",
+                                                        compilationBase: g.compilationBase)) {
+                ArtThumbByKey(artist: g.artKeyArtist, album: g.variants[0],
+                              isCompilation: g.compilationBase != nil)
                     .cornerRadius(8)
                     .nowPlayingCover(isPlayingAlbum(g), cornerRadius: 8)
             }
@@ -169,19 +202,13 @@ struct AlbumListView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .contextMenu {
             Button {
-                store.albumSongs(album: g.variants[0], artist: g.artist.isEmpty ? nil : g.artist, artistTag: "albumartist") {
-                    store.enqueue(songs: $0, replace: true, playFirst: true)
-                }
+                albumSongs(g) { store.enqueue(songs: $0, replace: true, playFirst: true) }
             } label: { Label("Play Album", systemImage: "play.fill") }
             Button {
-                store.albumSongs(album: g.variants[0], artist: g.artist.isEmpty ? nil : g.artist, artistTag: "albumartist") {
-                    store.enqueue(songs: $0)
-                }
+                albumSongs(g) { store.enqueue(songs: $0) }
             } label: { Label("Add to Queue", systemImage: "plus") }
             Button {
-                store.albumSongs(album: g.variants[0], artist: g.artist.isEmpty ? nil : g.artist, artistTag: "albumartist") {
-                    addRequest = AddToPlaylistRequest(uris: $0.map(\.file))
-                }
+                albumSongs(g) { addRequest = AddToPlaylistRequest(uris: $0.map(\.file)) }
             } label: { Label("Add to Playlist…", systemImage: "music.note.list") }
         }
     }
@@ -193,12 +220,14 @@ struct AlbumGroupRow: View {
     @EnvironmentObject var store: MPDStore
     let group: AlbumGroup
     private var isPlaying: Bool {
-        isCurrentAlbum(rowArtist: group.artist, rowAlbum: group.base, current: store.currentSong)
+        isCurrentAlbum(rowArtist: group.artist, rowAlbum: group.base,
+                       compilationBase: group.compilationBase, current: store.currentSong)
     }
     var body: some View {
         NavigationLink(destination:AlbumDetailView(album:group.variants[0],
                                                    artist:group.artist.isEmpty ? nil : group.artist,
-                                                   artistTag:"albumartist")){
+                                                   artistTag:"albumartist",
+                                                   compilationBase:group.compilationBase)){
             HStack {
                 Label {
                     VStack(alignment:.leading,spacing:2){
@@ -226,11 +255,17 @@ struct AlbumDetailView: View {
     let album:String; let artist:String?
     // "artist" for song-link navigation, "albumartist" from the grouped lists
     var artistTag:String = "artist"
+    /// Set for a compilation: the directory its tracks share. Its tracks have no
+    /// album artist in common, so `base` is the only way to select them.
+    var compilationBase:String? = nil
     @State private var songs:[MPDSong]=[];@State private var loading=true
     @State private var wiki:String?=nil;@State private var wikiLoading=false;@State private var expanded=false
     @State private var addRequest:AddToPlaylistRequest?=nil
     @State private var mergedTags:[String]=[]  // >1 when sibling disc variants were merged
-    var displayArtist:String{ artist ?? songs.first?.displayArtist ?? "" }
+    var displayArtist:String{ compilationBase != nil ? variousArtistsLabel : (artist ?? songs.first?.displayArtist ?? "") }
+    /// "Various Artists" is a placeholder, not a tag value — linking it would
+    /// push an artist page that no query can fill.
+    var artistIsLinkable:Bool{ compilationBase == nil && !displayArtist.isEmpty }
     // Show the stripped base title only when variants really merged, so an album
     // legitimately named like a disc marker keeps its raw name.
     var displayAlbum:String{ mergedTags.count > 1 ? albumBaseAndDisc(album).base : album }
@@ -245,14 +280,23 @@ struct AlbumDetailView: View {
             Section {
                 VStack(alignment:.leading,spacing:12){
                     HStack(alignment:.top,spacing:14){
-                        ArtThumb(song:songs.first,size:90).cornerRadius(8)
+                        Group {
+                            if let base = compilationBase {
+                                ArtThumbByKey(artist: base, album: album,
+                                              isCompilation: true, size: 90)
+                            } else {
+                                ArtThumb(song:songs.first,size:90)
+                            }
+                        }.cornerRadius(8)
                         VStack(alignment:.leading,spacing:4){
                             Text(displayAlbum.isEmpty ? "(no title)" : displayAlbum).font(.headline)
                                 .fixedSize(horizontal: false, vertical: true)
-                            if !displayArtist.isEmpty {
+                            if artistIsLinkable {
                                 NavigationLink(destination:ArtistDetailView(artist:displayArtist)){
                                     Text(displayArtist).font(.subheadline).foregroundStyle(.secondary).underline()
                                 }
+                            } else if !displayArtist.isEmpty {
+                                Text(displayArtist).font(.subheadline).foregroundStyle(.secondary)
                             }
                             if !loading {
                                 let discPrefix = isMultiDisc ? "\(maxDiscNumber) discs · " : ""
@@ -321,6 +365,15 @@ struct AlbumDetailView: View {
     // artist: without one there is no safe way to pick siblings (same-named
     // albums by other artists would merge), so merging is skipped.
     func loadSongs(){
+        if let base = compilationBase {
+            mergedTags = [album]
+            store.compilationSongs(album: album, base: base) { found in
+                songs = dedupedAlbumTracks(found); loading = false
+                if let s = songs.first { store.fetchArtIfNeeded(artist: base, album: album) }
+                loadWiki()
+            }
+            return
+        }
         guard let artist, !artist.isEmpty else {
             mergedTags = [album]
             loadSongs(tags: [album])
@@ -352,7 +405,10 @@ struct AlbumDetailView: View {
     func loadWiki(){
         guard wiki==nil,!wikiLoading else{return}
         wikiLoading=true
-        let a = displayArtist
+        // A compilation sends no artist: "Various Artists" is a placeholder, so it
+        // would be a guaranteed miss at best and a wrong article at worst. An
+        // empty artist degrades to a title-only lookup, still title-validated.
+        let a = compilationBase != nil ? "" : displayArtist
         Task{
             let t=await WikipediaService.shared.fetchAlbum(album:album,artist:a)
             await MainActor.run{wiki=t;wikiLoading=false}
@@ -930,6 +986,8 @@ struct SongRow: View {
 struct ArtThumbByKey: View {
     @EnvironmentObject var store: MPDStore
     let artist: String; let album: String
+    /// True when `artist` is a compilation's directory rather than a real name.
+    var isCompilation: Bool = false
     /// Fixed square side, or `nil` to fill the available width (still square).
     /// Grid tiles fill: a fixed 130 pt cover inside a ~179 pt column left 49 pt of
     /// dead space per cell, which is what made tile alignment look wrong no matter
@@ -962,7 +1020,10 @@ struct ArtThumbByKey: View {
                     .clipped()
             }
         }
-        .task(id: artKey) { store.fetchArtIfNeeded(artist: artist, album: album) }
+        .task(id: artKey) {
+            if isCompilation { store.fetchArtIfNeeded(compilationBase: artist, album: album) }
+            else             { store.fetchArtIfNeeded(artist: artist, album: album) }
+        }
     }
 }
 struct ArtThumb: View {

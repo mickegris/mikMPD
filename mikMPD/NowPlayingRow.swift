@@ -40,6 +40,23 @@ nonisolated func isCurrentQueueRow(pos: Int, playlistPos: Int) -> Bool {
 ///
 /// A track with no album tag matches nothing, which is what stops a radio stream
 /// (no album, no artist) from marking every untagged album at once.
+///
+/// A **compilation** row matches on the directory its tracks share instead: its
+/// displayed artist is the "Various Artists" placeholder, which matches no
+/// song's tags at all, so an artist comparison could never light it up.
+nonisolated func isCurrentAlbum(rowArtist: String, rowAlbum: String,
+                                compilationBase: String?, current: MPDSong) -> Bool {
+    if let base = compilationBase, !base.isEmpty {
+        guard !current.file.isEmpty,
+              !current.album.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              albumGroupingKey(rowAlbum) == albumGroupingKey(current.album)
+        else { return false }
+        return current.file.hasPrefix(base + "/")
+    }
+    return isCurrentAlbum(rowArtist: rowArtist, rowAlbum: rowAlbum, current: current)
+}
+
+/// The ordinary, artist-scoped case. See the overload above for compilations.
 nonisolated func isCurrentAlbum(rowArtist: String, rowAlbum: String, current: MPDSong) -> Bool {
     guard !current.album.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
           !rowAlbum.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
