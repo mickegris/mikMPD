@@ -691,7 +691,7 @@ struct RecentlyAddedView: View {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if albums.isEmpty {
                 ContentUnavailableView("Nothing Recently Added", systemImage: "sparkles",
-                    description: Text("No tracks added or modified in the last 30 days."))
+                    description: Text("No tracks added in the last 30 days."))
             } else if useGrid {
                 ScrollView {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 130), spacing: 12, alignment: .leading)], spacing: 16) {

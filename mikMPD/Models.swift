@@ -379,6 +379,45 @@ nonisolated func tagOr(_ primary: String, _ fallback: String) -> String {
     primary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? fallback : primary
 }
 
+/// How to ask MPD for recently added songs, best first.
+///
+/// **`modified-since` is the wrong question.** It compares the file's mtime,
+/// which any re-tag, re-encode or file move bumps — on this library it matches
+/// 10,054 songs over 30 days (the entire library) where only 619 were actually
+/// added. MPD 0.24 added an `added` timestamp and an `added-since` filter that
+/// answer the question the view is actually asking.
+///
+/// **The sort is not cosmetic.** `find` returns matches in database order
+/// (directory traversal, documented as undefined), and `window` slices *that* —
+/// so with a cap of N, which songs reach the client is decided by path order,
+/// and a newly added album whose path sorts late never arrives at all. Sorting
+/// client-side afterwards cannot recover a row the server never sent. MPD
+/// applies `sort` before `window`, so a descending sort makes the cap drop the
+/// *oldest* matches, which is what a bounded query should do.
+nonisolated enum RecentlyAddedQuery: String, CaseIterable {
+    /// MPD 0.24+: genuinely "added to the database", newest first.
+    case addedSince
+    /// MPD 0.22+: mtime, but at least server-sorted so the cap drops the oldest.
+    case modifiedSinceSorted
+    /// Pre-0.22: no `sort`. Kept only so an old server still shows something.
+    case modifiedSinceUnsorted
+
+    func command(since: String, limit: Int) -> String {
+        switch self {
+        case .addedSince:
+            "find \"(added-since '\(since)')\" sort -Added window 0:\(limit)"
+        case .modifiedSinceSorted:
+            "find \"(modified-since '\(since)')\" sort -Last-Modified window 0:\(limit)"
+        case .modifiedSinceUnsorted:
+            "find \"(modified-since '\(since)')\" window 0:\(limit)"
+        }
+    }
+
+    /// Which timestamp the rung's results are ordered by, for the client-side
+    /// tie-break that keeps ordering stable when a server returns equal stamps.
+    var sortsByAdded: Bool { self == .addedSince }
+}
+
 nonisolated struct MPDSong: Identifiable, Equatable {
     var file:     String = ""
     var title:    String = ""
@@ -391,6 +430,10 @@ nonisolated struct MPDSong: Identifiable, Equatable {
     var pos:      Int    = 0
     var songID:   String = ""
     var lastModified: Date? = nil
+    /// When MPD first added the file to its database (0.24+). Unlike
+    /// `lastModified` this survives a re-tag, which is what makes it the right
+    /// basis for "recently added".
+    var added: Date? = nil
 
     var id: String { songID.isEmpty ? "\(pos):\(file)" : songID }
     var displayTitle: String { title.isEmpty ? URL(fileURLWithPath: file).lastPathComponent : title }
@@ -459,6 +502,7 @@ nonisolated struct MPDSong: Identifiable, Equatable {
         pos      = Int(r["pos"]  ?? "0") ?? 0
         songID   = r["id"]       ?? ""
         if let lm = r["last-modified"] { lastModified = mpdDateParser.date(from: lm) }
+        if let ad = r["added"] { added = mpdDateParser.date(from: ad) }
     }
 }
 

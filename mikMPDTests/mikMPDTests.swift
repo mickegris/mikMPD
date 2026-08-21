@@ -323,6 +323,79 @@ import Testing
     }
 }
 
+@Suite struct RecentlyAddedQueryTests {
+    private let since = "2026-07-22T00:00:00Z"
+
+    // The whole point: added-since asks when the file entered the database,
+    // modified-since asks when the file changed. Re-tagging a library (replay
+    // gain, say) bumps every mtime and makes the second answer useless.
+    @Test func preferredRungUsesAddedSince() {
+        let cmd = RecentlyAddedQuery.addedSince.command(since: since, limit: 2000)
+        #expect(cmd == "find \"(added-since '2026-07-22T00:00:00Z')\" sort -Added window 0:2000")
+        #expect(!cmd.contains("modified-since"))
+    }
+
+    // sort must be present and descending, and must precede window: MPD applies
+    // sort first, so the cap drops the OLDEST matches. Without it the cap drops
+    // by database (path) order and a newly added album can never arrive.
+    @Test func boundedRungsSortDescendingBeforeWindowing() {
+        for rung in [RecentlyAddedQuery.addedSince, .modifiedSinceSorted] {
+            let cmd = rung.command(since: since, limit: 50)
+            let sortAt = cmd.range(of: "sort -")
+            let windowAt = cmd.range(of: "window ")
+            #expect(sortAt != nil, "\(rung) lost its sort")
+            #expect(windowAt != nil, "\(rung) lost its window")
+            if let s = sortAt, let w = windowAt {
+                #expect(s.lowerBound < w.lowerBound, "\(rung) windows before it sorts")
+            }
+        }
+    }
+
+    @Test func fallbackRungsStayOnModifiedSince() {
+        #expect(RecentlyAddedQuery.modifiedSinceSorted.command(since: since, limit: 10)
+                == "find \"(modified-since '2026-07-22T00:00:00Z')\" sort -Last-Modified window 0:10")
+        // The last rung is for servers with no `sort` at all, so it must not send one.
+        let legacy = RecentlyAddedQuery.modifiedSinceUnsorted.command(since: since, limit: 10)
+        #expect(legacy == "find \"(modified-since '2026-07-22T00:00:00Z')\" window 0:10")
+        #expect(!legacy.contains("sort"))
+    }
+
+    // Every rung stays bounded — an unbounded scan can outrun the socket's read
+    // timeout, which disconnects mid-response.
+    @Test func everyRungIsWindowed() {
+        for rung in RecentlyAddedQuery.allCases {
+            #expect(rung.command(since: since, limit: 2000).contains("window 0:2000"))
+        }
+    }
+
+    @Test func ladderIsOrderedBestFirst() {
+        #expect(RecentlyAddedQuery.allCases == [.addedSince, .modifiedSinceSorted, .modifiedSinceUnsorted])
+    }
+
+    @Test func onlyTheAddedRungSortsByAdded() {
+        #expect(RecentlyAddedQuery.addedSince.sortsByAdded)
+        #expect(!RecentlyAddedQuery.modifiedSinceSorted.sortsByAdded)
+        #expect(!RecentlyAddedQuery.modifiedSinceUnsorted.sortsByAdded)
+    }
+}
+
+@Suite struct SongAddedTests {
+    @Test func addedIsParsedAndIndependentOfLastModified() {
+        let s = MPDSong(["file": "a.flac",
+                         "added": "2026-01-05T11:50:54Z",
+                         "last-modified": "2026-08-21T07:53:15Z"])
+        #expect(s.added != nil)
+        #expect(s.lastModified != nil)
+        // A re-tag moved last-modified months past added — the exact shape that
+        // made modified-since useless for "recently added".
+        #expect(s.added! < s.lastModified!)
+    }
+
+    @Test func missingAddedIsNil() {
+        #expect(MPDSong(["file": "a.flac", "last-modified": "2026-08-21T07:53:15Z"]).added == nil)
+    }
+}
+
 @Suite struct LinkArtistTests {
     private func song(artist: String, albumArtist: String) -> MPDSong {
         var s = MPDSong(); s.artist = artist; s.albumArtist = albumArtist; return s
