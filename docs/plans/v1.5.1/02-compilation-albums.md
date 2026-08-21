@@ -1,5 +1,17 @@
 # 02 — Detect compilation albums without breaking anything
 
+> **Status: implemented in 1.5.2 and verified in the simulator against the live
+> server.** Jackie Brown is one row, "Various Artists", 17 tracks, with cover
+> art; Greatest Hits and Live still show two rows each. Two things the plan did
+> not foresee. First, merging the rows made `discCountFromVariants` report
+> "14 discs" — the variants are one album tag repeated per track artist, so they
+> must be uniqued by name. Second, the art key and the art *lookup* have to
+> diverge: keying on the directory is right, but sending that path to
+> MusicBrainz matches nothing, and these files have no embedded art at all, so
+> the lookup sends an empty artist and searches by album alone.
+> The Wikipedia summary resolves to the *film* rather than the soundtrack, which
+> was accepted as good enough.
+
 **Problem:** an album whose tracks are each by a different artist fragments into
 one row per artist. `Jackie Brown` shows as 14 albums, `Legends Of Metal Vol. I`
 as 12. Deferred out of

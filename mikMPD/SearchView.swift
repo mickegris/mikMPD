@@ -5,7 +5,7 @@ struct SearchView: View {
     @State private var query = ""
     @State private var selectedSongs: Set<String> = []
     @State private var artists: [String] = []
-    @State private var albums: [(artist: String, album: String, discCount: Int)] = []
+    @State private var albums: [AlbumGroup] = []
     @State private var playlistMatches: [PlaylistMatch] = []
     @State private var isSearching = false
     @State private var searchTask: Task<Void, Never>?
@@ -78,22 +78,24 @@ struct SearchView: View {
             // Albums section
             if !albums.isEmpty {
                 Section {
-                    ForEach(albums, id: \.album) { item in
+                    ForEach(albums) { item in
+                        let playing = isCurrentAlbum(rowArtist: item.artist, rowAlbum: item.base,
+                                                     compilationBase: item.compilationBase,
+                                                     current: store.currentSong)
                         NavigationLink {
-                            AlbumDetailView(album: item.album, artist: item.artist,
-                                            artistTag: "albumartist")
+                            AlbumDetailView(album: item.variants[0], artist: item.artist,
+                                            artistTag: "albumartist",
+                                            compilationBase: item.compilationBase)
                         } label: {
-                            let playing = isCurrentAlbum(rowArtist: item.artist,
-                                                        rowAlbum: item.album,
-                                                        current: store.currentSong)
                             HStack(spacing: 12) {
                                 // Album art thumbnail
-                                ArtThumbByKey(artist: item.artist, album: item.album, size: 50)
+                                ArtThumbByKey(artist: item.artKeyArtist, album: item.variants[0],
+                                              isCompilation: item.compilationBase != nil, size: 50)
                                     .cornerRadius(6)
                                     .nowPlayingCover(playing)
 
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(item.discCount > 1 ? albumBaseAndDisc(item.album).base : item.album)
+                                    Text(item.base.isEmpty ? "(no title)" : item.base)
                                         .font(.subheadline)
                                         .foregroundStyle(playing ? Color.accentColor : .primary)
                                     if !item.artist.isEmpty {
@@ -111,9 +113,7 @@ struct SearchView: View {
                             }
                             .padding(.vertical, 4)
                         }
-                        .nowPlayingRow(isCurrentAlbum(rowArtist: item.artist,
-                                                      rowAlbum: item.album,
-                                                      current: store.currentSong))
+                        .nowPlayingRow(playing)
                     }
                 } header: {
                     Text("Albums (\(albums.count))")
@@ -308,21 +308,18 @@ struct SearchView: View {
                     }
                     return a.artist < b.artist
                 }
-                // Collapse disc variants of the same album (per artist) into one
-                // row; AlbumDetailView re-expands to all discs when opened.
-                var seen: [String: Int] = [:]
-                var grouped: [(artist: String, album: String, discCount: Int)] = []
-                for p in sorted {
-                    let key = "\(p.artist.lowercased())|\(albumGroupingKey(p.album))"
-                    if let i = seen[key] {
-                        grouped[i].discCount += 1
-                    } else {
-                        seen[key] = grouped.count
-                        grouped.append((p.artist, p.album, 1))
-                    }
-                }
+                // Disc variants of one artist's album collapse into one row;
+                // AlbumDetailView re-expands to all discs when opened. Then the
+                // same compilation pass the Albums tab runs — without it a
+                // various-artists album shows here credited to whichever track
+                // artist sorted first, with art that no key will ever fill.
+                let grouped = groupAlbumVariants(sorted)
                 self.albums = grouped
                 self.isSearching = false
+                store.resolveCompilations(grouped) { resolved in
+                    guard self.query == query else { return }   // a newer search won
+                    self.albums = resolved
+                }
             }
         }
     }
