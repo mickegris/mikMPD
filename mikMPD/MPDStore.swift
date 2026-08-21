@@ -884,22 +884,13 @@ final class MPDStore: ObservableObject {
             defer { DispatchQueue.main.async { self.isLoadingRecentlyAdded = false } }
 
             // Walk down the ladder until one is accepted, then remember it.
-            var records: [MPDRecord] = []
-            var used: RecentlyAddedQuery = .modifiedSinceUnsorted
             let rungs = self.recentlyAddedRung.map { [$0] } ?? RecentlyAddedQuery.allCases
-            for rung in rungs {
-                do {
-                    records = try self.socket.command(rung.command(since: cutoff, limit: limit))
-                    used = rung
-                    self.recentlyAddedRung = rung
-                    break
-                } catch {
-                    // An ACK means the server lacks this syntax; anything else
-                    // means the socket is in trouble and the poll will reconnect.
-                    guard self.socket.connected else { break }
-                    continue
-                }
-            }
+            let (records, rung) = firstAcceptedRecentlyAdded(
+                rungs: rungs, since: cutoff, limit: limit,
+                run: { try self.socket.command($0) },
+                stillConnected: { self.socket.connected })
+            if let rung { self.recentlyAddedRung = rung }
+            let used = rung ?? .modifiedSinceUnsorted
 
             // The server has already ordered these; the client-side sort is only a
             // stable tie-break for equal timestamps (a whole album is imported in

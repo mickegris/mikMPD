@@ -418,6 +418,37 @@ nonisolated enum RecentlyAddedQuery: String, CaseIterable {
     var sortsByAdded: Bool { self == .addedSince }
 }
 
+/// Walk the recently-added ladder, returning the first rung the server accepts.
+///
+/// Effects are injected so the degradation path is testable without a server —
+/// the real one has 0.24 and can never exercise the fallbacks, which is exactly
+/// how a broken fallback would go unnoticed until someone ran an older MPD.
+///
+/// `stillConnected` matters because an ACK is not the only failure: CLAUDE.md
+/// records that some builds close the connection outright on unknown syntax.
+/// Continuing to walk a dead socket would turn one bad command into three.
+///
+/// Returns a nil rung when every rung was refused — all of them need MPD 0.21's
+/// filter-expression syntax, so on anything older the view shows nothing rather
+/// than wrong data.
+nonisolated func firstAcceptedRecentlyAdded(
+    rungs: [RecentlyAddedQuery],
+    since: String,
+    limit: Int,
+    run: (String) throws -> [MPDRecord],
+    stillConnected: () -> Bool
+) -> (records: [MPDRecord], used: RecentlyAddedQuery?) {
+    for rung in rungs {
+        do {
+            return (try run(rung.command(since: since, limit: limit)), rung)
+        } catch {
+            guard stillConnected() else { break }
+            continue
+        }
+    }
+    return ([], nil)
+}
+
 nonisolated struct MPDSong: Identifiable, Equatable {
     var file:     String = ""
     var title:    String = ""

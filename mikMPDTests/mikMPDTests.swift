@@ -379,6 +379,98 @@ import Testing
     }
 }
 
+/// Simulates older MPD servers so the fallback path is actually exercised. The
+/// real server is 0.24 and always answers on the top rung, so without these the
+/// ladder's lower rungs would only ever be theory.
+@Suite struct RecentlyAddedLadderTests {
+    /// An MPD that ACKs any command containing one of `rejects`.
+    private final class FakeServer {
+        var sent: [String] = []
+        var connected = true
+        let rejects: [String]
+        /// Some builds close the socket on unknown syntax rather than ACKing.
+        let dropsOnReject: Bool
+        init(rejects: [String], dropsOnReject: Bool = false) {
+            self.rejects = rejects; self.dropsOnReject = dropsOnReject
+        }
+        func run(_ cmd: String) throws -> [MPDRecord] {
+            sent.append(cmd)
+            if rejects.contains(where: { cmd.contains($0) }) {
+                if dropsOnReject { connected = false }
+                throw MPDError.ack("ACK [2@0] {find} Unknown filter type")
+            }
+            return [["file": "a.flac"]]
+        }
+    }
+
+    private func walk(_ server: FakeServer,
+                      rungs: [RecentlyAddedQuery] = RecentlyAddedQuery.allCases)
+    -> (records: [MPDRecord], used: RecentlyAddedQuery?) {
+        firstAcceptedRecentlyAdded(rungs: rungs, since: "2026-07-22T00:00:00Z", limit: 100,
+                                   run: server.run, stillConnected: { server.connected })
+    }
+
+    // MPD 0.24: the top rung answers, and nothing else is even attempted.
+    @Test func modernServerUsesAddedSinceAndStopsThere() {
+        let server = FakeServer(rejects: [])
+        let (records, used) = walk(server)
+        #expect(used == .addedSince)
+        #expect(records.count == 1)
+        #expect(server.sent.count == 1)
+        #expect(server.sent[0].contains("added-since"))
+    }
+
+    // MPD 0.23: no added-since, but sort works. Must land on the middle rung.
+    @Test func preO24FallsBackToModifiedSinceSorted() {
+        let server = FakeServer(rejects: ["added-since"])
+        let (records, used) = walk(server)
+        #expect(used == .modifiedSinceSorted)
+        #expect(records.count == 1)
+        #expect(server.sent.count == 2)
+        #expect(server.sent[0].contains("added-since"), "never probed for the best rung")
+        #expect(server.sent[1].contains("modified-since"))
+        #expect(server.sent[1].contains("sort -Last-Modified"))
+    }
+
+    // Old enough to lack a usable sort key too: reach the bottom rung.
+    @Test func noSortSupportFallsBackToTheLegacyQuery() {
+        let server = FakeServer(rejects: ["added-since", "sort"])
+        let (records, used) = walk(server)
+        #expect(used == .modifiedSinceUnsorted)
+        #expect(records.count == 1)
+        #expect(server.sent.count == 3)
+        #expect(!server.sent[2].contains("sort"))
+    }
+
+    // Pre-0.21 has no filter-expression syntax at all, so every rung is refused.
+    // The view then shows its empty state rather than something wrong.
+    @Test func preO21ServerYieldsNothingRatherThanWrongData() {
+        let server = FakeServer(rejects: ["find"])
+        let (records, used) = walk(server)
+        #expect(used == nil)
+        #expect(records.isEmpty)
+        #expect(server.sent.count == 3, "should try every rung before giving up")
+    }
+
+    // A server that closes the connection instead of ACKing must stop the walk,
+    // not turn one bad command into three against a dead socket.
+    @Test func aDroppedConnectionStopsTheWalkImmediately() {
+        let server = FakeServer(rejects: ["added-since"], dropsOnReject: true)
+        let (records, used) = walk(server)
+        #expect(used == nil)
+        #expect(records.isEmpty)
+        #expect(server.sent.count == 1, "kept talking to a disconnected socket")
+    }
+
+    // Once a rung is remembered, later loads send exactly one command.
+    @Test func aRememberedRungSkipsTheLadder() {
+        let server = FakeServer(rejects: ["added-since"])
+        let (_, used) = walk(server, rungs: [.modifiedSinceSorted])
+        #expect(used == .modifiedSinceSorted)
+        #expect(server.sent.count == 1)
+    }
+}
+
 @Suite struct SongAddedTests {
     @Test func addedIsParsedAndIndependentOfLastModified() {
         let s = MPDSong(["file": "a.flac",
