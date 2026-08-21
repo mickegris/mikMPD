@@ -428,7 +428,7 @@ struct NowPlayingView: View {
         VStack(spacing: 4) {
             MarqueeText(text: song.displayTitle, font: .title2.bold(), color: .primary)
             if !song.displayArtist.isEmpty {
-                NavigationLink(destination: ArtistDetailView(artist: song.displayArtist)) {
+                NavigationLink(destination: ArtistDetailView(artist: song.linkArtist)) {
                     Text(song.displayArtist)
                         .font(.subheadline).foregroundStyle(.secondary)
                         .underline()
@@ -438,7 +438,7 @@ struct NowPlayingView: View {
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             if !song.album.isEmpty {
-                NavigationLink(destination: AlbumDetailView(album: song.album, artist: song.displayArtist.isEmpty ? nil : song.displayArtist)) {
+                NavigationLink(destination: AlbumDetailView(album: song.album, artist: song.linkArtist.isEmpty ? nil : song.linkArtist, artistTag: "albumartist")) {
                     MarqueeText(text: song.album, font: .caption, color: .secondary, underlined: true)
                 }
             }
@@ -675,7 +675,8 @@ struct RecentlyPlayedSheet: View {
                     .buttonStyle(.plain)
                 } else {
                     NavigationLink(destination: AlbumDetailView(
-                        album: ra.album, artist: ra.artist.isEmpty ? nil : ra.artist)) {
+                        album: ra.album, artist: ra.artist.isEmpty ? nil : ra.artist,
+                        artistTag: "albumartist")) {
                         ArtThumbByKey(artist: ra.artist, album: ra.album, size: 110).cornerRadius(8)
                             .nowPlayingCover(isPlayingRecentAlbum(ra), cornerRadius: 8)
                     }
@@ -728,7 +729,7 @@ struct RecentlyPlayedSheet: View {
                             Text("·").font(.caption).foregroundStyle(.secondary)
                         }
                         if !entry.album.isEmpty {
-                            NavigationLink(destination: AlbumDetailView(album: entry.album, artist: entry.artist.isEmpty ? nil : entry.artist)) {
+                            NavigationLink(destination: AlbumDetailView(album: entry.album, artist: entry.artist.isEmpty ? nil : entry.artist, artistTag: "albumartist")) {
                                 Text(entry.album).font(.caption).foregroundStyle(.secondary).lineLimit(1).underline()
                             }.buttonStyle(.plain)
                         }

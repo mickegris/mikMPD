@@ -26,3 +26,6 @@ plans/
 
 # Local-only integration tests (require a real MPD server — must not be committed)
 mikMPDTests/Local/
+
+# One-off diagnostic dumps generated against a live server
+untagged-files.txt

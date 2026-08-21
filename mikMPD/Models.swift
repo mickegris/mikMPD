@@ -379,6 +379,76 @@ nonisolated func tagOr(_ primary: String, _ fallback: String) -> String {
     primary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? fallback : primary
 }
 
+/// How to ask MPD for recently added songs, best first.
+///
+/// **`modified-since` is the wrong question.** It compares the file's mtime,
+/// which any re-tag, re-encode or file move bumps — on this library it matches
+/// 10,054 songs over 30 days (the entire library) where only 619 were actually
+/// added. MPD 0.24 added an `added` timestamp and an `added-since` filter that
+/// answer the question the view is actually asking.
+///
+/// **The sort is not cosmetic.** `find` returns matches in database order
+/// (directory traversal, documented as undefined), and `window` slices *that* —
+/// so with a cap of N, which songs reach the client is decided by path order,
+/// and a newly added album whose path sorts late never arrives at all. Sorting
+/// client-side afterwards cannot recover a row the server never sent. MPD
+/// applies `sort` before `window`, so a descending sort makes the cap drop the
+/// *oldest* matches, which is what a bounded query should do.
+nonisolated enum RecentlyAddedQuery: String, CaseIterable {
+    /// MPD 0.24+: genuinely "added to the database", newest first.
+    case addedSince
+    /// MPD 0.22+: mtime, but at least server-sorted so the cap drops the oldest.
+    case modifiedSinceSorted
+    /// Pre-0.22: no `sort`. Kept only so an old server still shows something.
+    case modifiedSinceUnsorted
+
+    func command(since: String, limit: Int) -> String {
+        switch self {
+        case .addedSince:
+            "find \"(added-since '\(since)')\" sort -Added window 0:\(limit)"
+        case .modifiedSinceSorted:
+            "find \"(modified-since '\(since)')\" sort -Last-Modified window 0:\(limit)"
+        case .modifiedSinceUnsorted:
+            "find \"(modified-since '\(since)')\" window 0:\(limit)"
+        }
+    }
+
+    /// Which timestamp the rung's results are ordered by, for the client-side
+    /// tie-break that keeps ordering stable when a server returns equal stamps.
+    var sortsByAdded: Bool { self == .addedSince }
+}
+
+/// Walk the recently-added ladder, returning the first rung the server accepts.
+///
+/// Effects are injected so the degradation path is testable without a server —
+/// the real one has 0.24 and can never exercise the fallbacks, which is exactly
+/// how a broken fallback would go unnoticed until someone ran an older MPD.
+///
+/// `stillConnected` matters because an ACK is not the only failure: CLAUDE.md
+/// records that some builds close the connection outright on unknown syntax.
+/// Continuing to walk a dead socket would turn one bad command into three.
+///
+/// Returns a nil rung when every rung was refused — all of them need MPD 0.21's
+/// filter-expression syntax, so on anything older the view shows nothing rather
+/// than wrong data.
+nonisolated func firstAcceptedRecentlyAdded(
+    rungs: [RecentlyAddedQuery],
+    since: String,
+    limit: Int,
+    run: (String) throws -> [MPDRecord],
+    stillConnected: () -> Bool
+) -> (records: [MPDRecord], used: RecentlyAddedQuery?) {
+    for rung in rungs {
+        do {
+            return (try run(rung.command(since: since, limit: limit)), rung)
+        } catch {
+            guard stillConnected() else { break }
+            continue
+        }
+    }
+    return ([], nil)
+}
+
 nonisolated struct MPDSong: Identifiable, Equatable {
     var file:     String = ""
     var title:    String = ""
@@ -391,6 +461,10 @@ nonisolated struct MPDSong: Identifiable, Equatable {
     var pos:      Int    = 0
     var songID:   String = ""
     var lastModified: Date? = nil
+    /// When MPD first added the file to its database (0.24+). Unlike
+    /// `lastModified` this survives a re-tag, which is what makes it the right
+    /// basis for "recently added".
+    var added: Date? = nil
 
     var id: String { songID.isEmpty ? "\(pos):\(file)" : songID }
     var displayTitle: String { title.isEmpty ? URL(fileURLWithPath: file).lastPathComponent : title }
@@ -413,6 +487,15 @@ nonisolated struct MPDSong: Identifiable, Equatable {
     /// LRCLIB, so the fallback turns a guaranteed-miss lookup into one that can
     /// match.
     var displayArtist: String { tagOr(artist, albumArtist) }
+    /// Where an artist *link* on a song row should navigate: the album artist.
+    ///
+    /// Deliberately different from `displayArtist`, which is what the row shows.
+    /// A track credited "Just D feat. Thåström" belongs to Just D's album; the
+    /// credit names a performance, not an artist with a page of their own, and
+    /// following it lands on a one-track album that is missing from the real one.
+    /// Show the credit, navigate to the artist.
+    var linkArtist: String { groupingArtist }
+
     /// Keyed on `groupingArtist`, not the raw `artist` tag: album rows come from
     /// `list album group albumartist`, so a compilation track keyed by its own
     /// artist landed in a different cache entry than its own album's tile.
@@ -450,6 +533,7 @@ nonisolated struct MPDSong: Identifiable, Equatable {
         pos      = Int(r["pos"]  ?? "0") ?? 0
         songID   = r["id"]       ?? ""
         if let lm = r["last-modified"] { lastModified = mpdDateParser.date(from: lm) }
+        if let ad = r["added"] { added = mpdDateParser.date(from: ad) }
     }
 }
 

@@ -81,13 +81,15 @@ struct QueueRow: View {
                 Text(song.displayTitle).font(isCurrent ? .subheadline.bold() : .subheadline).lineLimit(1)
                 HStack(spacing:4){
                     if !song.displayArtist.isEmpty {
-                        NavigationLink(destination:ArtistDetailView(artist:song.displayArtist)){
+                        // Shows the track credit, navigates to the album artist —
+                        // "Just D feat. Thåström" is a credit, not an artist page.
+                        NavigationLink(destination:ArtistDetailView(artist:song.linkArtist)){
                             Text(song.displayArtist).font(.caption).foregroundColor(.secondary).lineLimit(1).underline()
                         }.buttonStyle(.plain)
                     }
                     if !song.displayArtist.isEmpty && !song.album.isEmpty { Text("·").font(.caption).foregroundColor(.secondary) }
                     if !song.album.isEmpty {
-                        NavigationLink(destination:AlbumDetailView(album:song.album,artist:song.displayArtist.isEmpty ? nil : song.displayArtist)){
+                        NavigationLink(destination:AlbumDetailView(album:song.album,artist:song.linkArtist.isEmpty ? nil : song.linkArtist,artistTag:"albumartist")){
                             Text(song.album).font(.caption).foregroundColor(.secondary).lineLimit(1).underline()
                         }.buttonStyle(.plain)
                     }

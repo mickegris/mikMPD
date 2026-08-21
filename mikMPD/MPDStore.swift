@@ -209,6 +209,7 @@ final class MPDStore: ObservableObject {
                 // Capability probes are per-connection: a different server, or
                 // the same one after an upgrade, may answer differently.
                 self.playlistSearchAvailable = nil
+                self.recentlyAddedRung = nil
                 try self.socket.connect(host: h, port: p, password: pw)
                 // MPD accepts connections without auth even when a password is
                 // required — commands then all ACK with a permission error.
@@ -739,6 +740,41 @@ final class MPDStore: ObservableObject {
         }
     }
 
+    /// Artists for the Artists tab: every `albumartist`, plus the `artist` of
+    /// files that carry no albumartist at all.
+    ///
+    /// **Album artist is the artist half of an album's identity.** Listing
+    /// `artist` instead makes every per-track featuring credit a standalone
+    /// artist — "Just D feat. Thåström" appeared as its own row — and the album
+    /// it belongs to then splits in two: one page holding that single track, and
+    /// one silently missing it (Tre amigos showed 14 of its 15 tracks). The
+    /// Albums tab already groups on albumartist; this is the same rule applied
+    /// to the path that never got it.
+    ///
+    /// The fallback half is not optional. A library can hold files with an
+    /// artist and no albumartist, and dropping those would trade a visible
+    /// duplicate for a silent disappearance, which is worse. (In this library
+    /// the files lacking an albumartist are untagged entirely, so the fallback
+    /// contributes nothing — but that is a fact about the library, not a rule to
+    /// bake in.)
+    func listArtists(completion: @escaping @MainActor ([String]) -> Void) {
+        Q.async { [weak self] in
+            guard let self else { return }
+            var seen: Set<String> = []
+            var out: [String] = []
+            func add(_ values: [String]) {
+                for v in values where !v.isEmpty {
+                    if seen.insert(v.lowercased()).inserted { out.append(v) }
+                }
+            }
+            add((try? self.socket.listValues("list albumartist", key: "albumartist")) ?? [])
+            let noAlbumArtist = "(albumartist == \"\")"
+            add((try? self.socket.listValues("list artist \"\(noAlbumArtist.esc)\"", key: "artist")) ?? [])
+            let sorted = out.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+            DispatchQueue.main.async { completion(sorted) }
+        }
+    }
+
     func findSongs(tag: String, value: String, album: String? = nil, completion: @escaping @MainActor ([MPDSong]) -> Void) {
         Q.async { [weak self] in
             guard let self else { return }
@@ -834,6 +870,10 @@ final class MPDStore: ObservableObject {
     /// socket's 5 s read timeout, which disconnects mid-response and leaves MPD
     /// generating output for a client that has gone away — then the 3 s reconnect
     /// re-issues it. `limit` is generous relative to the 50 albums the view shows.
+    /// Which query shape this server answered on. Q-only, same invariant as the
+    /// socket; reset per connection so a server upgrade is picked up.
+    nonisolated(unsafe) private var recentlyAddedRung: RecentlyAddedQuery?
+
     func loadRecentlyAdded(days: Int = 30, limit: Int = 2000,
                            completion: @escaping @MainActor ([MPDSong]) -> Void) {
         guard !isLoadingRecentlyAdded else { return }
@@ -842,11 +882,26 @@ final class MPDStore: ObservableObject {
         Q.async { [weak self] in
             guard let self else { return }
             defer { DispatchQueue.main.async { self.isLoadingRecentlyAdded = false } }
-            let records = (try? self.socket.command(
-                "find \"(modified-since '\(cutoff)')\" window 0:\(limit)")) ?? []
+
+            // Walk down the ladder until one is accepted, then remember it.
+            let rungs = self.recentlyAddedRung.map { [$0] } ?? RecentlyAddedQuery.allCases
+            let (records, rung) = firstAcceptedRecentlyAdded(
+                rungs: rungs, since: cutoff, limit: limit,
+                run: { try self.socket.command($0) },
+                stillConnected: { self.socket.connected })
+            if let rung { self.recentlyAddedRung = rung }
+            let used = rung ?? .modifiedSinceUnsorted
+
+            // The server has already ordered these; the client-side sort is only a
+            // stable tie-break for equal timestamps (a whole album is imported in
+            // one second, so ties are the common case, not the exception).
             let songs = records.map { MPDSong($0) }
                 .filter { !$0.file.isEmpty }
-                .sorted { ($0.lastModified ?? .distantPast) > ($1.lastModified ?? .distantPast) }
+                .sorted { a, b in
+                    let ka = used.sortsByAdded ? (a.added ?? a.lastModified) : a.lastModified
+                    let kb = used.sortsByAdded ? (b.added ?? b.lastModified) : b.lastModified
+                    return (ka ?? .distantPast) > (kb ?? .distantPast)
+                }
             DispatchQueue.main.async { completion(songs) }
         }
     }

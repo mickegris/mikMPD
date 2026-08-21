@@ -323,6 +323,240 @@ import Testing
     }
 }
 
+@Suite struct RecentlyAddedQueryTests {
+    private let since = "2026-07-22T00:00:00Z"
+
+    // The whole point: added-since asks when the file entered the database,
+    // modified-since asks when the file changed. Re-tagging a library (replay
+    // gain, say) bumps every mtime and makes the second answer useless.
+    @Test func preferredRungUsesAddedSince() {
+        let cmd = RecentlyAddedQuery.addedSince.command(since: since, limit: 2000)
+        #expect(cmd == "find \"(added-since '2026-07-22T00:00:00Z')\" sort -Added window 0:2000")
+        #expect(!cmd.contains("modified-since"))
+    }
+
+    // sort must be present and descending, and must precede window: MPD applies
+    // sort first, so the cap drops the OLDEST matches. Without it the cap drops
+    // by database (path) order and a newly added album can never arrive.
+    @Test func boundedRungsSortDescendingBeforeWindowing() {
+        for rung in [RecentlyAddedQuery.addedSince, .modifiedSinceSorted] {
+            let cmd = rung.command(since: since, limit: 50)
+            let sortAt = cmd.range(of: "sort -")
+            let windowAt = cmd.range(of: "window ")
+            #expect(sortAt != nil, "\(rung) lost its sort")
+            #expect(windowAt != nil, "\(rung) lost its window")
+            if let s = sortAt, let w = windowAt {
+                #expect(s.lowerBound < w.lowerBound, "\(rung) windows before it sorts")
+            }
+        }
+    }
+
+    @Test func fallbackRungsStayOnModifiedSince() {
+        #expect(RecentlyAddedQuery.modifiedSinceSorted.command(since: since, limit: 10)
+                == "find \"(modified-since '2026-07-22T00:00:00Z')\" sort -Last-Modified window 0:10")
+        // The last rung is for servers with no `sort` at all, so it must not send one.
+        let legacy = RecentlyAddedQuery.modifiedSinceUnsorted.command(since: since, limit: 10)
+        #expect(legacy == "find \"(modified-since '2026-07-22T00:00:00Z')\" window 0:10")
+        #expect(!legacy.contains("sort"))
+    }
+
+    // Every rung stays bounded — an unbounded scan can outrun the socket's read
+    // timeout, which disconnects mid-response.
+    @Test func everyRungIsWindowed() {
+        for rung in RecentlyAddedQuery.allCases {
+            #expect(rung.command(since: since, limit: 2000).contains("window 0:2000"))
+        }
+    }
+
+    @Test func ladderIsOrderedBestFirst() {
+        #expect(RecentlyAddedQuery.allCases == [.addedSince, .modifiedSinceSorted, .modifiedSinceUnsorted])
+    }
+
+    @Test func onlyTheAddedRungSortsByAdded() {
+        #expect(RecentlyAddedQuery.addedSince.sortsByAdded)
+        #expect(!RecentlyAddedQuery.modifiedSinceSorted.sortsByAdded)
+        #expect(!RecentlyAddedQuery.modifiedSinceUnsorted.sortsByAdded)
+    }
+}
+
+/// Simulates older MPD servers so the fallback path is actually exercised. The
+/// real server is 0.24 and always answers on the top rung, so without these the
+/// ladder's lower rungs would only ever be theory.
+@Suite struct RecentlyAddedLadderTests {
+    /// An MPD that ACKs any command containing one of `rejects`.
+    private final class FakeServer {
+        var sent: [String] = []
+        var connected = true
+        let rejects: [String]
+        /// Some builds close the socket on unknown syntax rather than ACKing.
+        let dropsOnReject: Bool
+        init(rejects: [String], dropsOnReject: Bool = false) {
+            self.rejects = rejects; self.dropsOnReject = dropsOnReject
+        }
+        func run(_ cmd: String) throws -> [MPDRecord] {
+            sent.append(cmd)
+            if rejects.contains(where: { cmd.contains($0) }) {
+                if dropsOnReject { connected = false }
+                throw MPDError.ack("ACK [2@0] {find} Unknown filter type")
+            }
+            return [["file": "a.flac"]]
+        }
+    }
+
+    private func walk(_ server: FakeServer,
+                      rungs: [RecentlyAddedQuery] = RecentlyAddedQuery.allCases)
+    -> (records: [MPDRecord], used: RecentlyAddedQuery?) {
+        firstAcceptedRecentlyAdded(rungs: rungs, since: "2026-07-22T00:00:00Z", limit: 100,
+                                   run: server.run, stillConnected: { server.connected })
+    }
+
+    // MPD 0.24: the top rung answers, and nothing else is even attempted.
+    @Test func modernServerUsesAddedSinceAndStopsThere() {
+        let server = FakeServer(rejects: [])
+        let (records, used) = walk(server)
+        #expect(used == .addedSince)
+        #expect(records.count == 1)
+        #expect(server.sent.count == 1)
+        #expect(server.sent[0].contains("added-since"))
+    }
+
+    // MPD 0.23: no added-since, but sort works. Must land on the middle rung.
+    @Test func preO24FallsBackToModifiedSinceSorted() {
+        let server = FakeServer(rejects: ["added-since"])
+        let (records, used) = walk(server)
+        #expect(used == .modifiedSinceSorted)
+        #expect(records.count == 1)
+        #expect(server.sent.count == 2)
+        #expect(server.sent[0].contains("added-since"), "never probed for the best rung")
+        #expect(server.sent[1].contains("modified-since"))
+        #expect(server.sent[1].contains("sort -Last-Modified"))
+    }
+
+    // Old enough to lack a usable sort key too: reach the bottom rung.
+    @Test func noSortSupportFallsBackToTheLegacyQuery() {
+        let server = FakeServer(rejects: ["added-since", "sort"])
+        let (records, used) = walk(server)
+        #expect(used == .modifiedSinceUnsorted)
+        #expect(records.count == 1)
+        #expect(server.sent.count == 3)
+        #expect(!server.sent[2].contains("sort"))
+    }
+
+    // Pre-0.21 has no filter-expression syntax at all, so every rung is refused.
+    // The view then shows its empty state rather than something wrong.
+    @Test func preO21ServerYieldsNothingRatherThanWrongData() {
+        let server = FakeServer(rejects: ["find"])
+        let (records, used) = walk(server)
+        #expect(used == nil)
+        #expect(records.isEmpty)
+        #expect(server.sent.count == 3, "should try every rung before giving up")
+    }
+
+    // A server that closes the connection instead of ACKing must stop the walk,
+    // not turn one bad command into three against a dead socket.
+    @Test func aDroppedConnectionStopsTheWalkImmediately() {
+        let server = FakeServer(rejects: ["added-since"], dropsOnReject: true)
+        let (records, used) = walk(server)
+        #expect(used == nil)
+        #expect(records.isEmpty)
+        #expect(server.sent.count == 1, "kept talking to a disconnected socket")
+    }
+
+    // Once a rung is remembered, later loads send exactly one command.
+    @Test func aRememberedRungSkipsTheLadder() {
+        let server = FakeServer(rejects: ["added-since"])
+        let (_, used) = walk(server, rungs: [.modifiedSinceSorted])
+        #expect(used == .modifiedSinceSorted)
+        #expect(server.sent.count == 1)
+    }
+}
+
+@Suite struct SongAddedTests {
+    @Test func addedIsParsedAndIndependentOfLastModified() {
+        let s = MPDSong(["file": "a.flac",
+                         "added": "2026-01-05T11:50:54Z",
+                         "last-modified": "2026-08-21T07:53:15Z"])
+        #expect(s.added != nil)
+        #expect(s.lastModified != nil)
+        // A re-tag moved last-modified months past added — the exact shape that
+        // made modified-since useless for "recently added".
+        #expect(s.added! < s.lastModified!)
+    }
+
+    @Test func missingAddedIsNil() {
+        #expect(MPDSong(["file": "a.flac", "last-modified": "2026-08-21T07:53:15Z"]).added == nil)
+    }
+}
+
+@Suite struct LinkArtistTests {
+    private func song(artist: String, albumArtist: String) -> MPDSong {
+        var s = MPDSong(); s.artist = artist; s.albumArtist = albumArtist; return s
+    }
+
+    // The row shows the credit; the link goes to the artist whose album it is.
+    // Following the credit lands on a one-track album that is missing from the
+    // real one — the Tre amigos bug.
+    @Test func featuringCreditDisplaysButLinksToTheAlbumArtist() {
+        let s = song(artist: "Just D feat. Thåström", albumArtist: "Just D")
+        #expect(s.displayArtist == "Just D feat. Thåström")
+        #expect(s.linkArtist == "Just D")
+    }
+
+    @Test func withoutAnAlbumArtistTheLinkIsTheArtist() {
+        let s = song(artist: "Marillion", albumArtist: "")
+        #expect(s.displayArtist == "Marillion")
+        #expect(s.linkArtist == "Marillion")
+    }
+
+    @Test func blankAlbumArtistCountsAsAbsent() {
+        #expect(song(artist: "Marillion", albumArtist: "   ").linkArtist == "Marillion")
+    }
+
+    @Test func neitherTagLeavesBothEmpty() {
+        let s = song(artist: "", albumArtist: "")
+        #expect(s.linkArtist.isEmpty)
+        #expect(s.displayArtist.isEmpty)
+    }
+}
+
+@Suite struct ArtistListMergeTests {
+    // Mirrors MPDStore.listArtists: albumartist values first, then the artist of
+    // files with no albumartist, deduped case-insensitively, empties dropped,
+    // first-seen spelling preserved.
+    private func merge(_ groups: [[String]]) -> [String] {
+        var seen: Set<String> = []; var out: [String] = []
+        for g in groups { for v in g where !v.isEmpty {
+            if seen.insert(v.lowercased()).inserted { out.append(v) }
+        } }
+        return out
+    }
+
+    @Test func albumArtistsComeThroughUnchanged() {
+        #expect(merge([["Just D", "Marillion"], []]) == ["Just D", "Marillion"])
+    }
+
+    // The whole point: a per-track featuring credit is not an albumartist, so it
+    // never reaches the list.
+    @Test func featuringCreditIsNotAnArtist() {
+        let out = merge([["Just D"], []])
+        #expect(!out.contains("Just D feat. Thåström"))
+    }
+
+    // ...but an artist that exists only on files with no albumartist must not
+    // vanish. Dropping it would trade a visible duplicate for a silent absence.
+    @Test func artistOnlyFilesAreStillListed() {
+        #expect(merge([["Just D"], ["Some Bootleg Artist"]]) == ["Just D", "Some Bootleg Artist"])
+    }
+
+    @Test func caseInsensitiveDedupeKeepsTheFirstSpelling() {
+        #expect(merge([["TOOL"], ["Tool"]]) == ["TOOL"])
+    }
+
+    @Test func emptyValuesAreDropped() {
+        #expect(merge([["", "Just D"], [""]]) == ["Just D"])
+    }
+}
+
 @Suite struct ArtistCreditMatchTests {
     @Test func exactAndCaseInsensitive() {
         #expect(artistCreditMatches("Marillion", "marillion"))

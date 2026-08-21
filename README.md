@@ -8,7 +8,7 @@ A lightweight iOS/iPadOS client for [Music Player Daemon](https://www.musicpd.or
 
 **Library** — Browse by albums, artists, genres, playlists or recently added, with search filtering and sorting. Albums can be shown as a list or an album-art grid. Album and artist detail views include Wikipedia summaries. Play or enqueue entire albums/artists with one tap. Multi-disc albums are collapsed into a single row with a disc count, whether the discs are marked in the album name or only in the tracks' disc tags.
 
-**Recently Added** — Albums added or modified in the last 30 days, newest first, as a list or art grid.
+**Recently Added** — Albums added to MPD in the last 30 days, newest first, as a list or art grid. Uses MPD 0.24's `added-since` filter, so re-tagging your library does not make everything look new.
 
 **Playlists** — Full stored-playlist support: browse, rename, and delete playlists, save the queue as a playlist, tap a track to play it in playlist context, shuffle-play a whole playlist, drag to reorder, swipe to remove or enqueue. "Add to Playlist" is available from Now Playing, albums, search results, and the queue.
 
