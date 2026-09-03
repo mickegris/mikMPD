@@ -106,6 +106,10 @@ final class MPDStore: ObservableObject {
     @Published var activeServerID: String = UserDefaults.standard.string(forKey: "activeServerID") ?? "" {
         didSet { UserDefaults.standard.set(activeServerID, forKey: "activeServerID") }
     }
+
+    /// The profile matching `activeServerID`, if it still exists. Nil on a fresh
+    /// install, and briefly while `deleteServer` is switching to the next profile.
+    var activeServer: MPDServerProfile? { servers.first { $0.id.uuidString == activeServerID } }
     @AppStorage("rememberPartitions") private var rememberPartitions: Bool = false
     @AppStorage("lastUsedPartitionName") private var lastUsedPartitionName: String?
     @AppStorage("httpStreamURL") var httpStreamURL: String = ""
