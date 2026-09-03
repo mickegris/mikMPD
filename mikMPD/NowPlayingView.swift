@@ -203,9 +203,16 @@ struct NowPlayingView: View {
                     Button(profile.id.uuidString == store.activeServerID
                            ? "\u{2713} \(serverLabel(profile))"
                            : serverLabel(profile)) {
-                        // Re-picking the active server is a no-op: switchToServer
-                        // disconnects and reconnects, and guards on the id itself.
-                        store.switchToServer(profile)
+                        if profile.id.uuidString != store.activeServerID {
+                            store.switchToServer(profile)
+                        } else if !store.isConnected {
+                            // Re-picking the active server is normally a no-op
+                            // (switchToServer guards on the id). When that server
+                            // is the one that failed, though, the banner is where
+                            // the failure is reported, so a tap on it has to be the
+                            // retry — connect()'s own failure path schedules none.
+                            store.switchToServer(profile, force: true)
+                        }
                     }
                 }
                 Divider()
@@ -243,6 +250,8 @@ struct NowPlayingView: View {
                     Text(bannerHeadline(pickable: pickable))
                         .font(.caption)
                         .foregroundColor(store.isConnected ? .secondary : .red)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
                     if pickable {
                         Image(systemName: "chevron.up.chevron.down")
                             .font(.caption2)
@@ -250,12 +259,12 @@ struct NowPlayingView: View {
                     }
                 }
 
-                if store.isConnected {
-                    Text(pickable
-                        ? "\(store.host):\(store.portStr) \u{00B7} Partition: \(store.currentPartition)"
-                        : "Partition: \(store.currentPartition)")
+                if store.isConnected, let detail = bannerDetail(pickable: pickable) {
+                    Text(detail)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                 }
             }
         }
@@ -275,6 +284,17 @@ struct NowPlayingView: View {
             return store.isConnected ? "Connected to \(store.host):\(store.portStr)" : "Not connected"
         }
         return store.isConnected ? serverLabel(profile) : "\(serverLabel(profile)) — not connected"
+    }
+
+    /// The second line: the address, when the headline gave it up to a profile
+    /// name, and the partition. Nil rather than a dangling "Partition:" — MPD
+    /// reports no partition until the first poll lands, and an empty label after
+    /// the colon reads as a bug.
+    func bannerDetail(pickable: Bool) -> String? {
+        var parts: [String] = []
+        if pickable { parts.append("\(store.host):\(store.portStr)") }
+        if !store.currentPartition.isEmpty { parts.append("Partition: \(store.currentPartition)") }
+        return parts.isEmpty ? nil : parts.joined(separator: " \u{00B7} ")
     }
 
     @ViewBuilder
