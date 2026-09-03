@@ -1,7 +1,7 @@
 import SwiftUI
 
 // Chip-bar order follows this declaration order (CaseIterable).
-enum LibTab: String, CaseIterable { case albums="Albums"; case artists="Artists"; case recentlyAdded="Recent"; case genres="Genres"; case playlists="Playlists"; case radio="Radio"; case cd="CD" }
+enum LibTab: String, CaseIterable { case albums="Albums"; case artists="Artists"; case recentlyAdded="Recent"; case genres="Genres"; case playlists="Playlists"; case radio="Radio"; case cd="CD"; case files="Files" }
 
 extension LibTab {
     var sfSymbol: String {
@@ -13,6 +13,7 @@ extension LibTab {
         case .radio:         "antenna.radiowaves.left.and.right"
         case .cd:            "opticaldisc"
         case .recentlyAdded: "sparkles"
+        case .files:         "folder"
         }
     }
 }
@@ -32,6 +33,7 @@ struct LibraryView: View {
                 case .radio:         RadioView()
                 case .cd:            CDView()
                 case .recentlyAdded: RecentlyAddedView()
+                case .files:         BrowserView()
                 }
             }
             .navigationTitle("Library").navigationBarTitleDisplayMode(.inline)
