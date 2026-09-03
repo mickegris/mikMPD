@@ -7,7 +7,7 @@ struct QueueView: View {
             Group {
                 if store.queue.isEmpty {
                     ContentUnavailableView("Queue is Empty", systemImage: "list.bullet",
-                        description: Text("Add songs from the Library or Browser."))
+                        description: Text("Add songs from the Library, or from Library \u{203A} Files."))
                 } else {
                     List {
                         Section {

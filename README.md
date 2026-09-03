@@ -18,15 +18,15 @@ A lightweight iOS/iPadOS client for [Music Player Daemon](https://www.musicpd.or
 
 **CD** — Play audio CDs directly via `cdda:///` URIs with per-track control.
 
-**File Browser** — Navigate the MPD directory tree. Single-tap enters directories, double-tap plays files. Swipe actions for add/play.
+**File Browser** — Navigate the MPD directory tree from the Library tab's Files chip. Single-tap enters directories, double-tap plays files. Swipe actions for add/play.
 
 **Search** — Concurrent search across songs, artists, albums and stored playlists with debounced input, batch selection, and album art thumbnails. Playlists match both by name and by what they contain, so searching an artist finds the playlists holding their tracks.
 
-**Queue** — View and manage the current playlist. Double-tap to jump to a song, drag to reorder, swipe to delete, shuffle the queue in place, clear all, toggle consume mode. "Add Next" (from album, search and playlist rows) queues a track right after the one playing.
+**Queue** — A tab of its own. View and manage the current playlist. Double-tap to jump to a song, drag to reorder, swipe to delete, shuffle the queue in place, clear all, toggle consume mode. "Add Next" (from album, search and playlist rows) queues a track right after the one playing.
 
 **Outputs & Partitions** — Toggle audio outputs on/off and switch partitions straight from Now Playing. The Outputs tab adds creating and deleting partitions and moving outputs between them (outputs are disabled before a move, which avoids a server-side stall). Optional partition memory across reconnects.
 
-**Multiple Servers** — Save any number of MPD servers and switch between them with one tap. Nearby servers advertising over Bonjour/Zeroconf are discovered automatically and can be added directly. Passwords are stored in the Keychain, and the last-used partition is remembered per server.
+**Multiple Servers** — Save any number of MPD servers and switch between them from the banner at the top of Now Playing, which names the server in use whenever more than one is configured. Nearby servers advertising over Bonjour/Zeroconf are discovered automatically and can be added directly. Passwords are stored in the Keychain, and the last-used partition is remembered per server.
 
 **Listen on Phone** — Stream audio from an MPD httpd output directly to the device via AVPlayer. Configure the stream URL per server, then toggle "Listen on phone" in Now Playing. Supports background playback with lock screen metadata (song title, artist, album art) and lock screen transport controls.
 

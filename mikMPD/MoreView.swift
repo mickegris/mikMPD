@@ -16,17 +16,6 @@ struct MoreView: View {
     var body: some View {
         NavigationStack {
             List {
-                NavigationLink {
-                    QueueView()
-                } label: {
-                    HStack {
-                        Image(systemName: "list.number")
-                            .foregroundColor(.accentColor)
-                            .frame(width: 28)
-                        Text("Queue")
-                    }
-                }
-                
                 Button {
                     showConnection = true
                 } label: {

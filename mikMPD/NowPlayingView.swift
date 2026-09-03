@@ -194,33 +194,107 @@ struct NowPlayingView: View {
             }
             .buttonStyle(.plain)
             .sheet(isPresented: $showConnection) { ConnectionView() }
+        } else if store.servers.count > 1 {
+            // A full-width banner is something a menu can anchor to, so this is
+            // a real dropdown — unlike `outputsButton`/`partitionButton`, which
+            // are 30 pt gutter icons and have to use a confirmationDialog.
+            Menu {
+                ForEach(store.servers) { profile in
+                    Button(profile.id.uuidString == store.activeServerID
+                           ? "\u{2713} \(serverLabel(profile))"
+                           : serverLabel(profile)) {
+                        if profile.id.uuidString != store.activeServerID {
+                            store.switchToServer(profile)
+                        } else if !store.isConnected {
+                            // Re-picking the active server is normally a no-op
+                            // (switchToServer guards on the id). When that server
+                            // is the one that failed, though, the banner is where
+                            // the failure is reported, so a tap on it has to be the
+                            // retry — connect()'s own failure path schedules none.
+                            store.switchToServer(profile, force: true)
+                        }
+                    }
+                }
+                Divider()
+                Button { showConnection = true } label: {
+                    Label("Manage Servers…", systemImage: "gearshape")
+                }
+            } label: {
+                connectionBanner(pickable: true)
+            }
+            .buttonStyle(.plain)
+            .sheet(isPresented: $showConnection) { ConnectionView() }
         } else {
-            HStack(spacing: 8) {
-                Image(systemName: store.isConnected ? "checkmark.circle.fill" : "xmark.circle.fill")
-                    .foregroundColor(store.isConnected ? .green : .red)
-                    .font(.caption)
+            connectionBanner(pickable: false)
+        }
+    }
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(store.isConnected
-                        ? "Connected to \(store.host):\(store.portStr)"
-                        : "Not connected")
-                    .font(.caption)
-                    .foregroundColor(store.isConnected ? .secondary : .red)
+    /// A profile's display name, falling back to its address — the server form
+    /// does not force a name, and a blank headline would be worse than an IP.
+    func serverLabel(_ profile: MPDServerProfile) -> String {
+        let name = profile.name.trimmingCharacters(in: .whitespaces)
+        return name.isEmpty ? "\(profile.host):\(profile.port)" : name
+    }
 
-                    if store.isConnected {
-                        Text("Partition: \(store.currentPartition)")
+    /// The connection banner. `pickable` marks it as a dropdown and promotes the
+    /// profile name to the headline, pushing the address down beside the
+    /// partition. With one server it renders exactly as it always has.
+    func connectionBanner(pickable: Bool) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: store.isConnected ? "checkmark.circle.fill" : "xmark.circle.fill")
+                .foregroundColor(store.isConnected ? .green : .red)
+                .font(.caption)
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 4) {
+                    Text(bannerHeadline(pickable: pickable))
+                        .font(.caption)
+                        .foregroundColor(store.isConnected ? .secondary : .red)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    if pickable {
+                        Image(systemName: "chevron.up.chevron.down")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
                 }
+
+                if store.isConnected, let detail = bannerDetail(pickable: pickable) {
+                    Text(detail)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
             }
-            .padding(.horizontal)
-            .padding(.vertical, 6)
-            .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(store.isConnected ? Color(.systemGray6) : Color.red.opacity(0.1))
-            )
         }
+        .padding(.horizontal)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(store.isConnected ? Color(.systemGray6) : Color.red.opacity(0.1))
+        )
+    }
+
+    /// Named profile when there is a picker, address when there is not. The
+    /// disconnected state stays spelled out either way — the red tint alone is
+    /// not enough to explain why nothing is playing.
+    func bannerHeadline(pickable: Bool) -> String {
+        guard pickable, let profile = store.activeServer else {
+            return store.isConnected ? "Connected to \(store.host):\(store.portStr)" : "Not connected"
+        }
+        return store.isConnected ? serverLabel(profile) : "\(serverLabel(profile)) — not connected"
+    }
+
+    /// The second line: the address, when the headline gave it up to a profile
+    /// name, and the partition. Nil rather than a dangling "Partition:" — MPD
+    /// reports no partition until the first poll lands, and an empty label after
+    /// the colon reads as a bug.
+    func bannerDetail(pickable: Bool) -> String? {
+        var parts: [String] = []
+        if pickable { parts.append("\(store.host):\(store.portStr)") }
+        if !store.currentPartition.isEmpty { parts.append("Partition: \(store.currentPartition)") }
+        return parts.isEmpty ? nil : parts.joined(separator: " \u{00B7} ")
     }
 
     @ViewBuilder

@@ -21,8 +21,9 @@ Package.resolved
 *.gcno
 *.gcda
 
-# Implementation plans
-plans/
+# Implementation plans (the untracked working notes at the repo root only —
+# docs/plans/ is tracked, and an unanchored "plans/" matched that too)
+/plans/
 
 # Local-only integration tests (require a real MPD server — must not be committed)
 mikMPDTests/Local/

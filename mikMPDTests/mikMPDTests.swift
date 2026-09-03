@@ -1595,6 +1595,56 @@ import Testing
     }
 }
 
+// MARK: - Connect retry gate
+
+@Suite struct ConnectRetryTests {
+    @Test func transientFailuresRetry() {
+        // The daemon is down, the LAN blipped, the name does not resolve yet —
+        // all of these come back on their own, and MPD on a LAN comes and goes.
+        #expect(shouldRetryConnect(after: MPDError.connectionFailed("Connection timed out")))
+        #expect(shouldRetryConnect(after: MPDError.connectionFailed("Cannot resolve nas.local")))
+        #expect(shouldRetryConnect(after: MPDError.io("read failed")))
+        #expect(shouldRetryConnect(after: MPDError.notConnected))
+    }
+
+    @Test func wrongPasswordDoesNotRetry() {
+        // Retrying would mean a failed authentication against the server every
+        // three seconds, forever, with the same password.
+        #expect(!shouldRetryConnect(after: MPDError.authFailed))
+    }
+
+    @Test func nonMPDPortDoesNotRetry() {
+        // Whatever answered did not say "OK MPD"; waiting does not change that.
+        #expect(!shouldRetryConnect(after: MPDError.badHandshake))
+    }
+
+    @Test func unknownErrorsRetry() {
+        // Anything the socket layer grows later is transient until shown otherwise.
+        struct Other: Error {}
+        #expect(shouldRetryConnect(after: Other()))
+    }
+}
+
+// MARK: - Legacy password adoption
+
+@Suite struct LegacyPasswordAdoptionTests {
+    @Test func adoptsWhenProfileHasNone() {
+        #expect(shouldAdoptLegacyPassword(profilePassword: nil, legacyPassword: "hunter2"))
+        #expect(shouldAdoptLegacyPassword(profilePassword: "", legacyPassword: "hunter2"))
+    }
+
+    @Test func neverOverwritesAProfilePassword() {
+        // The profile's own password always wins — it is the newer of the two.
+        #expect(!shouldAdoptLegacyPassword(profilePassword: "current", legacyPassword: "old"))
+    }
+
+    @Test func nothingToAdopt() {
+        #expect(!shouldAdoptLegacyPassword(profilePassword: nil, legacyPassword: nil))
+        #expect(!shouldAdoptLegacyPassword(profilePassword: nil, legacyPassword: ""))
+        #expect(!shouldAdoptLegacyPassword(profilePassword: "", legacyPassword: ""))
+    }
+}
+
 // MARK: - Legacy server migration gate
 
 @Suite struct LegacyMigrationTests {

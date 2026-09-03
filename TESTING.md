@@ -1,4 +1,4 @@
-# mikMPD v1.5 — Manual Test Checklist
+# mikMPD v1.6 — Manual Test Checklist
 
 Work top to bottom; the first two need a **fresh install** (delete the app first), the
 rest can run on your normal install. Kill and relaunch the app before re-checking
@@ -26,7 +26,7 @@ Wikipedia results — wrong/empty lookups are cached in memory per session.
 
 ## 4. Library chip bar
 
-- [ ] All six chips (Albums, Artists, Genres, Playlists, Radio, CD) reachable by scrolling; none truncated
+- [ ] All eight chips (Albums, Artists, Recent, Genres, Playlists, Radio, CD, Files) reachable by scrolling; none truncated
 - [ ] Selected chip is visibly distinct (prominent glass) and scrolls into view when selected
 - [ ] Check on the smallest screen you have (or Zoomed display mode) and with large Dynamic Type
 - [ ] Each chip shows the right content
@@ -157,3 +157,67 @@ for 7 days, so a fix otherwise looks like it changed nothing.
 - [ ] Kill the MPD httpd output mid-stream, then background the app → the app
       disconnects instead of holding the audio session open
 - [ ] Open the Snapcast screen, leave it, return — controls still work
+
+## 18. Queue tab and Files chip (v1.6)
+
+The queue moved out of More into the tab bar; Browse gave up its tab and became
+the Library's "Files" chip. Nothing about either screen changed internally, so
+this is about navigation, not features.
+
+- [ ] Third tab is **Queue** and opens directly on the queue
+- [ ] From the tab: Edit, drag to reorder, swipe to delete, shuffle, clear,
+      consume toggle, refresh, Add to Playlist — all still work
+- [ ] Empty queue shows its placeholder, and the Edit button is disabled
+- [ ] More no longer lists Queue and opens on Connection
+- [ ] Library → **Files** browses the tree; the title shows the current
+      directory name, not "Library"
+- [ ] Up and Home buttons work from a deep directory
+- [ ] Double-tap plays a file, single tap enters a directory, swipe adds/plays
+- [ ] Navigate deep in Files, switch to another chip, come back → still there
+- [ ] No doubled navigation bar anywhere in Files (the nested-stack symptom)
+- [ ] Rotate, and check on iPad — tab bar and nav bar lay out differently there
+
+## 19. Server picker in Now Playing (v1.6)
+
+Needs **two** saved profiles; with one, the banner must look exactly as it did
+in v1.5.
+
+- [ ] One server → banner reads "Connected to host:port", is not tappable, has
+      no chevron
+- [ ] Two servers → banner shows the profile **name** with a chevron, and
+      "host:port · Partition: X" beneath
+- [ ] A profile saved with a blank name shows host:port, never an empty line
+- [ ] A very long profile name truncates instead of pushing the chevron off
+- [ ] Before the first poll lands there is no dangling "Partition:" with nothing
+      after it
+- [ ] Menu marks the active profile with ✓; "Manage Servers…" opens Connection
+- [ ] Switch → queue, art, recently-played and "Playing from …" all belong to
+      the new server; no stale flash from the old one
+- [ ] Switch **while phone streaming** → the stream stops and other apps can play
+- [ ] Switch to an **unreachable** server → banner turns red and names it
+- [ ] Then tap the banner and pick that same (active, disconnected) server →
+      it retries the connection
+- [ ] Delete the active profile → picker follows to the next one, and disappears
+      entirely when only one is left
+
+## 20. Reconnection (v1.6)
+
+A failed `connect()` used to schedule no retry at all, so a connection that
+failed at connect time stayed down until the app was backgrounded and brought
+forward again. Both directions are worth checking, and the first one is the
+regression.
+
+- [ ] Stop MPD, launch the app → banner red; **start MPD** → the app connects
+      itself within a few seconds, untouched
+- [ ] With the app connected, stop MPD → banner goes red; start it again →
+      it recovers on its own
+- [ ] Switch to a server that is switched off, then back to a working one →
+      the working one connects
+- [ ] Background the app while it is retrying a dead server, wait, foreground →
+      one connection attempt, not a backlog of them
+- [ ] Set a **wrong** password on a profile → it fails once and stays failed
+      (no retry storm against the server)
+- [ ] Point a profile at a port running something that is not MPD → same: one
+      failure, no retry loop
+- [ ] A server that legitimately requires a password still reports "This server
+      requires a password" and does not retry

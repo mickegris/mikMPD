@@ -1,37 +1,39 @@
 import SwiftUI
 struct BrowserView: View {
     @EnvironmentObject var store: MPDStore
+    // No NavigationStack of its own: this is a destination of LibraryView's
+    // "Files" chip, and nesting two stacks breaks the toolbar. The title still
+    // doubles as the breadcrumb — the innermost navigationTitle wins, so it
+    // overrides LibraryView's "Library" while this chip is selected.
     var body: some View {
-        NavigationStack {
-            Group {
-                if store.browseItems.isEmpty { ContentUnavailableView("Empty", systemImage:"folder") }
-                else {
-                    List(store.browseItems) { item in
-                        BrowserRow(item:item, isCurrentlyPlaying: item.kind == .file && isCurrentTrack(file: item.path, currentFile: store.currentSong.file))
-                            .nowPlayingRow(item.kind == .file && isCurrentTrack(file: item.path, currentFile: store.currentSong.file))
-                            .contentShape(Rectangle())
-                            .onTapGesture(count:2) { doubleTap(item) }
-                            .onTapGesture { if item.kind == .directory { store.browse(item.path) } }
-                            .swipeActions(edge:.trailing) {
-                                Button { addItem(item) } label: { Label("Add",systemImage:"plus") }.tint(.green)
-                                if item.kind == .file {
-                                    Button { store.addAndPlay(uri:item.path) } label: { Label("Play",systemImage:"play.fill") }.tint(.blue)
-                                }
+        Group {
+            if store.browseItems.isEmpty { ContentUnavailableView("Empty", systemImage:"folder") }
+            else {
+                List(store.browseItems) { item in
+                    BrowserRow(item:item, isCurrentlyPlaying: item.kind == .file && isCurrentTrack(file: item.path, currentFile: store.currentSong.file))
+                        .nowPlayingRow(item.kind == .file && isCurrentTrack(file: item.path, currentFile: store.currentSong.file))
+                        .contentShape(Rectangle())
+                        .onTapGesture(count:2) { doubleTap(item) }
+                        .onTapGesture { if item.kind == .directory { store.browse(item.path) } }
+                        .swipeActions(edge:.trailing) {
+                            Button { addItem(item) } label: { Label("Add",systemImage:"plus") }.tint(.green)
+                            if item.kind == .file {
+                                Button { store.addAndPlay(uri:item.path) } label: { Label("Play",systemImage:"play.fill") }.tint(.blue)
                             }
-                    }.listStyle(.plain)
+                        }
+                }.listStyle(.plain)
+            }
+        }
+        .navigationTitle(store.isAtRoot ? "Browse" : URL(fileURLWithPath:store.browsePath).lastPathComponent)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement:.navigationBarLeading) {
+                if !store.isAtRoot {
+                    Button { store.browseUp() } label: { Label("Up", systemImage:"chevron.left") }
                 }
             }
-            .navigationTitle(store.isAtRoot ? "Browse" : URL(fileURLWithPath:store.browsePath).lastPathComponent)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement:.navigationBarLeading) {
-                    if !store.isAtRoot {
-                        Button { store.browseUp() } label: { Label("Up", systemImage:"chevron.left") }
-                    }
-                }
-                ToolbarItem(placement:.navigationBarTrailing) {
-                    Button { store.browse("") } label: { Image(systemName:"house") }
-                }
+            ToolbarItem(placement:.navigationBarTrailing) {
+                Button { store.browse("") } label: { Image(systemName:"house") }
             }
         }
     }
