@@ -688,6 +688,36 @@ nonisolated func shouldMigrateLegacyServer(persistedHost: String?, hasServers: B
     return true
 }
 
+/// Should a failed `connect()` be retried on a timer?
+///
+/// Almost everything that stops a connect is transient — the daemon is down, the
+/// LAN blipped, the name does not resolve yet — and MPD on a LAN comes and goes,
+/// so the default is yes. Two failures are not transient and must not be
+/// retried: a **wrong password** would produce a failed authentication against
+/// someone's server every three seconds forever, and a **bad handshake** means
+/// whatever answered on that port is not MPD, which no amount of waiting fixes.
+/// A server that requires a password is handled earlier and separately — it
+/// never reaches this, because its probe returns rather than throws.
+nonisolated func shouldRetryConnect(after error: Error) -> Bool {
+    switch error {
+    case MPDError.authFailed, MPDError.badHandshake: return false
+    default: return true
+    }
+}
+
+/// Should the pre-multi-server Keychain password (`mpd_password`) be moved onto
+/// a profile, which then owns it under `mpd_password_<uuid>`?
+///
+/// Only when the profile has none of its own and a legacy entry is still there.
+/// It must never overwrite a password the profile already carries, and the
+/// caller deletes the legacy entry afterwards so this can only ever happen once
+/// — otherwise clearing a profile's password deliberately would silently
+/// resurrect the old one on the next launch.
+nonisolated func shouldAdoptLegacyPassword(profilePassword: String?, legacyPassword: String?) -> Bool {
+    guard let legacy = legacyPassword, !legacy.isEmpty else { return false }
+    return (profilePassword ?? "").isEmpty
+}
+
 /// MPD playlist names are file names (NAME.m3u): returns the trimmed name,
 /// or nil for empty names or names containing path separators/newlines.
 nonisolated func validatePlaylistName(_ name: String) -> String? {

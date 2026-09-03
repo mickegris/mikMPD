@@ -45,6 +45,12 @@ Tests cover pure logic that doesn't need an MPD server: MPD protocol parsing (`p
 - **Group E (dangerous: partition lifecycle, daemon-hang repro)** — double-gated on `MPD_INTEGRATION_DANGEROUS=1` *and* a `private let iAcceptDaemonHangRisk` literal that must be flipped in the file and never committed as `true`.
 - **Group W (Wikipedia, real HTTP)** — `WIKI_INTEGRATION=1`.
 
+**Pass these on the command line with a `TEST_RUNNER_` prefix.** The tests run in a separate process inside the simulator, which does **not** inherit the invoking shell's environment — `MPD_TEST_PASSWORD=… xcodebuild test-without-building` silently does nothing and every live test fails with `ACK [4@0] … you don't have permission`, which reads like a server misconfiguration rather than a missing variable. `xcodebuild` forwards `TEST_RUNNER_<VAR>` to the runner as `<VAR>`:
+
+```bash
+TEST_RUNNER_MPD_TEST_PASSWORD='…' xcodebuild test-without-building -project mikMPD.xcodeproj -scheme mikMPD -destination 'platform=iOS Simulator,name=iPhone 17'
+```
+
 **Never put these env vars in `mikMPD.xctestplan`.** It is the only place Xcode can store scheme env vars once a test plan is in use, and it is *tracked* — committing `MPD_INTEGRATION=1` there turned the gate on for every clone and had to be reverted twice. That history is why the read-only gate became a reachability probe instead.
 
 ## Repo layout notes
@@ -137,7 +143,9 @@ MPD supports multiple partitions (independent playback zones). The store tracks 
 
 Multiple server profiles (`MPDServerProfile`: name, host, port, stream URL, last partition) are stored as JSON in UserDefaults (`mpdServers` + `activeServerID`, both `@Published` with didSet persistence). Passwords are **not** in the JSON — each profile's password lives in the Keychain under `mpd_password_<uuid>`. `host`/`portStr`/`password`/`httpStreamURL` on the store remain the *live* values, loaded from the active profile on `switchToServer`, which also saves the outgoing profile's partition, stops phone streaming, and resets all server-specific published state. A one-time migration in init converts pre-multi-server settings into the first profile — gated by `shouldMigrateLegacyServer`: it only runs when a legacy `mpd_host` was actually *persisted* (`@AppStorage` defaults are never written to UserDefaults), so fresh installs start with no servers instead of a fabricated one. `host` defaults to empty and `connect()` bails when it's blank; `store.isConfigured` drives the first-launch "No MPD Server Configured" alert in ContentView and the "tap to set up" banner in Now Playing (both open ConnectionView). After connecting, a `status` probe detects password-required servers (MPD accepts unauthenticated connections and ACKs every command with a permission error, which would otherwise cause a reconnect loop).
 
-**Switching servers is reachable from Now Playing** (v1.6): when `servers.count > 1`, `connectionStatus` becomes a `Menu` listing every profile — a `Menu` rather than the `confirmationDialog` the outputs/partition gutter icons use, because a full-width banner is something a menu can anchor to. `store.activeServer` resolves `activeServerID` to a profile; `serverLabel` falls back to `host:port` for an unnamed one. Selecting the **active** profile is a no-op *unless* the app is disconnected, in which case it forces a reconnect — worth knowing why: **`connect()`'s failure path schedules no retry.** Only `poll()`'s catch does, and no poll timer is running after a failed connect, so a connection that fails at `connect()` stays down until something else calls it (a foreground transition, or this banner). Putting the switch one tap from the main screen makes that dead end easy to reach, which is what the escape hatch is for.
+**The legacy password is adopted, not just migrated.** `loadServersMigratingIfNeeded` ends by calling `adoptLegacyPassword(for:)` on the active profile, gated by `shouldAdoptLegacyPassword`, which moves a pre-multi-server `mpd_password` Keychain entry to `mpd_password_<uuid>` and then deletes the legacy one so it can happen only once (otherwise deliberately clearing a profile's password would resurrect the old one next launch). It runs *outside* both migration branches on purpose: the branch that merely **adopts** an existing profile as active used to leave the password behind — unlike the branch that **creates** one — and an install already in that state takes neither branch again, so a fix inside either would never reach the people affected. The symptom is the password-required probe firing against a server whose password the app is still holding.
+
+**Switching servers is reachable from Now Playing** (v1.6): when `servers.count > 1`, `connectionStatus` becomes a `Menu` listing every profile — a `Menu` rather than the `confirmationDialog` the outputs/partition gutter icons use, because a full-width banner is something a menu can anchor to. `store.activeServer` resolves `activeServerID` to a profile; `serverLabel` falls back to `host:port` for an unnamed one. Selecting the **active** profile is a no-op *unless* the app is disconnected, in which case it forces a reconnect. That escape hatch was written when a failed `connect()` scheduled no retry at all and the banner was the only way back; the retry is fixed now (see "Connection lifecycle"), so it is no longer the *only* way back — but it stays, because a user looking at a red banner should not have to wait out a timer they cannot see.
 
 ### Stored playlists
 
@@ -199,7 +207,13 @@ More → Statistics reads MPD's `stats` into `MPDStats` (`loadStats`, `@Publishe
 
 ### Connection lifecycle
 
-Disconnects on background, reconnects on foreground resume — **unless phone streaming is active**. Partition is restored automatically. 3-second retry on connection loss, guarded by `isReconnecting` to prevent stacking.
+Disconnects on background, reconnects on foreground resume — **unless phone streaming is active**. Partition is restored automatically.
+
+**The 3-second retry covers both ways a connection can fail, and it did not always.** It used to be scheduled *only* from `poll()`'s catch — but `startTimers()` runs on connect **success**, so after a failed `connect()` no poll timer existed, no poll could fail, and nothing ever retried: a connection that failed at `connect()` stayed down until a foreground transition. `connect()`'s catch now schedules one too, through the shared `scheduleReconnect()`.
+
+Two failures are deliberately **not** retried, via `shouldRetryConnect(after:)` (Models.swift): `authFailed`, because retrying means a failed authentication against someone's server every three seconds forever, and `badHandshake`, because whatever answered that port is not MPD. A password-*required* server never reaches this at all — its probe returns rather than throws.
+
+`isReconnecting` still prevents stacking, and `reconnectGeneration` is what lets an explicit `connect()` supersede a retry already in flight rather than racing it into a second connect. `cancelPendingReconnect()` is called from both `connect()` and `disconnect()`, so a retry armed three seconds ago cannot reopen a socket the app has just closed on purpose — backgrounding being the case that matters.
 
 `MPDClientApp` calls `store.handleEnteringBackground()` rather than testing `isPhoneStreaming` inline, because that flag alone is not evidence of playback: a stream that failed or was stopped by the server left it true forever, which held the audio session open (so other apps were never told they could resume) and suppressed the disconnect indefinitely. The check is `streamPlayer?.timeControlStatus == .paused` → stop the stream; `.waitingToPlayAtSpecifiedRate` is a stream still buffering and is left alone.
 

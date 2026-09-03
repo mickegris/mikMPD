@@ -199,3 +199,25 @@ in v1.5.
       it retries the connection
 - [ ] Delete the active profile → picker follows to the next one, and disappears
       entirely when only one is left
+
+## 20. Reconnection (v1.6)
+
+A failed `connect()` used to schedule no retry at all, so a connection that
+failed at connect time stayed down until the app was backgrounded and brought
+forward again. Both directions are worth checking, and the first one is the
+regression.
+
+- [ ] Stop MPD, launch the app → banner red; **start MPD** → the app connects
+      itself within a few seconds, untouched
+- [ ] With the app connected, stop MPD → banner goes red; start it again →
+      it recovers on its own
+- [ ] Switch to a server that is switched off, then back to a working one →
+      the working one connects
+- [ ] Background the app while it is retrying a dead server, wait, foreground →
+      one connection attempt, not a backlog of them
+- [ ] Set a **wrong** password on a profile → it fails once and stays failed
+      (no retry storm against the server)
+- [ ] Point a profile at a port running something that is not MPD → same: one
+      failure, no retry loop
+- [ ] A server that legitimately requires a password still reports "This server
+      requires a password" and does not retry

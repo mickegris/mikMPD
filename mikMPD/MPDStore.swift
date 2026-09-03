@@ -136,6 +136,11 @@ final class MPDStore: ObservableObject {
     private var currentPollInterval: TimeInterval = 1.0   // tracks active poll rate for throttle logic
     private var lyricsToken   = UUID()   // invalidates in-flight lyric fetches on song change
     private var isReconnecting = false
+    /// Bumped whenever a pending retry must be abandoned. A scheduled retry
+    /// checks it before firing, so an explicit `connect()` — a foreground
+    /// resume, a server switch, the Now Playing picker — supersedes a retry
+    /// already in flight instead of racing it into a second connect.
+    private var reconnectGeneration = 0
     private var isRestoringPartition = false
     private var isMovingOutput = false   // prevents stacking a second move onto Q
     private var partitionToRestore: String?
@@ -173,20 +178,65 @@ final class MPDStore: ObservableObject {
             let profile = migratedLegacyProfile(host: host, portStr: portStr,
                                                 streamURL: httpStreamURL,
                                                 lastPartition: lastUsedPartitionName)
-            if let legacyPW = KeychainHelper.load(key: "mpd_password"), !legacyPW.isEmpty {
-                KeychainHelper.save(key: "mpd_password_\(profile.id.uuidString)", value: legacyPW)
-            }
             servers = [profile]
             activeServerID = profile.id.uuidString
         } else if activeServerID.isEmpty, let first = servers.first {
             activeServerID = first.id.uuidString
         }
+        // Both branches above end with an active profile that may still have no
+        // password of its own, and so does an install that took the second
+        // branch under an earlier version — which only ever *adopted* a profile
+        // and left the legacy Keychain entry behind. MPD then ACKs every command
+        // and the app reports "This server requires a password" against a server
+        // whose password it is still holding. Running the adoption here rather
+        // than inside either branch repairs those installs too, since neither
+        // branch is taken again once activeServerID is set.
+        if let active = activeServer { adoptLegacyPassword(for: active) }
+    }
+
+    /// Move the pre-multi-server password onto `profile` if it has none, then
+    /// delete the legacy entry so this happens exactly once — see
+    /// `shouldAdoptLegacyPassword` for why the one-shot matters.
+    private func adoptLegacyPassword(for profile: MPDServerProfile) {
+        let key = Self.passwordKey(forServerID: profile.id.uuidString)
+        let legacy = KeychainHelper.load(key: "mpd_password")
+        guard shouldAdoptLegacyPassword(profilePassword: KeychainHelper.load(key: key),
+                                        legacyPassword: legacy),
+              let legacy else { return }
+        KeychainHelper.save(key: key, value: legacy)
+        KeychainHelper.save(key: "mpd_password", value: "")   // empty value removes the entry
     }
 
     // MARK: - Connection
 
+    /// Retry `connect()` in 3 s. The only path back from a failed connection:
+    /// `startTimers()` runs on connect *success*, so after a failure no poll
+    /// timer exists and `poll()`'s own catch — which used to be the sole place
+    /// a retry was scheduled — can never run.
+    private func scheduleReconnect() {
+        guard !isReconnecting else { return }
+        isReconnecting = true
+        reconnectGeneration &+= 1
+        let generation = reconnectGeneration
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            guard let self, generation == self.reconnectGeneration else { return }
+            self.isReconnecting = false
+            self.connect()
+        }
+    }
+
+    /// Abandon a scheduled retry. Called wherever the app takes the connection
+    /// into its own hands — `connect()` and `disconnect()` — so a retry armed
+    /// three seconds ago cannot reopen a socket the app has just closed on
+    /// purpose (backgrounding, most importantly).
+    private func cancelPendingReconnect() {
+        reconnectGeneration &+= 1
+        isReconnecting = false
+    }
+
     func connect() {
         stopTimers()
+        cancelPendingReconnect()
         DispatchQueue.main.async {
             self.isConnected = false
             self.connectionError = nil
@@ -241,6 +291,9 @@ final class MPDStore: ObservableObject {
             } catch {
                 DispatchQueue.main.async {
                     self.connectionError = error.localizedDescription
+                    // A wrong password or a non-MPD port fails the same way on
+                    // every attempt; everything else is worth waiting out.
+                    if shouldRetryConnect(after: error) { self.scheduleReconnect() }
                 }
             }
         }
@@ -248,6 +301,7 @@ final class MPDStore: ObservableObject {
 
     func disconnect() {
         stopTimers()
+        cancelPendingReconnect()
         if !currentPartition.isEmpty {
             partitionToRestore = currentPartition
         }
@@ -507,11 +561,7 @@ final class MPDStore: ObservableObject {
                 guard let self, self.isConnected, !self.isReconnecting else { return }
                 self.isConnected = false
                 self.stopTimers()
-                self.isReconnecting = true
-                DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-                    self.isReconnecting = false
-                    self.connect()
-                }
+                self.scheduleReconnect()
             }
             return
         }
@@ -620,11 +670,7 @@ final class MPDStore: ObservableObject {
                 guard let self, !self.isReconnecting else { return }
                 self.isConnected = false
                 self.stopTimers()
-                self.isReconnecting = true
-                DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-                    self.isReconnecting = false
-                    self.connect()
-                }
+                self.scheduleReconnect()
             }
         }
     }

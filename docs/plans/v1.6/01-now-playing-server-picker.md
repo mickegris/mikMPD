@@ -124,7 +124,11 @@ defects found on the way.
 3. **Re-picking the active server had to stop being a pure no-op.** See below —
    this is the interesting one.
 
-### Two latent defects found, neither fixed here
+### Two latent defects found — both fixed in a follow-up
+
+*(Recorded here as found; the fixes landed after the rest of v1.6, in their own
+commit. `shouldRetryConnect` and `shouldAdoptLegacyPassword` are the pure
+predicates, both unit-tested, following `shouldMigrateLegacyServer`'s shape.)* here
 
 **`connect()`'s failure path schedules no retry.** The 3-second reconnect loop
 lives *only* in `poll()`'s catch. `startTimers()` runs on connect **success**, so
@@ -137,9 +141,21 @@ The picker makes this much easier to reach, so it carries the mitigation the
 plan did not foresee: **selecting the active profile while disconnected forces a
 reconnect** (`switchToServer(profile, force: true)`), instead of the no-op the
 plan specified. The banner is where a broken connection is reported, so it has to
-be what you tap to retry. Fixing `connect()` itself is the real repair and belongs
-in its own change — it is connection-lifecycle code, which this release's brief
-put out of bounds.
+be what you tap to retry. Fixing `connect()` itself is the real repair, and it was done
+in a follow-up commit: its catch now schedules a retry through a shared
+`scheduleReconnect()`, with `reconnectGeneration` so an explicit connect
+supersedes a retry in flight, and `cancelPendingReconnect()` in `disconnect()`
+so a retry cannot reopen a socket closed on purpose by backgrounding. A wrong
+password and a non-MPD port are excluded — retrying either produces the same
+failure forever, and in the first case a failed authentication against someone's
+server every three seconds.
+
+Verified end to end against a stub MPD on localhost, which is the only way to
+observe it: switch to a host with nothing listening (banner red), start the
+server, and the app connects itself within one retry without being touched.
+Before the fix it stayed red indefinitely. The reverse — kill the server
+mid-session, restart it — recovers too, which exercises the refactored
+`poll()` path.
 
 **`loadServersMigratingIfNeeded` has an asymmetric password migration.** The
 `servers.isEmpty` branch copies the legacy `mpd_password` Keychain entry to
@@ -150,6 +166,14 @@ per-profile password, and MPD's response — ACK on every command — surfaces a
 "This server requires a password". Suspected, not proven, as the cause of what
 was seen in the simulator; recorded because reading the two branches side by side
 is enough to see the gap.
+
+Fixed by moving the adoption **out** of both branches, to the end of
+`loadServersMigratingIfNeeded`, where it runs against the active profile
+whatever path produced it. That placement is the point: an install already in
+the broken state has `activeServerID` set and so takes neither branch ever
+again, and a fix inside either one would never reach the people who have the
+bug. The legacy entry is deleted once adopted, so it cannot resurrect a password
+the user later clears on purpose.
 
 ### On the verification that could not be completed
 
