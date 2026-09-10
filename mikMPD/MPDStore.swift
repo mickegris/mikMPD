@@ -45,6 +45,12 @@ final class MPDStore: ObservableObject {
     @Published var lyricsState:    LyricsState     = .unavailable
     @Published var queue:          [MPDSong]       = []
     @Published var outputs:        [MPDOutput]     = []
+    /// True while a queue transfer is running. Published because a transfer is
+    /// several round trips and an audible gap, and an unacknowledged tap invites
+    /// a second one.
+    @Published var isTransferringQueue = false
+    /// False when the server has stored playlists disabled, which transfer needs.
+    @Published var canTransferQueue = true
     @Published var outputPartitions: [String: String] = [:] // outputID -> partition (for current view)
     @Published var partitions:     [String]        = []
     @Published var browseItems:    [MPDBrowseItem] = []
@@ -143,6 +149,12 @@ final class MPDStore: ObservableObject {
     private var reconnectGeneration = 0
     private var isRestoringPartition = false
     private var isMovingOutput = false   // prevents stacking a second move onto Q
+    /// nil = not probed on this connection. Stored-playlist support is server
+    /// configuration (`playlist_directory`), so it cannot change under a live
+    /// connection; probed read-only via `listplaylists`, which fails the same
+    /// way when it is off, so availability costs no write. Q-only, like
+    /// `playlistSearchAvailable`; `canTransferQueue` is the published mirror.
+    nonisolated(unsafe) private var storedPlaylistsAvailable: Bool?
     private var partitionToRestore: String?
 
     // Seek lock: elapsed from poll is ignored until this date passes
@@ -263,6 +275,7 @@ final class MPDStore: ObservableObject {
                 // Capability probes are per-connection: a different server, or
                 // the same one after an upgrade, may answer differently.
                 self.playlistSearchAvailable = nil
+                self.storedPlaylistsAvailable = nil
                 self.recentlyAddedRung = nil
                 try self.socket.connect(host: h, port: p, password: pw)
                 // MPD accepts connections without auth even when a password is
@@ -287,6 +300,9 @@ final class MPDStore: ObservableObject {
                     self.isConnected = true
                     self.startTimers()
                     self.loadAll()
+                    // Whether queues can be transferred is server configuration,
+                    // so it is established once per connection and read-only.
+                    self.probeStoredPlaylistSupport()
                 }
             } catch {
                 DispatchQueue.main.async {
@@ -1470,11 +1486,23 @@ final class MPDStore: ObservableObject {
         Q.async { [weak self] in
             guard let self else { return }
             let recs = (try? self.socket.command("listplaylists")) ?? []
-            let lists = recs.compactMap { r -> MPDPlaylist? in
+            let all = recs.compactMap { r -> MPDPlaylist? in
                 guard let name = r["playlist"], !name.isEmpty else { return nil }
                 return MPDPlaylist(name: name, lastModified: r["last-modified"] ?? "")
-            }.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            }
+            // Transfer scratch playlists are never the user's business: not while
+            // one is in flight, and not while an orphan waits to be swept.
+            let lists = all
+                .filter { !$0.name.hasPrefix(transferPlaylistPrefix) }
+                .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
             DispatchQueue.main.async { self.playlists = lists }
+
+            // Sweep orphans from a force-quit or a dropped socket mid-transfer —
+            // nothing in this app runs on termination, so this is the only thing
+            // that removes them.
+            for p in all where isStaleTransferPlaylist(name: p.name, lastModified: p.lastModified) {
+                _ = try? self.socket.command("rm \"\(p.name.esc)\"")
+            }
         }
     }
 
@@ -1691,6 +1719,140 @@ final class MPDStore: ObservableObject {
                 self.loadOutputs()
                 completion(failure)
             }
+        }
+    }
+
+    // MARK: - Queue transfer between partitions
+
+    /// Move the queue, the current track, its position and the play state to
+    /// another partition, then stop and clear this one — Roon's "transfer zone".
+    ///
+    /// MPD has no transfer command. The obvious construction — read the queue
+    /// with `playlistinfo` and re-add each URI — is one command per track, which
+    /// is the shape that once starved the poll for minutes on a large album, and
+    /// a big enough response can outrun the socket's 5 s read timeout. **Stored
+    /// playlists are global across partitions**, so `save` here and `load` there
+    /// moves any queue in two commands regardless of its length.
+    ///
+    /// The ordering is the safety property: the source is not touched until the
+    /// target holds the queue and has started. A failure anywhere before that
+    /// leaves the source exactly as it was, which is the state the user can least
+    /// afford to lose — it is the music they are listening to.
+    ///
+    /// This is **not** `moveoutput` and does not carry its deadlock: no output is
+    /// moved, only the connection's partition binding and queue commands. See
+    /// plans/move-active-output-hang.md before assuming otherwise.
+    func transferQueue(toPartition target: String,
+                       completion: @escaping @MainActor (String?) -> Void) {
+        guard !isTransferringQueue else { completion("A transfer is already in progress"); return }
+        if let reason = transferRefusalReason(
+            queueIsEmpty: queue.isEmpty,
+            containsCDTracks: queue.contains { $0.sourceKind == .cd },
+            targetPartition: target,
+            currentPartition: currentPartition,
+            storedPlaylistsAvailable: storedPlaylistsAvailable ?? true) {
+            completion(reason); return
+        }
+
+        let source = currentPartition
+        let temp = transferTempPlaylistName()
+        let state: TransferPlaybackState = isPlaying ? .playing : (isPaused ? .paused : .stopped)
+        let pos = playlistPos
+        let at = elapsed
+        // Captured here, on main: @Published state must never be read from
+        // inside Q.async.
+        let modes = (rep: repeatMode, rnd: randomMode, sng: singleMode, csm: consumeMode)
+        isTransferringQueue = true
+
+        Q.async { [weak self] in
+            guard let self else { return }
+            var failure: String?
+
+            // Everything after the save must clean the scratch playlist up, on
+            // every path — it lives in the user's playlist directory.
+            func cleanup() {
+                _ = try? self.socket.command("rm \"\(temp.esc)\"")
+            }
+
+            do {
+                // A leftover from a previous run under the same name would make
+                // `save` ACK on pre-0.24 servers, which take no replace mode.
+                _ = try? self.socket.command("rm \"\(temp.esc)\"")
+                _ = try self.socket.command("save \"\(temp.esc)\"")
+            } catch {
+                DispatchQueue.main.async {
+                    self.isTransferringQueue = false
+                    completion(Self.ackMessage(error.localizedDescription))
+                }
+                return
+            }
+
+            do {
+                // ---- build the target completely before touching the source ----
+                _ = try self.socket.command("partition \"\(target.esc)\"")
+                _ = try self.socket.command("clear")
+                _ = try self.socket.command("load \"\(temp.esc)\"")
+
+                // The four queue modes describe the queue, so they travel with
+                // it. Volume deliberately does not — it belongs to the target's
+                // own outputs, and carrying it over would blast a room at the
+                // level of a different one.
+                _ = try? self.socket.command("repeat \(modes.rep ? 1 : 0)")
+                _ = try? self.socket.command("random \(modes.rnd ? 1 : 0)")
+                _ = try? self.socket.command("single \(modes.sng ? 1 : 0)")
+                _ = try? self.socket.command("consume \(modes.csm ? 1 : 0)")
+
+                for cmd in transferResumeCommands(state: state, pos: pos, elapsed: at) {
+                    _ = try self.socket.command(cmd)
+                }
+
+                // ---- target is good; only now stop the source ----
+                if !source.isEmpty {
+                    _ = try? self.socket.command("partition \"\(source.esc)\"")
+                    _ = try? self.socket.command("clear")
+                    _ = try? self.socket.command("stop")
+                }
+                // Follow the music, as Roon does: you transferred it because you
+                // want to keep controlling it.
+                _ = try? self.socket.command("partition \"\(target.esc)\"")
+            } catch {
+                failure = Self.ackMessage(error.localizedDescription)
+                // Get back to where the user was; the source is untouched.
+                if !source.isEmpty { _ = try? self.socket.command("partition \"\(source.esc)\"") }
+            }
+            cleanup()
+
+            let landedOn = failure == nil ? target : source
+            DispatchQueue.main.async {
+                self.isTransferringQueue = false
+                self.currentPartition = landedOn
+                self.partitionToRestore = nil
+                if failure == nil { self.rememberPartitionForActiveServer(landedOn) }
+                self.loadQueue()
+                self.loadOutputs()
+                self.loadPartitions()
+                self.loadPlaylists()
+                completion(failure)
+            }
+        }
+    }
+
+    /// Persist the partition against the active server profile, so a reconnect
+    /// comes back to where the music actually is.
+    private func rememberPartitionForActiveServer(_ name: String) {
+        guard let idx = servers.firstIndex(where: { $0.id.uuidString == activeServerID }) else { return }
+        servers[idx].lastPartition = name
+    }
+
+    /// Probe stored-playlist support read-only. `listplaylists` fails the same
+    /// way `save` does when `playlist_directory` is unset, so availability costs
+    /// no write and no scratch file.
+    func probeStoredPlaylistSupport() {
+        Q.async { [weak self] in
+            guard let self else { return }
+            let ok = (try? self.socket.command("listplaylists")) != nil
+            self.storedPlaylistsAvailable = ok
+            DispatchQueue.main.async { self.canTransferQueue = ok }
         }
     }
 

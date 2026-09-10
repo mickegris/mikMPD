@@ -688,6 +688,89 @@ nonisolated func shouldMigrateLegacyServer(persistedHost: String?, hasServers: B
     return true
 }
 
+// MARK: - Queue transfer between partitions
+
+/// What the source partition was doing, so the target can be put back into it.
+nonisolated enum TransferPlaybackState: String, Equatable {
+    case playing, paused, stopped
+}
+
+/// Commands to restore playback in the target partition after `load`.
+///
+/// The order is the whole content of this function. `seekcur` ACKs on a stopped
+/// player, so `play` has to come first — and when the source was paused, the
+/// pause has to come *after* the seek, or the track resumes from zero. Both
+/// mistakes look plausible in a diff and neither is visible without two
+/// partitions and a stopwatch, which is why this is a pure function.
+nonisolated func transferResumeCommands(state: TransferPlaybackState,
+                                        pos: Int,
+                                        elapsed: Double) -> [String] {
+    guard state != .stopped, pos >= 0 else { return [] }
+    var cmds = ["play \(pos)"]
+    if elapsed > 0.5 { cmds.append(String(format: "seekcur %.3f", elapsed)) }
+    if state == .paused { cmds.append("pause 1") }
+    return cmds
+}
+
+/// Name for the short-lived stored playlist a transfer moves the queue through.
+///
+/// Unique per transfer, not one fixed name: two devices transferring at the same
+/// moment would otherwise collide on it and the second `save` would overwrite a
+/// queue in flight. A leading dot keeps it out of the way; `/` and newlines are
+/// illegal in MPD playlist names, and hex cannot produce either.
+nonisolated func transferTempPlaylistName(uuid: UUID = UUID()) -> String {
+    "\(transferPlaylistPrefix)\(uuid.uuidString.prefix(8).lowercased())"
+}
+
+nonisolated let transferPlaylistPrefix = ".mikmpd-transfer-"
+
+/// Is this a transfer playlist left behind by a crash, safe to delete?
+///
+/// Age-gated on purpose. An ungated sweep becomes the bug it is fixing: another
+/// device's transfer, in flight right now, has a playlist matching the prefix.
+/// The window is far longer than a transfer takes and far shorter than a
+/// leftover deserves to live. A missing or unparseable timestamp is treated as
+/// *not* stale — never delete something we cannot date.
+nonisolated func isStaleTransferPlaylist(name: String,
+                                         lastModified: String,
+                                         now: Date = Date(),
+                                         maxAge: TimeInterval = 300) -> Bool {
+    guard name.hasPrefix(transferPlaylistPrefix) else { return false }
+    guard let date = iso8601Date(lastModified) else { return false }
+    return now.timeIntervalSince(date) > maxAge
+}
+
+/// MPD reports `Last-Modified` as ISO-8601 UTC, e.g. "2026-09-10T08:14:22Z".
+nonisolated func iso8601Date(_ s: String) -> Date? {
+    let f = ISO8601DateFormatter()
+    f.formatOptions = [.withInternetDateTime]
+    return f.date(from: s)
+}
+
+/// Why a queue cannot be transferred, or nil when it can.
+///
+/// CD tracks are the interesting case: `cdda:///N` URIs in a stored playlist do
+/// not reload meaningfully, and the disc is in one machine anyway — so the
+/// target would end up with a queue that looks right and plays nothing.
+nonisolated func transferRefusalReason(queueIsEmpty: Bool,
+                                       containsCDTracks: Bool,
+                                       targetPartition: String,
+                                       currentPartition: String,
+                                       storedPlaylistsAvailable: Bool) -> String? {
+    if !storedPlaylistsAvailable {
+        return "Transferring a queue needs MPD\u{2019}s stored-playlist support, which is off on "
+             + "this server. Set playlist_directory in mpd.conf and restart MPD."
+    }
+    if queueIsEmpty { return "The queue is empty." }
+    if targetPartition == currentPartition { return "That is already the current partition." }
+    if targetPartition.isEmpty { return "No target partition." }
+    if containsCDTracks {
+        return "A CD queue cannot be transferred \u{2014} CD tracks belong to the machine "
+             + "holding the disc."
+    }
+    return nil
+}
+
 /// Should a failed `connect()` be retried on a timer?
 ///
 /// Almost everything that stops a connect is transient — the daemon is down, the
