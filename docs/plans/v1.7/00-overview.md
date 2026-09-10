@@ -50,6 +50,10 @@ The fixture-building recipe is in
 [02](02-opus-phone-streaming.md#appendix-building-an-ogg-test-fixture); the
 scratch files are session-local and will not survive.
 
+> **Status: both implemented on branch `v1.7` (build 40), pending live and
+> on-device verification.** 477 unit tests pass. What could not be checked
+> without a server or a device is listed at the end of each plan.
+
 ## Decisions taken
 
 - **Transfer is a move, as in Roon** — the source partition ends empty and

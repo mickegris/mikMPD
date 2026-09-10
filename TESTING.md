@@ -1,4 +1,4 @@
-# mikMPD v1.6 — Manual Test Checklist
+# mikMPD v1.7 — Manual Test Checklist
 
 Work top to bottom; the first two need a **fresh install** (delete the app first), the
 rest can run on your normal install. Kill and relaunch the app before re-checking
@@ -221,3 +221,55 @@ regression.
       failure, no retry loop
 - [ ] A server that legitimately requires a password still reports "This server
       requires a password" and does not retry
+
+## 21. Ogg phone streaming (v1.7)
+
+Needs an MPD httpd output whose `encoder` you can change, and a **real device** —
+simulator and device use different media stacks, and this is exactly the kind of
+thing that differs.
+
+- [ ] **Opus** stream plays, and keeps playing for >10 minutes with no drift or
+      dropout
+- [ ] No click at the very start of the stream (pre-skip is being honoured)
+- [ ] Track changes are seamless — this is the chained-bitstream case, and the
+      symptom if it is broken is "first track plays, then silence"
+- [ ] **FLAC** stream plays
+- [ ] **Vorbis** stream shows the message naming the codec and the supported
+      list, rather than a toggle that does nothing
+- [ ] **mp3** stream still works — the regression that matters most
+- [ ] **Change the server's encoder between mp3 and Opus and restart the stream
+      from the same URL, with no change in the app.** This is the actual
+      requirement; everything else is detail
+- [ ] Supported encoders are stated under the Stream URL field in the server form
+- [ ] Lock screen shows metadata; transport controls still drive MPD
+- [ ] Backgrounded playback survives; a stream killed at the server still stops
+      cleanly and other apps can resume afterwards
+- [ ] Phone call interrupts and recovers; unplugging headphones pauses
+- [ ] Switching servers mid-stream stops the stream
+- [ ] Start a stream on a URL that is not audio at all → a clear failure, no hang
+
+## 22. Moving playback between partitions (v1.7)
+
+Needs two partitions with an output each, and `playlist_directory` set in
+mpd.conf.
+
+- [ ] Now Playing → partition button → "Move playback to X…" → confirm, and the
+      music continues in the other partition **from the same spot**
+- [ ] The source partition ends empty and stopped
+- [ ] The app follows to the target partition
+- [ ] Repeat/random/single/consume carry over; **volume does not**
+- [ ] Move a **paused** queue → the target is paused at the same position
+- [ ] Move a **stopped** queue → the queue arrives, nothing starts playing
+- [ ] The same actions work by swiping a partition row in Outputs & Partitions
+- [ ] The confirmation names both partitions before doing anything
+- [ ] The partition button shows a spinner while the move runs and cannot be
+      tapped twice
+- [ ] No `.mikmpd-transfer-*` playlist is visible in Library → Playlists at any
+      point, during or after
+- [ ] Force-quit mid-transfer, relaunch → any leftover scratch playlist is gone
+      after the playlist list loads, and no real playlist was touched
+- [ ] With `playlist_directory` **unset**: the Outputs footer explains it and
+      names the setting, and Now Playing offers "Why can't I move playback?"
+      rather than a dead action
+- [ ] A CD queue refuses with a reason
+- [ ] Moving to the partition you are already on does nothing

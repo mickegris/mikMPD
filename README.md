@@ -24,11 +24,11 @@ A lightweight iOS/iPadOS client for [Music Player Daemon](https://www.musicpd.or
 
 **Queue** — A tab of its own. View and manage the current playlist. Double-tap to jump to a song, drag to reorder, swipe to delete, shuffle the queue in place, clear all, toggle consume mode. "Add Next" (from album, search and playlist rows) queues a track right after the one playing.
 
-**Outputs & Partitions** — Toggle audio outputs on/off and switch partitions straight from Now Playing. The Outputs tab adds creating and deleting partitions and moving outputs between them (outputs are disabled before a move, which avoids a server-side stall). Optional partition memory across reconnects.
+**Outputs & Partitions** — Toggle audio outputs on/off and switch partitions straight from Now Playing. **Move playback between partitions** — the queue, the current track and its position follow, and the room you left stops (needs `playlist_directory` set in mpd.conf). The Outputs tab adds creating and deleting partitions and moving outputs between them (outputs are disabled before a move, which avoids a server-side stall). Optional partition memory across reconnects.
 
 **Multiple Servers** — Save any number of MPD servers and switch between them from the banner at the top of Now Playing, which names the server in use whenever more than one is configured. Nearby servers advertising over Bonjour/Zeroconf are discovered automatically and can be added directly. Passwords are stored in the Keychain, and the last-used partition is remembered per server.
 
-**Listen on Phone** — Stream audio from an MPD httpd output directly to the device via AVPlayer. Configure the stream URL per server, then toggle "Listen on phone" in Now Playing. Supports background playback with lock screen metadata (song title, artist, album art) and lock screen transport controls.
+**Listen on Phone** — Stream audio from an MPD httpd output directly to the device. Supported encoders are **mp3, Opus and FLAC**; the app detects which one the server is sending and adapts, so changing MPD's encoder needs no change here and there is no codec setting to keep in sync. Configure the stream URL per server, then toggle "Listen on phone" in Now Playing. Supports background playback with lock screen metadata (song title, artist, album art) and lock screen transport controls.
 
 **Snapcast** — Control a [Snapcast](https://github.com/badaix/snapcast) multiroom server from the More tab. Adjust per-client volume and latency, mute groups, move clients between groups, rename clients, switch stream sources, and remove disconnected clients. Real-time updates via Snapcast's JSON-RPC push notifications. Configure the Snapcast host/port per MPD server profile (defaults to the MPD host, port 1705).
 
