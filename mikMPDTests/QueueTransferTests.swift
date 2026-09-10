@@ -138,3 +138,49 @@ import Foundation
                     .contains("playlist_directory") == true)
     }
 }
+
+@Suite struct TransferDriftCompensationTests {
+    /// The source keeps playing while the queue is saved, loaded and started, so
+    /// resuming at the position read beforehand drops the music backwards by the
+    /// length of the transfer.
+    @Test func playingSourceIsAdvancedByTheTransferTime() {
+        #expect(transferCompensatedElapsed(elapsed: 60, transferSeconds: 0.4,
+                                           duration: 300, state: .playing) == 60.4)
+    }
+
+    /// A paused source did not advance, so compensating would push it forward
+    /// past where the user left it.
+    @Test func pausedAndStoppedSourcesAreNeverCompensated() {
+        #expect(transferCompensatedElapsed(elapsed: 60, transferSeconds: 5,
+                                           duration: 300, state: .paused) == 60)
+        #expect(transferCompensatedElapsed(elapsed: 60, transferSeconds: 5,
+                                           duration: 300, state: .stopped) == 60)
+    }
+
+    /// Seeking past the end would skip the track the user was listening to —
+    /// worse than a little drift. A slow save/load on a long queue makes this
+    /// reachable near the end of a track.
+    @Test func neverSeeksPastTheEndOfTheTrack() {
+        let v = transferCompensatedElapsed(elapsed: 299.9, transferSeconds: 3,
+                                           duration: 300, state: .playing)
+        #expect(v < 300)
+        #expect(v == 299.75)
+    }
+
+    @Test func unknownDurationStillCompensates() {
+        // Radio streams report no duration; there is no end to overshoot.
+        #expect(transferCompensatedElapsed(elapsed: 12, transferSeconds: 0.5,
+                                           duration: 0, state: .playing) == 12.5)
+    }
+
+    @Test func negativeInputsAreClamped() {
+        #expect(transferCompensatedElapsed(elapsed: -5, transferSeconds: -1,
+                                           duration: 300, state: .playing) == 0)
+    }
+
+    /// A fast LAN transfer should be imperceptible rather than rounded away.
+    @Test func smallTransfersAreStillAccountedFor() {
+        #expect(transferCompensatedElapsed(elapsed: 100, transferSeconds: 0.05,
+                                           duration: 300, state: .playing) == 100.05)
+    }
+}

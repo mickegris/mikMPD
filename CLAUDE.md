@@ -182,6 +182,17 @@ tested because both ways to get it wrong look plausible: `seekcur` ACKs on a
 stopped player so `play` must be first, and a `pause` before the seek leaves the
 track at zero.
 
+**The current song and position transfer, and the position is compensated.** The
+resume reads `status` **on `Q`, immediately before the `save`** rather than using
+the main-thread `elapsed`, which the 10 Hz display timer has interpolated since
+the last poll. More importantly the source *keeps playing* while the queue is
+saved, loaded and started, so `transferCompensatedElapsed` adds the measured
+transfer duration — without it the music jumps backwards by however long the
+transfer took, which is small on a LAN and not small when `save`/`load` hit slow
+storage with a long queue. A paused source is never compensated (it did not
+advance), and the result is clamped short of the track end, since overshooting
+skips the very track the user was listening to.
+
 ### Stored playlists
 
 `PlaylistListView`/`PlaylistDetailView` live in the Library tab (PlaylistsView.swift). Tapping a track plays it in playlist context (`clear` + `load` + `play <index>`). Reorder uses `playlistmove` with the same optimistic local reorder as the queue's `moveRow`. The shared `AddToPlaylistSheet` is reachable from Now Playing, album detail, queue rows, search rows, and playlist detail rows.

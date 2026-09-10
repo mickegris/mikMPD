@@ -1759,6 +1759,7 @@ final class MPDStore: ObservableObject {
         let state: TransferPlaybackState = isPlaying ? .playing : (isPaused ? .paused : .stopped)
         let pos = playlistPos
         let at = elapsed
+        let dur = duration
         // Captured here, on main: @Published state must never be read from
         // inside Q.async.
         let modes = (rep: repeatMode, rnd: randomMode, sng: singleMode, csm: consumeMode)
@@ -1773,6 +1774,27 @@ final class MPDStore: ObservableObject {
             func cleanup() {
                 _ = try? self.socket.command("rm \"\(temp.esc)\"")
             }
+
+            // Ground truth for what to resume, read on Q milliseconds before the
+            // save rather than whatever the 10 Hz display timer had interpolated
+            // when the user tapped. `startedAt` then measures how long the
+            // transfer itself takes, so the seek can account for the music that
+            // kept playing during it.
+            var srcPos = pos, srcElapsed = at, srcDuration = dur, srcState = state
+            if let recs = try? self.socket.command("status") {
+                var st: [String: String] = [:]
+                for r in recs { st.merge(r) { _, new in new } }
+                if let v = Int(st["song"] ?? "")        { srcPos = v }
+                if let v = Double(st["elapsed"] ?? "")  { srcElapsed = v }
+                if let v = Double(st["duration"] ?? "") { srcDuration = v }
+                switch st["state"] {
+                case "play":  srcState = .playing
+                case "pause": srcState = .paused
+                case "stop":  srcState = .stopped
+                default: break
+                }
+            }
+            let startedAt = Date()
 
             do {
                 // A leftover from a previous run under the same name would make
@@ -1802,7 +1824,12 @@ final class MPDStore: ObservableObject {
                 _ = try? self.socket.command("single \(modes.sng ? 1 : 0)")
                 _ = try? self.socket.command("consume \(modes.csm ? 1 : 0)")
 
-                for cmd in transferResumeCommands(state: state, pos: pos, elapsed: at) {
+                let seekTo = transferCompensatedElapsed(
+                    elapsed: srcElapsed,
+                    transferSeconds: Date().timeIntervalSince(startedAt),
+                    duration: srcDuration,
+                    state: srcState)
+                for cmd in transferResumeCommands(state: srcState, pos: srcPos, elapsed: seekTo) {
                     _ = try self.socket.command(cmd)
                 }
 

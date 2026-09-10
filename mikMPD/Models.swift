@@ -712,6 +712,28 @@ nonisolated func transferResumeCommands(state: TransferPlaybackState,
     return cmds
 }
 
+/// Where to seek in the target, given how long the transfer itself took.
+///
+/// The source keeps playing while the queue is saved, loaded and started, so the
+/// position read at the start is already stale by the time the target seeks —
+/// resuming at it drops the music backwards by the length of the transfer. That
+/// is small on a LAN and not small at all when `save`/`load` hit slow storage
+/// with a long queue.
+///
+/// A paused or stopped source did not advance, so it is never compensated.
+/// The result is clamped short of the end, because seeking past it would skip
+/// the track the user was listening to — the one outcome worse than a little
+/// drift.
+nonisolated func transferCompensatedElapsed(elapsed: Double,
+                                            transferSeconds: Double,
+                                            duration: Double,
+                                            state: TransferPlaybackState) -> Double {
+    guard state == .playing else { return max(0, elapsed) }
+    let advanced = max(0, elapsed) + max(0, transferSeconds)
+    guard duration > 0 else { return advanced }
+    return min(advanced, max(0, duration - 0.25))
+}
+
 /// Name for the short-lived stored playlist a transfer moves the queue through.
 ///
 /// Unique per transfer, not one fixed name: two devices transferring at the same
