@@ -433,3 +433,64 @@ func drain(_ d: inout OggDemuxer) -> [OggPacket] {
         #expect(OggCodecIdentifier.isCommentHeader([0x03] + Array("vorbis".utf8), codec: .vorbis))
     }
 }
+
+// MARK: - Player selection
+
+@Suite struct StreamPlayerKindTests {
+    // The codec is MPD's configuration, detected per stream start and never
+    // persisted — changing the server's encoder must need no action in the app.
+    @Test func oggContentTypesUseTheOggPlayer() {
+        #expect(StreamPlayerKind.forContentType("audio/ogg") == .ogg)
+        #expect(StreamPlayerKind.forContentType("application/ogg") == .ogg)
+        #expect(StreamPlayerKind.forContentType("audio/opus") == .ogg)
+    }
+
+    @Test func parametersAndCaseAreIgnored() {
+        #expect(StreamPlayerKind.forContentType("audio/ogg; codecs=opus") == .ogg)
+        #expect(StreamPlayerKind.forContentType("AUDIO/OGG") == .ogg)
+        #expect(StreamPlayerKind.forContentType("  audio/ogg ; charset=x") == .ogg)
+    }
+
+    @Test func mp3AndFriendsKeepTheSystemPlayer() {
+        #expect(StreamPlayerKind.forContentType("audio/mpeg") == .system)
+        #expect(StreamPlayerKind.forContentType("audio/wav") == .system)
+        #expect(StreamPlayerKind.forContentType("audio/aac") == .system)
+    }
+
+    /// AVPlayer knows more containers than we do, so an unclear answer should
+    /// fall to it rather than to the narrower path.
+    @Test func unknownOrMissingFallsBackToTheSystemPlayer() {
+        #expect(StreamPlayerKind.forContentType(nil) == .system)
+        #expect(StreamPlayerKind.forContentType("") == .system)
+        #expect(StreamPlayerKind.forContentType("application/octet-stream") == .system)
+    }
+}
+
+@Suite struct HTTPStreamCodecMessageTests {
+    @Test func unsupportedMessageNamesBothTheCodecAndTheFix() {
+        let msg = HTTPStreamCodecs.unsupportedMessage(for: .vorbis)
+        #expect(msg.contains("Vorbis"))
+        #expect(msg.contains(HTTPStreamCodecs.supported))
+        #expect(msg.contains("opus"))
+    }
+
+    @Test func supportedListMatchesWhatTheCodeCanActuallyDecode() {
+        // If this list and OggCodec.isPlayable ever disagree, the app is lying
+        // to the user in the one place they go for the answer.
+        #expect(HTTPStreamCodecs.supported.contains("Opus"))
+        #expect(HTTPStreamCodecs.supported.contains("FLAC"))
+        #expect(!HTTPStreamCodecs.supported.contains("Vorbis"))
+    }
+}
+
+@Suite struct OggStreamStateTests {
+    /// `handleEnteringBackground` depends on this: a stream that died must not
+    /// leave the app believing it is streaming, which held the audio session
+    /// open so other apps were never told they could resume.
+    @Test func onlyLiveStatesCountAsRendering() {
+        #expect(OggStreamState.playing.isRendering)
+        #expect(OggStreamState.buffering.isRendering)
+        #expect(!OggStreamState.idle.isRendering)
+        #expect(!OggStreamState.failed("x").isRendering)
+    }
+}

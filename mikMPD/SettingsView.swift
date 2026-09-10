@@ -179,7 +179,7 @@ struct ServerFormView: View {
                             .keyboardType(.URL).autocorrectionDisabled()
                             .textInputAutocapitalization(.never)
                     }
-                    Text("URL of an MPD httpd output on this server. Enable \u{201C}Listen on phone\u{201D} in Now Playing to stream audio to this device.")
+                    Text("URL of an MPD httpd output on this server. Enable \u{201C}Listen on phone\u{201D} in Now Playing to stream audio to this device.\n\nSupported encoders: \(HTTPStreamCodecs.supported). Ogg Vorbis cannot be played \u{2014} iOS has no decoder for it.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("Snapcast (Optional)") {

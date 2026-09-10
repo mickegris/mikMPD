@@ -638,6 +638,15 @@ struct NowPlayingView: View {
         .buttonStyle(.plain)
         .disabled(!hasURL)
         .opacity(hasURL ? 1 : 0.5)
+        // A stream that cannot be decoded must never be a toggle that just does
+        // nothing — the message names the codec that arrived and the ones that work.
+        .alert("Cannot Play This Stream",
+               isPresented: Binding(get: { store.phoneStreamError != nil },
+                                    set: { if !$0 { store.phoneStreamError = nil } })) {
+            Button("OK", role: .cancel) { store.phoneStreamError = nil }
+        } message: {
+            Text(store.phoneStreamError ?? "")
+        }
     }
 }
 

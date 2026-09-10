@@ -2067,7 +2067,16 @@ final class MPDStore: ObservableObject {
     // MARK: - Phone Streaming
 
     @Published var isPhoneStreaming = false
+    /// Set when a stream cannot be played — an unsupported codec, most usefully.
+    /// Surfaced in Now Playing so a dead toggle always has a reason attached.
+    @Published var phoneStreamError: String?
     private var streamPlayer: AVPlayer?
+    /// Used instead of `streamPlayer` for containers AVPlayer cannot open (Ogg).
+    /// Which one runs is decided per stream start from the response's
+    /// Content-Type and never persisted, so changing MPD's encoder needs no
+    /// action here.
+    private var oggPlayer: OggStreamPlayer?
+    private var oggState: OggStreamState = .idle
 
     func togglePhoneStream() { isPhoneStreaming ? stopPhoneStream() : startPhoneStream() }
 
@@ -2087,27 +2096,79 @@ final class MPDStore: ObservableObject {
             connectionError = "Audio session: \(error.localizedDescription)"
             return
         }
+        phoneStreamError = nil
+        isPhoneStreaming = true
+        UIApplication.shared.beginReceivingRemoteControlEvents()
+        setupRemoteCommands()
+        startBgPollTimer()
+        updateNowPlayingInfo()
+
+        // Which player can open this depends on what MPD is encoding, which only
+        // the response says. Probing costs one HEAD-shaped request and keeps the
+        // codec entirely out of the app's settings.
+        Self.probeStreamKind(url) { [weak self] kind in
+            guard let self, self.isPhoneStreaming else { return }
+            switch kind {
+            case .system: self.startSystemPlayer(url: url)
+            case .ogg:    self.startOggPlayer(url: url)
+            }
+        }
+    }
+
+    private func startSystemPlayer(url: URL) {
         let item = AVPlayerItem(url: url)
         item.preferredForwardBufferDuration = 30  // buffer 30s ahead for poor connections
         let player = AVPlayer(playerItem: item)
         player.automaticallyWaitsToMinimizeStalling = true
         streamPlayer = player
         player.play()
-        isPhoneStreaming = true
-        UIApplication.shared.beginReceivingRemoteControlEvents()
-        setupRemoteCommands()
-        startBgPollTimer()
-        updateNowPlayingInfo()
+    }
+
+    private func startOggPlayer(url: URL) {
+        let player = OggStreamPlayer { [weak self] state in
+            guard let self else { return }
+            self.oggState = state
+            if case .failed(let message) = state {
+                self.phoneStreamError = message
+                self.stopPhoneStream()
+            }
+        }
+        oggPlayer = player
+        player.start(url: url)
     }
 
     func stopPhoneStream() {
         streamPlayer?.pause()
         streamPlayer = nil
+        oggPlayer?.stop()
+        oggPlayer = nil
+        oggState = .idle
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         isPhoneStreaming = false
         UIApplication.shared.endReceivingRemoteControlEvents()
         stopBgPollTimer()
         tearDownRemoteCommands()
+    }
+
+    /// Ask the server what it is sending. Falls back to the system player on any
+    /// failure — AVPlayer knows more containers than we do, so it is the safer
+    /// default when the answer is unclear.
+    nonisolated private static func probeStreamKind(_ url: URL,
+                                                    completion: @escaping @MainActor (StreamPlayerKind) -> Void) {
+        var req = URLRequest(url: url)
+        req.httpMethod = "GET"
+        req.setValue("bytes=0-0", forHTTPHeaderField: "Range")   // httpd ignores it; keeps the read short
+        req.timeoutInterval = 10
+        let task = URLSession.shared.dataTask(with: req) { _, response, _ in
+            let type = (response as? HTTPURLResponse)?
+                .value(forHTTPHeaderField: "Content-Type")
+            let kind = StreamPlayerKind.forContentType(type)
+            Task { @MainActor in completion(kind) }
+        }
+        task.resume()
+        // The stream is endless: the response headers are all we need, and
+        // reading the body to completion would never finish.
+        DispatchQueue.global().asyncAfter(deadline: .now() + 10) { task.cancel() }
     }
 
     private func setupRemoteCommands() {
@@ -2161,10 +2222,19 @@ final class MPDStore: ObservableObject {
     /// disconnect below, indefinitely. `.waitingToPlayAtSpecifiedRate` is a
     /// stream still buffering, which is worth keeping.
     func handleEnteringBackground() {
-        if isPhoneStreaming, streamPlayer?.timeControlStatus == .paused {
+        if isPhoneStreaming, !isStreamActuallyRendering {
             stopPhoneStream()
         }
         if !isPhoneStreaming { disconnect() }
+    }
+
+    /// Is a stream genuinely running, whichever player owns it? `isPhoneStreaming`
+    /// alone is not evidence — that is the whole point of the check above — and
+    /// the Ogg player needs its own answer or the bug returns for Ogg users only.
+    private var isStreamActuallyRendering: Bool {
+        if oggPlayer != nil { return oggState.isRendering }
+        if let p = streamPlayer { return p.timeControlStatus != .paused }
+        return false   // neither player started yet
     }
 
     func updateNowPlayingInfo() {
