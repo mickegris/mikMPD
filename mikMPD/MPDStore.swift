@@ -1921,7 +1921,13 @@ final class MPDStore: ObservableObject {
     nonisolated private struct TransferTargetDidNotStart: Error { let reason: String }
 
     /// Poll the target until it is audibly playing, has failed, or times out.
-    nonisolated private func waitForTransferTarget(timeout: TimeInterval = 3) -> TransferStartOutcome {
+    ///
+    /// The timeout is generous on purpose. On the user's server a partition with
+    /// fifo or httpd outputs confirmed in 0.2 s, but `default` — a USB DAC and an
+    /// HDMI receiver — took 1.7 s, and a device waking from standby can take
+    /// longer. A timeout only ever delays the failure message; success returns the
+    /// moment playback is confirmed, and the source keeps playing throughout.
+    nonisolated private func waitForTransferTarget(timeout: TimeInterval = 8) -> TransferStartOutcome {
         let deadline = Date().addingTimeInterval(timeout)
         var previous: [String: String]?
         while true {

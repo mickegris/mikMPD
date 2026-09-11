@@ -210,13 +210,20 @@ logged `Failed to open "E30 II"` and carried on — so the resume is now:
    separate seek while outputs are opening;
 4. poll `status` until `transferStartOutcome` sees `state: play` **with elapsed
    advancing between two samples** and no `error:` (`play` on its own is not
-   trusted), or 3 s pass;
+   trusted), or 8 s pass — `default`'s USB DAC and HDMI outputs took 1.7 s to
+   confirm on the real server, against 0.2 s for fifo and httpd, and a timeout
+   only delays the failure message;
 5. only then pause (if the source was paused) and stop the source.
 
 If the target never plays, it is stopped and cleared and the source is left
 exactly as it was. An output that is enabled but whose device is off cannot be
-seen before trying; this makes trying harmless rather than impossible. **Whether
-it prevents the abort has not been confirmed against a switched-off DAC.**
+seen before trying; this makes trying harmless rather than impossible.
+
+**The abort itself has not been reproduced.** Moving into `default` with its DAC
+and receiver reported off — a plain `play`, three runs of the old sequence and
+three of the new — survived every time, and `status` showed no `error:`, so at
+least one of that partition's outputs opened. The live refusal and success paths
+are verified; the "target never plays" path is covered only by unit tests.
 
 The entry point is a **separate Move Playback button** (⇄) in Now Playing's right
 gutter, opening `MovePlaybackSheet`: every other partition with its enabled

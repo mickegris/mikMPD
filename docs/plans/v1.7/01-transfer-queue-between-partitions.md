@@ -322,3 +322,59 @@ the library (moved or renamed — `lsinfo` answers "No such directory"), and MPD
 `load` skips them silently. That happens when the *playlist* becomes the queue,
 before any transfer; the transfer saves and reloads the *queue*, which contains
 only the 412, so nothing is lost and positions do not shift.
+
+## The second crash, from device testing
+
+A move into `default` with its DAC and receiver switched off aborted MPD at
+11:14:20 — `terminate called recursively`, then the same uncaught
+`std::system_error: Invalid argument`. Three seconds later the restarted daemon
+logged `Failed to open "E30 II" (alsa) … No such device` and carried on, so a
+failed output open is survivable on its own. What was different at the crash was
+the old resume: `play`, `seekcur`, and the source's `clear` and `stop`, all in
+the same instant.
+
+The resume was rebuilt so nothing touches the source until the target is audibly
+playing: refuse a target with no enabled outputs, `clearerror`, start with one
+`seek SONGPOS TIME`, poll `status` for `state: play` with elapsed advancing and no
+`error:`, and only then pause if needed and stop the source. A target that never
+plays is stopped and cleared, and the source is left as it was. The same round of
+device testing moved the feature out of the partition switcher into its own
+button and sheet, and fixed the app switching back to the source when "Remember
+partitions" is on.
+
+### Live check of the new sequence
+
+| Case | Result |
+|---|---|
+| playing `snapcast` → `airplay` (no enabled outputs) | refused before anything changed; `snapcast` kept playing |
+| playing `snapcast` → `http` | confirmed after 203 ms (two status reads); landed 0.02 s behind; source emptied |
+| paused `http` → `snapcast` | confirmed after 207 ms, then paused at the same spot; source emptied |
+
+### Trying to reproduce the abort — not reproduced
+
+With the user reporting `default`'s DAC and receiver off:
+
+| Run | Result |
+|---|---|
+| plain `play` in `default` | survived; `state: play`, no `error:` |
+| old sequence into `default`, ×3 | survived all three |
+| new sequence into `default`, ×3 | survived; confirmed playing after 1.7 s each time |
+
+No `error:` means at least one of `default`'s two outputs opened, so this run did
+not recreate the crash's conditions — plausibly `Denon HDMI` opens whenever the
+host's HDMI port exists, whatever the receiver is doing, while any `E30 II`
+failure goes only to the log. The journal for 11:36:48–11:37:11 would settle it.
+Until then the new sequence is verified to be correct on the paths it exercised,
+**not** shown to prevent the abort.
+
+The 1.7 s against 0.2 s elsewhere changed one number: the confirmation timeout
+went from 3 s to 8 s. A timeout only delays the failure message; a successful
+move returns the moment playback is confirmed.
+
+### A mistake in the testing itself
+
+The first attempt at the live check aborted its pre-flight from inside a
+`try`/`finally`, so its cleanup stopped and cleared `http` while the user was
+listening to it. The scripts now check before entering any cleanup scope and
+clean only partitions they verified empty; two older scripts with the same shape
+were deleted.
