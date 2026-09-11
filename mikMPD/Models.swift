@@ -707,21 +707,85 @@ nonisolated enum TransferPlaybackState: String, Equatable {
     case playing, paused, stopped
 }
 
-/// Commands to restore playback in the target partition after `load`.
+/// The one command that starts playback in the target — at the right song and
+/// position — or nil when the source was stopped and nothing should play.
 ///
-/// The order is the whole content of this function. `seekcur` ACKs on a stopped
-/// player, so `play` has to come first — and when the source was paused, the
-/// pause has to come *after* the seek, or the track resumes from zero. Both
-/// mistakes look plausible in a diff and neither is visible without two
-/// partitions and a stopwatch, which is why this is a pure function.
-nonisolated func transferResumeCommands(state: TransferPlaybackState,
-                                        pos: Int,
-                                        elapsed: Double) -> [String] {
-    guard state != .stopped, pos >= 0 else { return [] }
-    var cmds = ["play \(pos)"]
-    if elapsed > 0.5 { cmds.append(String(format: "seekcur %.3f", elapsed)) }
-    if state == .paused { cmds.append("pause 1") }
-    return cmds
+/// A single `seek SONGPOS TIME`, which starts a stopped player at that point
+/// (verified on 0.24.0), rather than `play` followed by `seekcur`. That pair sent
+/// a seek while the target's outputs were still being opened, and a transfer
+/// into a partition whose DAC was switched off aborted the daemon during exactly
+/// that sequence.
+nonisolated func transferStartCommand(state: TransferPlaybackState, pos: Int, elapsed: Double) -> String? {
+    guard state != .stopped, pos >= 0 else { return nil }
+    return elapsed > 0.5 ? String(format: "seek %d %.3f", pos, elapsed) : "play \(pos)"
+}
+
+/// Commands to send once the target is confirmed playing. A paused source is
+/// paused only now: the target still has to prove its outputs open first.
+nonisolated func transferFinishCommands(state: TransferPlaybackState) -> [String] {
+    state == .paused ? ["pause 1"] : []
+}
+
+/// Whether the target partition has actually started playing.
+nonisolated enum TransferStartOutcome: Equatable {
+    case playing
+    case pending
+    case failed(String)
+}
+
+/// Judged from two consecutive `status` samples. `state: play` on its own is not
+/// taken as proof — it describes the player, not whether any output opened — so
+/// success also needs elapsed time to have advanced between the samples. An
+/// `error:` line (MPD's report of an output that failed to open) is failure
+/// outright; callers send `clearerror` first so an old one cannot be mistaken
+/// for a new one.
+nonisolated func transferStartOutcome(previous: [String: String]?,
+                                      current: [String: String]) -> TransferStartOutcome {
+    if let e = current["error"], !e.isEmpty { return .failed(e) }
+    guard current["state"] == "play",
+          let previous, previous["state"] == "play",
+          let before = Double(previous["elapsed"] ?? ""),
+          let now = Double(current["elapsed"] ?? ""),
+          now > before
+    else { return .pending }
+    return .playing
+}
+
+/// Why playback cannot move into a target with these enabled outputs, or nil.
+/// Only matters when something is meant to play; a stopped queue can land
+/// anywhere. Note what this cannot see: an output that is enabled but whose
+/// device is switched off — that is what waiting for playback is for.
+nonisolated func transferTargetOutputsRefusal(target: String, enabledOutputs: [String],
+                                              willPlay: Bool) -> String? {
+    guard willPlay, enabledOutputs.isEmpty else { return nil }
+    return "\(target) has no enabled outputs, so nothing could play there."
+}
+
+/// What the Move Playback sheet shows for one partition.
+nonisolated struct PartitionSummary: Identifiable, Equatable {
+    let name: String
+    let enabledOutputs: [String]
+    let state: String          // MPD's play / pause / stop
+    let queueLength: Int
+    var id: String { name }
+
+    init(name: String, status: [String: String], outputs: [[String: String]]) {
+        self.name = name
+        // MPD lists another partition's outputs as `plugin: dummy` placeholders.
+        enabledOutputs = outputs
+            .filter { $0["plugin"] != "dummy" && $0["outputenabled"] == "1" }
+            .compactMap { $0["outputname"] }
+        state = status["state"] ?? "stop"
+        queueLength = Int(status["playlistlength"] ?? "0") ?? 0
+    }
+
+    var stateLabel: String {
+        switch state {
+        case "play":  "Playing"
+        case "pause": "Paused"
+        default:      queueLength == 0 ? "Empty" : "Stopped"
+        }
+    }
 }
 
 /// Where to seek in the target, given how long the transfer itself took.

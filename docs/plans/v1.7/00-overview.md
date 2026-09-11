@@ -59,8 +59,10 @@ scratch files are session-local and will not survive.
 - **Transfer is a move, as in Roon** — the source partition ends empty and
   stopped. No copy variant; "transfer" means the music is in one place
   afterwards, and offering both would make the common case a choice.
-- **Its entry point is Now Playing**, in the partition dialog, and it stays one
-  confirmed tap. Outputs & Partitions gets a secondary entry, not the primary.
+- **Its entry point is Now Playing.** It first shipped as rows in the partition
+  dialog; device testing found "switch to" and "move playback to" too easily
+  confused there, so it became a separate Move Playback button and sheet that
+  shows each partition's enabled outputs. Outputs & Partitions keeps a swipe.
 - **Phone streaming exposes no codec setting.** The encoder is MPD's
   configuration; the app detects and adapts at each stream start and persists
   nothing about it. Changing the server's encoder must need no action in the app.
@@ -88,8 +90,9 @@ Very little, which is the useful part — they touch disjoint code:
 | Risk | server-side state in **two** partitions | audio session, background playback |
 | Existing hazard to respect | `plans/move-active-output-hang.md` | "Nothing runs on termination" |
 
-Neither touches views the other does: item 1 lands in `OutputsView` and Now
-Playing's partition dialog, item 2 behind the existing "Listen on phone" toggle.
+Neither touches views the other does: item 1 lands in `OutputsView` and a Move
+Playback button and sheet in Now Playing, item 2 behind the existing "Listen on
+phone" toggle.
 
 ## Out of scope
 

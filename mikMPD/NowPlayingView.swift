@@ -34,9 +34,8 @@ struct NowPlayingView: View {
     @State private var showOutputs    = false
     @State private var showPartitions = false
 
-    // Queue transfer: the partition awaiting confirmation, and any failure text
-    @State private var transferTarget: String?
-    @State private var transferResult: String?
+    // Presents the Move Playback sheet
+    @State private var showMovePlayback = false
 
     var song: MPDSong { store.currentSong }
 
@@ -92,6 +91,7 @@ struct NowPlayingView: View {
                     lyricsToggle
                     if store.partitions.count > 1 {
                         partitionButton
+                        movePlaybackButton
                     }
                 }
                 .frame(width: 30)
@@ -162,8 +162,28 @@ struct NowPlayingView: View {
 
     var partitionButton: some View {
         Button { showPartitions = true } label: {
+            Image(systemName: "rectangle.3.group")
+                .font(.body)
+                .foregroundStyle(Color.secondary)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Switch partition")
+        .confirmationDialog("Switch Partition", isPresented: $showPartitions, titleVisibility: .visible) {
+            ForEach(store.partitions, id: \.self) { part in
+                Button(part == store.currentPartition ? "✓ \(part)" : part) {
+                    if part != store.currentPartition { store.switchPartition(part) }
+                }
+            }
+        }
+    }
+
+    /// Moving the music is its own button rather than extra rows in the partition
+    /// switcher, where "switch to" and "move playback to" sat one row apart and
+    /// read as the same kind of action.
+    var movePlaybackButton: some View {
+        Button { showMovePlayback = true } label: {
             ZStack {
-                Image(systemName: "rectangle.3.group")
+                Image(systemName: "arrow.left.arrow.right")
                     .font(.body)
                     .foregroundStyle(Color.secondary)
                     .opacity(store.isTransferringQueue ? 0 : 1)
@@ -172,54 +192,8 @@ struct NowPlayingView: View {
         }
         .buttonStyle(.plain)
         .disabled(store.isTransferringQueue)
-        .accessibilityLabel("Partitions")
-        // Switching *view* and moving *music* are different actions, so they are
-        // visibly separate rather than two meanings of one tap.
-        .confirmationDialog("Partitions", isPresented: $showPartitions, titleVisibility: .visible) {
-            ForEach(store.partitions, id: \.self) { part in
-                Button(part == store.currentPartition ? "✓ \(part)" : part) {
-                    if part != store.currentPartition { store.switchPartition(part) }
-                }
-            }
-            if store.canTransferQueue {
-                ForEach(store.partitions.filter { $0 != store.currentPartition }, id: \.self) { part in
-                    Button("Move playback to \(part)…") { transferTarget = part }
-                }
-            } else {
-                Button("Why can’t I move playback?") {
-                    transferResult = transferRefusalReason(
-                        queueIsEmpty: false, containsCDTracks: false,
-                        targetPartition: "-", currentPartition: store.currentPartition,
-                        storedPlaylistsAvailable: false)
-                }
-            }
-        }
-        // Transfer stops the music in one room and starts it in another, so
-        // unlike a plain partition switch it is confirmed, and the prompt names
-        // both ends.
-        .confirmationDialog("Move playback?",
-                            isPresented: Binding(get: { transferTarget != nil },
-                                                 set: { if !$0 { transferTarget = nil } }),
-                            titleVisibility: .visible) {
-            if let target = transferTarget {
-                Button("Move to \(target)") {
-                    store.transferQueue(toPartition: target) { transferResult = $0 }
-                    transferTarget = nil
-                }
-            }
-            Button("Cancel", role: .cancel) { transferTarget = nil }
-        } message: {
-            if let target = transferTarget {
-                Text("The queue moves from \(store.currentPartition) to \(target) and keeps playing from the same spot. \(store.currentPartition) stops.")
-            }
-        }
-        .alert("Could Not Move Playback",
-               isPresented: Binding(get: { transferResult != nil },
-                                    set: { if !$0 { transferResult = nil } })) {
-            Button("OK", role: .cancel) { transferResult = nil }
-        } message: {
-            Text(transferResult ?? "")
-        }
+        .accessibilityLabel("Move playback to another partition")
+        .sheet(isPresented: $showMovePlayback) { MovePlaybackSheet() }
     }
 
     // MARK: - Subviews

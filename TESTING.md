@@ -249,7 +249,11 @@ thing that differs.
 - [ ] Lock screen shows metadata; transport controls still drive MPD
 - [ ] Backgrounded playback survives; a stream killed at the server still stops
       cleanly and other apps can resume afterwards
-- [ ] Phone call interrupts and recovers; unplugging headphones pauses
+- [ ] Phone call interrupts and recovers
+- [ ] **Unplug headphones (or disconnect Bluetooth) while streaming** → streaming
+      stops, the button returns to "Listen on phone", and nothing plays from the
+      iPhone speaker
+- [ ] Plug headphones in mid-stream → the Opus stream carries on through them
 - [ ] Switching servers mid-stream stops the stream
 - [ ] Start a stream on a URL that is not audio at all → a clear failure, no hang
 
@@ -258,8 +262,16 @@ thing that differs.
 Needs two partitions with an output each, and `playlist_directory` set in
 mpd.conf.
 
-- [ ] Now Playing → partition button → "Move playback to X…" → confirm, and the
-      music continues in the other partition **from the same spot**
+- [ ] Now Playing → **Move Playback** button (⇄, under the partition button) → a
+      sheet lists the other partitions with their enabled outputs and state →
+      tap one, and the music continues there **from the same spot**
+- [ ] **The app switches to the partition you moved to** — with "Remember
+      partitions" on as well as off
+- [ ] The partition button only switches partitions; it offers no moves
+- [ ] A partition with no enabled outputs is greyed out and cannot be chosen
+- [ ] **Move into a partition whose speakers are switched off** → an explanation
+      appears, nothing is moved, the original partition keeps playing, and MPD
+      stays up (check `journalctl -u mpd`)
 - [ ] The source partition ends empty and stopped
 - [ ] The app follows to the target partition
 - [ ] Repeat/random/single/consume carry over; **volume does not**
@@ -268,16 +280,16 @@ mpd.conf.
 - [ ] Move a **long** queue (hundreds of tracks) from deep in it → same song,
       same spot, no noticeable delay
 - [ ] The same actions work by swiping a partition row in Outputs & Partitions
-- [ ] The confirmation names both partitions before doing anything
-- [ ] The partition button shows a spinner while the move runs and cannot be
+- [ ] The sheet's header names the partition you are moving from
+- [ ] The Move Playback button shows a spinner while a move runs and cannot be
       tapped twice
 - [ ] No `.mikmpd-transfer-*` playlist is visible in Library → Playlists at any
       point, during or after
 - [ ] Force-quit mid-transfer, relaunch → any leftover scratch playlist is gone
       after the playlist list loads, and no real playlist was touched
 - [ ] With `playlist_directory` **unset**: the Outputs footer explains it and
-      names the setting, and Now Playing offers "Why can't I move playback?"
-      rather than a dead action
+      names the setting, and the Move Playback sheet explains it instead of
+      listing partitions
 - [ ] A CD queue refuses with a reason
 - [ ] Moving to the partition you are already on does nothing
 

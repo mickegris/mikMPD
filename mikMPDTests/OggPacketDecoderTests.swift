@@ -104,3 +104,28 @@ private func peak(_ buffers: [AVAudioPCMBuffer], channel: Int) -> Float {
         decoder.close()   // idempotent
     }
 }
+
+@Suite struct PhoneStreamRouteActionTests {
+    /// Unplugging headphones left the engine stopped, no sound anywhere, and the
+    /// button still reading "Streaming to phone".
+    @Test func unpluggingHeadphonesStopsTheStream() {
+        #expect(phoneStreamRouteAction(for: .oldDeviceUnavailable, oggPlayerActive: true) == .stop)
+        #expect(phoneStreamRouteAction(for: .oldDeviceUnavailable, oggPlayerActive: false) == .stop)
+    }
+
+    /// AVAudioEngine stops when a device arrives too; AVPlayer copes by itself.
+    @Test func aNewDeviceRestartsOnlyTheOggStream() {
+        #expect(phoneStreamRouteAction(for: .newDeviceAvailable, oggPlayerActive: true) == .restartOggStream)
+        #expect(phoneStreamRouteAction(for: .newDeviceAvailable, oggPlayerActive: false) == .ignore)
+    }
+
+    /// Starting a stream changes the session category; reacting to that would
+    /// restart the stream in a loop.
+    @Test func categoryAndOtherChangesAreIgnored() {
+        let reasons: [AVAudioSession.RouteChangeReason] =
+            [.categoryChange, .override, .wakeFromSleep, .routeConfigurationChange, .unknown]
+        for reason in reasons {
+            #expect(phoneStreamRouteAction(for: reason, oggPlayerActive: true) == .ignore)
+        }
+    }
+}

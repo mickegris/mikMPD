@@ -6,43 +6,115 @@ import Testing
 import Foundation
 @testable import mikMPD
 
-@Suite struct TransferResumeCommandTests {
-    /// `seekcur` ACKs on a stopped player — after `load` the partition *is*
-    /// stopped — so `play` must come first. Reversed, the track silently starts
-    /// from zero and the transfer looks like it worked.
-    @Test func playingResumesAtTheSamePosition() {
-        let cmds = transferResumeCommands(state: .playing, pos: 4, elapsed: 61.5)
-        #expect(cmds.first == "play 4")
-        #expect(cmds.contains { $0.hasPrefix("seekcur 61.5") })
-        #expect(!cmds.contains("pause 1"))
+@Suite struct TransferStartCommandTests {
+    /// One command starts the target at the right song and position.
+    @Test func playingStartsAtThePositionInOneCommand() {
+        #expect(transferStartCommand(state: .playing, pos: 4, elapsed: 61.5) == "seek 4 61.500")
+        #expect(transferFinishCommands(state: .playing).isEmpty)
     }
 
-    /// The pause has to come *after* the seek. Pausing first leaves MPD paused
-    /// at zero and the seek then has nothing to act on.
-    @Test func pausedEndsPausedAtTheSamePosition() {
-        let cmds = transferResumeCommands(state: .paused, pos: 2, elapsed: 30)
-        #expect(cmds.first == "play 2")
-        #expect(cmds.last == "pause 1")
-        let seekIdx = cmds.firstIndex { $0.hasPrefix("seekcur") }
-        let pauseIdx = cmds.firstIndex(of: "pause 1")
-        #expect(seekIdx != nil && pauseIdx != nil && seekIdx! < pauseIdx!)
+    /// A paused source still starts the target, so its outputs are proven to
+    /// open, and is paused only afterwards.
+    @Test func pausedStartsThenPausesOnceConfirmed() {
+        #expect(transferStartCommand(state: .paused, pos: 2, elapsed: 30) == "seek 2 30.000")
+        #expect(transferFinishCommands(state: .paused) == ["pause 1"])
     }
 
-    @Test func stoppedTransfersTheQueueButStartsNothing() {
-        #expect(transferResumeCommands(state: .stopped, pos: 3, elapsed: 12).isEmpty)
+    @Test func atTheStartOfATrackPlayIsEnough() {
+        #expect(transferStartCommand(state: .playing, pos: 0, elapsed: 0.2) == "play 0")
     }
 
-    @Test func noSeekAtTheStartOfATrack() {
-        // Seeking to ~0 is a wasted round trip and can nudge the position.
-        #expect(transferResumeCommands(state: .playing, pos: 0, elapsed: 0)
-                == ["play 0"])
-        #expect(transferResumeCommands(state: .playing, pos: 0, elapsed: 0.2)
-                == ["play 0"])
+    @Test func stoppedStartsNothing() {
+        #expect(transferStartCommand(state: .stopped, pos: 3, elapsed: 12) == nil)
+        #expect(transferFinishCommands(state: .stopped).isEmpty)
     }
 
-    @Test func negativePositionIsRefused() {
-        // playlistPos is -1 when nothing is current.
-        #expect(transferResumeCommands(state: .playing, pos: -1, elapsed: 10).isEmpty)
+    /// playlistPos is -1 when nothing is current.
+    @Test func noCurrentSongStartsNothing() {
+        #expect(transferStartCommand(state: .playing, pos: -1, elapsed: 10) == nil)
+    }
+
+    /// The sequence that aborted MPD sent `seekcur` straight after `play`, while
+    /// the target's outputs were still opening. No step here seeks separately.
+    @Test func neverSeeksAsASeparateStep() {
+        for state in [TransferPlaybackState.playing, .paused] {
+            #expect(transferStartCommand(state: state, pos: 5, elapsed: 90)?.hasPrefix("seekcur") == false)
+            #expect(!transferFinishCommands(state: state).contains { $0.hasPrefix("seek") })
+        }
+    }
+}
+
+@Suite struct TransferStartOutcomeTests {
+    private func status(_ state: String, _ elapsed: String, error: String? = nil) -> [String: String] {
+        var d = ["state": state, "elapsed": elapsed]
+        if let error { d["error"] = error }
+        return d
+    }
+
+    /// Verified on 0.24.0: from `seek 2 42.0`, elapsed read 42.000, 42.205, 42.410…
+    @Test func playingWithElapsedAdvancingIsSuccess() {
+        #expect(transferStartOutcome(previous: status("play", "42.000"),
+                                     current: status("play", "42.205")) == .playing)
+    }
+
+    /// `state: play` alone is not trusted.
+    @Test func playWithoutProgressIsNotYetSuccess() {
+        #expect(transferStartOutcome(previous: nil, current: status("play", "42.0")) == .pending)
+        #expect(transferStartOutcome(previous: status("play", "42.0"),
+                                     current: status("play", "42.0")) == .pending)
+    }
+
+    /// The error MPD logged for the switched-off DAC.
+    @Test func anErrorLineIsFailure() {
+        let msg = #"Failed to open "E30 II" (alsa); Failed to open ALSA device "hw:CARD=II,DEV=0": No such device"#
+        #expect(transferStartOutcome(previous: status("play", "0.1"),
+                                     current: status("pause", "0.1", error: msg)) == .failed(msg))
+    }
+
+    @Test func notPlayingYetIsPending() {
+        #expect(transferStartOutcome(previous: nil, current: status("stop", "0")) == .pending)
+    }
+}
+
+@Suite struct TransferTargetOutputsTests {
+    @Test func noEnabledOutputsIsRefusedWhenSomethingWouldPlay() {
+        #expect(transferTargetOutputsRefusal(target: "airplay", enabledOutputs: [], willPlay: true)?
+                    .contains("airplay") == true)
+    }
+
+    @Test func aStoppedQueueCanLandAnywhere() {
+        #expect(transferTargetOutputsRefusal(target: "airplay", enabledOutputs: [], willPlay: false) == nil)
+    }
+
+    @Test func anEnabledOutputIsEnough() {
+        #expect(transferTargetOutputsRefusal(target: "default", enabledOutputs: ["E30 II"], willPlay: true) == nil)
+    }
+}
+
+@Suite struct PartitionSummaryTests {
+    @Test func countsOnlyRealEnabledOutputs() {
+        let outputs: [[String: String]] = [
+            ["outputname": "E30 II",     "plugin": "alsa",  "outputenabled": "1"],
+            ["outputname": "Denon HDMI", "plugin": "alsa",  "outputenabled": "0"],
+            ["outputname": "http opus",  "plugin": "dummy", "outputenabled": "1"],
+        ]
+        let s = PartitionSummary(name: "default",
+                                 status: ["state": "pause", "playlistlength": "13"],
+                                 outputs: outputs)
+        #expect(s.enabledOutputs == ["E30 II"])
+        #expect(s.stateLabel == "Paused")
+        #expect(s.queueLength == 13)
+    }
+
+    @Test func anEmptyStoppedPartitionReadsEmpty() {
+        let s = PartitionSummary(name: "airplay", status: ["state": "stop", "playlistlength": "0"], outputs: [])
+        #expect(s.stateLabel == "Empty")
+        #expect(s.enabledOutputs.isEmpty)
+    }
+
+    @Test func aStoppedPartitionWithAQueueReadsStopped() {
+        let s = PartitionSummary(name: "http", status: ["state": "stop", "playlistlength": "364"], outputs: [])
+        #expect(s.stateLabel == "Stopped")
     }
 }
 

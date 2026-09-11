@@ -190,10 +190,40 @@ costs no write; `canTransferQueue` is the published mirror. When it is off the a
 
 Modes (`repeat`/`random`/`single`/`consume`) travel with the queue because they
 describe it; **volume does not**, since it belongs to the target's outputs. The
-app follows to the target afterwards. `transferResumeCommands` is pure and
-tested because both ways to get it wrong look plausible: `seekcur` ACKs on a
-stopped player so `play` must be first, and a `pause` before the seek leaves the
-track at zero.
+app follows to the target afterwards — **and must record it the way a manual
+switch does** (`lastUsedPartitionName`, when "Remember partitions" is on).
+Without that, the refresh that follows still sees the source as remembered and
+`restorePartitionIfNeeded` switches straight back to it.
+
+**Nothing touches the source until the target is audibly playing.** A transfer
+into `default` with its DAC and receiver switched off aborted MPD 0.24.0
+(`terminate called recursively`, uncaught `std::system_error`), while the old
+resume sent `play`, `seekcur` and the source's `clear`/`stop` in the same
+instant. A failed output open is survivable on its own — the restarted daemon
+logged `Failed to open "E30 II"` and carried on — so the resume is now:
+
+1. refuse a target with **no enabled outputs** before anything changes
+   (`transferTargetOutputsRefusal`, from that partition's `outputs`);
+2. `clearerror`, so an old `error:` cannot pass for a new one;
+3. start with **one** command, `transferStartCommand` — `seek SONGPOS TIME`
+   starts a stopped player at that point (verified on 0.24.0), so there is no
+   separate seek while outputs are opening;
+4. poll `status` until `transferStartOutcome` sees `state: play` **with elapsed
+   advancing between two samples** and no `error:` (`play` on its own is not
+   trusted), or 3 s pass;
+5. only then pause (if the source was paused) and stop the source.
+
+If the target never plays, it is stopped and cleared and the source is left
+exactly as it was. An output that is enabled but whose device is off cannot be
+seen before trying; this makes trying harmless rather than impossible. **Whether
+it prevents the abort has not been confirmed against a switched-off DAC.**
+
+The entry point is a **separate Move Playback button** (⇄) in Now Playing's right
+gutter, opening `MovePlaybackSheet`: every other partition with its enabled
+outputs and state (`PartitionSummary`, from `loadPartitionSummaries`), with
+partitions that have none disabled. It first shipped as extra rows in the
+partition switcher's dialog, where "switch to" and "move playback to" sat one row
+apart and read as the same kind of action.
 
 **The current song and position transfer, and the position is compensated.** The
 resume reads `status` **on `Q`, immediately before the `save`** rather than using
@@ -280,6 +310,14 @@ so in a warning); and when its packet is spent the callback returns the non-zero
 *stream* has ended. `OggPacketDecoderTests` pins this with a synthetic stereo tone —
 440 Hz left, 554 Hz right — so a silent channel, a decoder that stops after one
 packet, or pre-skip applied twice each fails a test.
+
+**Audio route changes are the store's job while streaming** (`observeAudioRoute`,
+removed on stop). `phoneStreamRouteAction` stops the stream when a device goes
+away — headphones unplugged, Bluetooth gone — because AVAudioEngine stops itself
+then, and the button used to stay on "Streaming to phone" with no sound from any
+speaker. A device *arriving* restarts the Ogg stream onto the new route (AVPlayer
+follows by itself), and every other reason is ignored, including the category
+change the app makes when streaming starts, which would otherwise loop.
 
 `OggStreamPlayer` is `nonisolated` by necessity: URLSession delivers on its own
 queue and CoreAudio calls the converter's input proc on a render thread, where

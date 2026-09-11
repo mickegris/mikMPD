@@ -49,6 +49,28 @@ nonisolated enum HTTPStreamCodecs {
     }
 }
 
+/// What phone streaming does when the audio route changes.
+nonisolated enum PhoneStreamRouteAction: Equatable {
+    case stop, restartOggStream, ignore
+}
+
+/// Headphones unplugged — or a Bluetooth device gone — must stop the stream.
+/// iOS convention is to stop rather than blast the speaker, and AVAudioEngine
+/// stops itself on the route change anyway, which used to leave "Streaming to
+/// phone" on screen with no sound anywhere. A device *arriving* also stops the
+/// engine, so the Ogg stream restarts onto the new route; AVPlayer follows route
+/// changes by itself. Everything else is ignored — including the category change
+/// this app makes when it starts streaming, which would otherwise restart the
+/// stream in a loop.
+nonisolated func phoneStreamRouteAction(for reason: AVAudioSession.RouteChangeReason,
+                                        oggPlayerActive: Bool) -> PhoneStreamRouteAction {
+    switch reason {
+    case .oldDeviceUnavailable: .stop
+    case .newDeviceAvailable:   oggPlayerActive ? .restartOggStream : .ignore
+    default:                    .ignore
+    }
+}
+
 /// Which player should handle a stream, decided per stream start from the
 /// response's Content-Type. Nothing about it is persisted: changing the MPD
 /// encoder needs no action in the app.
