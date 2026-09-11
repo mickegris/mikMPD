@@ -272,9 +272,12 @@ no resync loss, decoding to 5.75 s of audio (peak 0.561). The mp3 output on port
 | two chained logical bitstreams | all 179,942 bytes read across the serial change; closed by the server at the end, no error |
 | Ogg Vorbis | refused with the message naming Vorbis and the supported encoders |
 
-The simulator cannot show that audio actually *rendered* — only that the
-pipeline read, demuxed and decoded without failing. Audible playback, the lock
-screen, interruptions and route changes still need a device (TESTING.md §21).
+That run proved the stream was **read and demuxed, and nothing more**. Saying it
+also showed the pipeline "decoded without failing" was wrong: the first decoder
+produced silence, and nothing reported it, because empty output and decode
+errors were both skipped quietly. See "The decoder produced silence" below.
+Audible playback, the lock screen, interruptions and route changes still need a
+device (TESTING.md §21).
 
 Two bugs, both fixed:
 
@@ -288,3 +291,28 @@ Two bugs, both fixed:
    session stayed held with nothing playing until the app went to the
    background. `endsPhoneStream` covers both, and a per-player token stops a late
    callback from a torn-down player ending the stream that replaced it.
+
+## The decoder produced silence — found and fixed before device testing
+
+Two compiler warnings in `OggStreamPlayer.swift`, spotted in Xcode rather than in
+the command-line builds (which had been filtered to errors), led to rereading the
+decode path. Moving decoding into `OggPacketDecoder` and testing it on real Opus
+packets then showed **zero frames for every packet**.
+
+| Defect | Effect | Fix |
+|---|---|---|
+| a new `AVAudioPCMBuffer` has `frameLength` 0, so its buffer list advertised no room | the converter wrote nothing and returned success — **the silence** | `frameLength = frameCapacity` before the fill |
+| the output `AudioBufferList` was copied | stereo is two non-interleaved buffers; the copy holds one, so the right channel was written past its end | pass `mutableAudioBufferList` itself |
+| the input pointer was made from the stored array inside the callback | dangled once the conversion returned (the warning) | pointers created in scopes that enclose `FillComplexBuffer` |
+| a spent packet returned `noErr` with zero packets | tells the converter the stream has ended | return a non-zero `packetSpent` and accept it |
+| a `URLSessionConfiguration` helper inherited main-actor isolation | called from the player's queue (the other warning) | inlined |
+
+Verified afterwards:
+
+- `OggPacketDecoderTests` on a synthetic stereo tone (440 Hz left, 554 Hz right):
+  every packet decodes, both channels carry the tone, pre-skip removes exactly
+  312 frames. Before the fix the same tests failed with zero frames.
+- The production decoder, compiled into a harness and run on the simulator, on
+  the capture from the user's `http opus` output: 288 of 288 packets decoded,
+  5.75 s, peak 0.561 left and 0.553 right.
+- App and test builds with no warnings.

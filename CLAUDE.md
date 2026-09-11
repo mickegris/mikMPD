@@ -262,6 +262,25 @@ makes every page look corrupt, which presents as "no audio" rather than as a
 checksum bug. Opus **pre-skip** (RFC 7845) is dropped from the front of the
 decoded stream, or every stream opens with a click.
 
+**Decoding lives in `OggPacketDecoder`**, separate from the player so real Opus
+packets can be decoded in a unit test — the only place this path's audio is
+actually checked, since a simulator cannot be listened to. **The first version
+produced silence and reported nothing**: a new `AVAudioPCMBuffer` has
+`frameLength` 0 and its buffer list advertises only `frameLength` bytes, so the
+converter saw no room, wrote nothing and returned success — **set `frameLength =
+frameCapacity` before the fill**, then shrink to what was produced. Three more
+defects sat in the same function, and none of them is allowed back: the output
+`AudioBufferList` must be `mutableAudioBufferList` itself, never a copy — the
+standard format is non-interleaved, so a stereo list holds two `AudioBuffer`s and
+the Swift struct has room for one; the input pointer is valid only inside the
+`withUnsafeBytes` scope that **encloses** `AudioConverterFillComplexBuffer` (turning
+the stored array into a pointer inside the callback dangled, and the compiler said
+so in a warning); and when its packet is spent the callback returns the non-zero
+`packetSpent`, not `noErr` with zero packets, which tells the converter the whole
+*stream* has ended. `OggPacketDecoderTests` pins this with a synthetic stereo tone —
+440 Hz left, 554 Hz right — so a silent channel, a decoder that stops after one
+packet, or pre-skip applied twice each fails a test.
+
 `OggStreamPlayer` is `nonisolated` by necessity: URLSession delivers on its own
 queue and CoreAudio calls the converter's input proc on a render thread, where
 MainActor inference traps. `handleEnteringBackground` asks

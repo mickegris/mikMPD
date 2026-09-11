@@ -96,11 +96,9 @@ nonisolated final class OggStreamPlayer: NSObject, @unchecked Sendable {
 
     private let engine = AVAudioEngine()
     private let node = AVAudioPlayerNode()
-    private var converter: AudioConverterRef?
-    private var outputFormat: AVAudioFormat?
+    private var decoder: OggPacketDecoder?
     private var codec: OggCodec = .unknown
     private var currentSerial: UInt32?
-    private var preSkipRemaining = 0
     private var started = false
     private var scheduledBuffers = 0
     private var state: OggStreamState = .idle
@@ -109,7 +107,6 @@ nonisolated final class OggStreamPlayer: NSObject, @unchecked Sendable {
     /// no duration to lean on, so this is the only thing standing between a LAN
     /// hiccup and a dropout.
     private static let startThresholdFrames = 48000 / 2      // 0.5 s
-    private static let maxScheduledBuffers = 24
 
     init(onStateChange: @escaping @MainActor (OggStreamState) -> Void) {
         self.onStateChange = onStateChange
@@ -124,13 +121,15 @@ nonisolated final class OggStreamPlayer: NSObject, @unchecked Sendable {
             demuxer = OggDemuxer()
             codec = .unknown
             currentSerial = nil
-            preSkipRemaining = 0
             started = false
             scheduledBuffers = 0
             setState(.buffering)
 
             let config = URLSessionConfiguration.default
-            config.requestCacheePolicyWorkaround()
+            // A live stream must never be served from cache.
+            config.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+            config.urlCache = nil
+            config.timeoutIntervalForRequest = 30
             let s = URLSession(configuration: config, delegate: self, delegateQueue: nil)
             session = s
             var req = URLRequest(url: url)
@@ -152,8 +151,7 @@ nonisolated final class OggStreamPlayer: NSObject, @unchecked Sendable {
         task?.cancel(); task = nil
         session?.invalidateAndCancel(); session = nil
         if started { node.stop(); engine.stop(); started = false }
-        if let c = converter { AudioConverterDispose(c); converter = nil }
-        outputFormat = nil
+        decoder?.close(); decoder = nil
     }
 
     private func setState(_ s: OggStreamState) {
@@ -180,14 +178,10 @@ nonisolated final class OggStreamPlayer: NSObject, @unchecked Sendable {
                 beginBitstream(packet)
                 continue
             }
-            guard packet.serial == currentSerial else { continue }   // other multiplexed stream
+            // Another multiplexed stream, or no decoder for this one.
+            guard packet.serial == currentSerial, let decoder else { continue }
             if OggCodecIdentifier.isCommentHeader(packet.data, codec: codec) { continue }
-            if case .flac = codec, packet.data.first.map({ $0 & 0x7F }) != nil, converter == nil {
-                // FLAC's remaining metadata blocks precede audio; skip until set up.
-                continue
-            }
-            guard converter != nil else { continue }
-            decode(packet.data)
+            if let buffer = decoder.decode(packet.data) { schedule(buffer) }
         }
     }
 
@@ -199,44 +193,13 @@ nonisolated final class OggStreamPlayer: NSObject, @unchecked Sendable {
         }
         codec = identified
         currentSerial = packet.serial
-        if let c = converter { AudioConverterDispose(c); converter = nil }
-
-        switch identified {
-        case .opus(let head):
-            preSkipRemaining = head.preSkip
-            configureConverter(formatID: kAudioFormatOpus,
-                               channels: head.channels,
-                               framesPerPacket: 960)
-        case .flac:
-            // STREAMINFO carries rate and channels; until it is parsed, defer.
-            preSkipRemaining = 0
-            configureConverter(formatID: kAudioFormatFLAC, channels: 2, framesPerPacket: 0)
-        default:
-            break
+        decoder?.close(); decoder = nil
+        guard let d = OggPacketDecoder(codec: identified) else {
+            fail("Could not start the \(identified.displayName) decoder")
+            return
         }
-    }
-
-    /// Opus always decodes at 48 kHz regardless of the header's input rate.
-    private func configureConverter(formatID: AudioFormatID, channels: Int, framesPerPacket: UInt32) {
-        let rate: Double = 48000
-        var src = AudioStreamBasicDescription(
-            mSampleRate: rate, mFormatID: formatID, mFormatFlags: 0,
-            mBytesPerPacket: 0, mFramesPerPacket: framesPerPacket, mBytesPerFrame: 0,
-            mChannelsPerFrame: UInt32(channels), mBitsPerChannel: 0, mReserved: 0)
-        guard let out = AVAudioFormat(standardFormatWithSampleRate: rate,
-                                      channels: AVAudioChannelCount(channels)) else {
-            fail("Unsupported channel layout"); return
-        }
-        var dst = out.streamDescription.pointee
-        var c: AudioConverterRef?
-        // No magic cookie: Apple's Opus cookie has no published layout, and a
-        // fully specified ASBD alone decodes byte-identically.
-        guard AudioConverterNew(&src, &dst, &c) == noErr, let c else {
-            fail("Could not start the \(codec.displayName) decoder"); return
-        }
-        converter = c
-        outputFormat = out
-        startEngineIfNeeded(format: out)
+        decoder = d
+        startEngineIfNeeded(format: d.format)
     }
 
     private func startEngineIfNeeded(format: AVAudioFormat) {
@@ -250,96 +213,15 @@ nonisolated final class OggStreamPlayer: NSObject, @unchecked Sendable {
         scheduledBuffers = 0
     }
 
-    // MARK: - Decoding
-
-    /// Holds the one packet the converter's input callback will hand back.
-    private final class PacketFeed {
-        var bytes: [UInt8] = []
-        var desc = AudioStreamPacketDescription()
-        var consumed = true
-    }
-    private let feed = PacketFeed()
-
-    private func decode(_ packet: [UInt8]) {
-        guard let converter, let format = outputFormat else { return }
-        feed.bytes = packet
-        feed.consumed = false
-
-        // Opus tops out at 120 ms per packet; 5760 frames at 48 kHz covers it.
-        let capacity: AVAudioFrameCount = 5760
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity) else { return }
-
-        var frames = capacity
-        var abl = buffer.mutableAudioBufferList.pointee
-        var status: OSStatus = noErr
-        withUnsafeMutablePointer(to: &abl) { ablPtr in
-            status = AudioConverterFillComplexBuffer(
-                converter, Self.inputProc,
-                Unmanaged.passUnretained(feed).toOpaque(),
-                &frames, ablPtr, nil)
-        }
-        guard status == noErr || status == 1, frames > 0 else { return }
-        buffer.frameLength = frames
-        // The buffer list the converter filled is a copy; mirror the count back.
-        buffer.mutableAudioBufferList.pointee.mBuffers.mDataByteSize =
-            frames * format.streamDescription.pointee.mBytesPerFrame
-
-        schedule(trimmingPreSkip: buffer, format: format)
-    }
-
-    /// CoreAudio calls this on its own thread — `@Sendable` is not optional here.
-    /// With default MainActor isolation a plain closure is inferred `@MainActor`
-    /// and traps at runtime when the framework invokes it off-main.
-    private static let inputProc: AudioConverterComplexInputDataProc = {
-        _, ioNumberDataPackets, ioData, outDataPacketDescription, userData in
-        guard let userData else { ioNumberDataPackets.pointee = 0; return noErr }
-        let feed = Unmanaged<PacketFeed>.fromOpaque(userData).takeUnretainedValue()
-        if feed.consumed || feed.bytes.isEmpty {
-            ioNumberDataPackets.pointee = 0
-            return noErr
-        }
-        feed.consumed = true
-        feed.desc = AudioStreamPacketDescription(
-            mStartOffset: 0, mVariableFramesInPacket: 0,
-            mDataByteSize: UInt32(feed.bytes.count))
-        ioNumberDataPackets.pointee = 1
-        ioData.pointee.mNumberBuffers = 1
-        ioData.pointee.mBuffers.mNumberChannels = 0
-        ioData.pointee.mBuffers.mDataByteSize = UInt32(feed.bytes.count)
-        ioData.pointee.mBuffers.mData = UnsafeMutableRawPointer(mutating: feed.bytes)
-        outDataPacketDescription?.pointee = withUnsafeMutablePointer(to: &feed.desc) { $0 }
-        return noErr
-    }
-
-    /// RFC 7845 §4.2: the first `preSkip` samples are encoder priming and must be
-    /// dropped, or every stream opens with a click.
-    private func schedule(trimmingPreSkip buffer: AVAudioPCMBuffer, format: AVAudioFormat) {
-        var toPlay = buffer
-        if preSkipRemaining > 0 {
-            let drop = min(preSkipRemaining, Int(buffer.frameLength))
-            preSkipRemaining -= drop
-            let remaining = Int(buffer.frameLength) - drop
-            guard remaining > 0 else { return }
-            guard let trimmed = AVAudioPCMBuffer(pcmFormat: format,
-                                                 frameCapacity: AVAudioFrameCount(remaining)),
-                  let src = buffer.floatChannelData, let dst = trimmed.floatChannelData
-            else { return }
-            for ch in 0..<Int(format.channelCount) {
-                dst[ch].update(from: src[ch] + drop, count: remaining)
-            }
-            trimmed.frameLength = AVAudioFrameCount(remaining)
-            toPlay = trimmed
-        }
-
+    private func schedule(_ buffer: AVAudioPCMBuffer) {
         guard started else { return }
         scheduledBuffers += 1
-        node.scheduleBuffer(toPlay) { [weak self] in
+        node.scheduleBuffer(buffer) { [weak self] in
             guard let self else { return }
             self.queue.async { self.scheduledBuffers -= 1 }
         }
-
         if node.isPlaying == false,
-           scheduledBuffers * Int(toPlay.frameLength) >= Self.startThresholdFrames {
+           scheduledBuffers * Int(buffer.frameLength) >= Self.startThresholdFrames {
             node.play()
             setState(.playing)
         }
@@ -375,11 +257,178 @@ nonisolated extension OggStreamPlayer: URLSessionDataDelegate {
     }
 }
 
-private extension URLSessionConfiguration {
-    /// A live stream must never be served from cache.
-    func requestCacheePolicyWorkaround() {
-        requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
-        urlCache = nil
-        timeoutIntervalForRequest = 30
+// MARK: - Decoding
+
+/// Decodes one Ogg logical bitstream's packets to PCM with the system decoder.
+///
+/// Separate from the player so it can be tested on real Opus packets with no
+/// network, engine or device — the only way to see audio come out of it, since
+/// a simulator cannot be listened to.
+nonisolated final class OggPacketDecoder {
+    /// Non-interleaved Float32 at 48 kHz: the engine's standard format.
+    let format: AVAudioFormat
+    private let converter: AudioConverterRef
+    private let channels: UInt32
+    private var preSkipRemaining: Int
+    private var closed = false
+
+    /// Opus packets are at most 120 ms, which is 5760 frames at 48 kHz.
+    static let maxFramesPerPacket: AVAudioFrameCount = 5760
+
+    /// What the input callback returns once its single packet is spent.
+    ///
+    /// Not `noErr` with zero packets: that tells AudioConverter the *stream* has
+    /// ended, after which later fill calls can produce nothing. A non-zero status
+    /// ends only the current fill call, and `decode` accepts it as success.
+    fileprivate static let packetSpent = OSStatus(bitPattern: 0x7370_6E74)   // 'spnt'
+
+    init?(codec: OggCodec) {
+        let rate: Double = 48000
+        let chans: Int
+        let formatID: AudioFormatID
+        let framesPerPacket: UInt32
+        let preSkip: Int
+        switch codec {
+        case .opus(let head):
+            chans = head.channels; formatID = kAudioFormatOpus
+            framesPerPacket = 960; preSkip = head.preSkip
+        case .flac:
+            // STREAMINFO is not parsed yet; this assumes 48 kHz stereo.
+            chans = 2; formatID = kAudioFormatFLAC
+            framesPerPacket = 0; preSkip = 0
+        case .vorbis, .unknown:
+            return nil
+        }
+        guard chans > 0,
+              let out = AVAudioFormat(standardFormatWithSampleRate: rate,
+                                      channels: AVAudioChannelCount(chans)) else { return nil }
+        var src = AudioStreamBasicDescription(
+            mSampleRate: rate, mFormatID: formatID, mFormatFlags: 0,
+            mBytesPerPacket: 0, mFramesPerPacket: framesPerPacket, mBytesPerFrame: 0,
+            mChannelsPerFrame: UInt32(chans), mBitsPerChannel: 0, mReserved: 0)
+        var dst = out.streamDescription.pointee
+        var c: AudioConverterRef?
+        // No magic cookie: Apple's Opus cookie has no published layout, and a
+        // fully specified ASBD alone decodes byte-identically.
+        guard AudioConverterNew(&src, &dst, &c) == noErr, let c else { return nil }
+        converter = c
+        format = out
+        channels = UInt32(chans)
+        preSkipRemaining = preSkip
+    }
+
+    /// PCM for one packet with any remaining pre-skip removed, or nil when the
+    /// packet produced nothing (a header, a malformed packet, or all pre-skip).
+    func decode(_ packet: [UInt8]) -> AVAudioPCMBuffer? {
+        guard !closed, !packet.isEmpty,
+              let buffer = AVAudioPCMBuffer(pcmFormat: format,
+                                            frameCapacity: Self.maxFramesPerPacket) else { return nil }
+        // An AVAudioPCMBuffer's buffer list advertises `frameLength` bytes, and a
+        // new buffer's `frameLength` is zero. Handed over as-is, the converter
+        // sees output buffers with no room, writes nothing and still reports
+        // success — the first version produced silence this way. Open the full
+        // capacity for the fill, then shrink to what was produced.
+        buffer.frameLength = buffer.frameCapacity
+        var frames = Self.maxFramesPerPacket
+        var status: OSStatus = noErr
+        let converter = self.converter, channels = self.channels
+
+        // Every pointer the input callback hands the converter is valid only
+        // inside these scopes, and the converter reads them only during
+        // FillComplexBuffer — which is why that call sits innermost. The first
+        // version stored the `[UInt8]` and turned it into a pointer inside the
+        // callback, which dangled the moment that conversion returned.
+        packet.withUnsafeBytes { raw in
+            guard let base = raw.baseAddress else { return }
+            var desc = AudioStreamPacketDescription(
+                mStartOffset: 0, mVariableFramesInPacket: 0, mDataByteSize: UInt32(raw.count))
+            withUnsafeMutablePointer(to: &desc) { descPtr in
+                let feed = PacketFeed(data: UnsafeMutableRawPointer(mutating: base),
+                                      byteCount: UInt32(raw.count),
+                                      channels: channels, desc: descPtr)
+                // The buffer's own list, never a copy. The standard format is
+                // non-interleaved, so a stereo list holds two AudioBuffers; a
+                // copied `AudioBufferList` struct has room for one, and the
+                // converter wrote the second channel past the end of it.
+                status = withExtendedLifetime(feed) {
+                    AudioConverterFillComplexBuffer(
+                        converter, Self.inputProc,
+                        Unmanaged.passUnretained(feed).toOpaque(),
+                        &frames, buffer.mutableAudioBufferList, nil)
+                }
+            }
+        }
+        guard status == noErr || status == Self.packetSpent, frames > 0 else { return nil }
+        buffer.frameLength = frames
+        return trimmingPreSkip(buffer)
+    }
+
+    /// Explicit, never `deinit`: nothing in this app relies on teardown running
+    /// implicitly (CLAUDE.md, "Nothing runs on termination").
+    func close() {
+        guard !closed else { return }
+        closed = true
+        AudioConverterDispose(converter)
+    }
+
+    /// RFC 7845 §4.2: the first `preSkip` samples are encoder priming and must be
+    /// dropped, or every stream opens with a click.
+    private func trimmingPreSkip(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+        guard preSkipRemaining > 0 else { return buffer }
+        let drop = min(preSkipRemaining, Int(buffer.frameLength))
+        preSkipRemaining -= drop
+        let remaining = Int(buffer.frameLength) - drop
+        guard remaining > 0,
+              let trimmed = AVAudioPCMBuffer(pcmFormat: format,
+                                             frameCapacity: AVAudioFrameCount(remaining)),
+              let src = buffer.floatChannelData, let dst = trimmed.floatChannelData
+        else { return nil }
+        for ch in 0..<Int(format.channelCount) {
+            dst[ch].update(from: src[ch] + drop, count: remaining)
+        }
+        trimmed.frameLength = AVAudioFrameCount(remaining)
+        return trimmed
+    }
+
+    /// CoreAudio calls this on its own thread, inside FillComplexBuffer, and it
+    /// touches nothing but the feed.
+    private static let inputProc: AudioConverterComplexInputDataProc = {
+        _, ioNumberDataPackets, ioData, outDataPacketDescription, userData in
+        guard let userData else {
+            ioNumberDataPackets.pointee = 0
+            return OggPacketDecoder.packetSpent
+        }
+        let feed = Unmanaged<PacketFeed>.fromOpaque(userData).takeUnretainedValue()
+        guard !feed.consumed else {
+            ioNumberDataPackets.pointee = 0
+            return OggPacketDecoder.packetSpent
+        }
+        feed.consumed = true
+        ioNumberDataPackets.pointee = 1
+        ioData.pointee.mNumberBuffers = 1
+        ioData.pointee.mBuffers.mNumberChannels = feed.channels
+        ioData.pointee.mBuffers.mDataByteSize = feed.byteCount
+        ioData.pointee.mBuffers.mData = feed.data
+        outDataPacketDescription?.pointee = feed.desc
+        return noErr
+    }
+}
+
+/// The one packet an input callback will hand over during a single fill call.
+/// Holds pointers that the caller keeps valid for that call, never the array
+/// itself — so nothing is converted to a pointer inside the callback.
+private nonisolated final class PacketFeed {
+    let data: UnsafeMutableRawPointer
+    let byteCount: UInt32
+    let channels: UInt32
+    let desc: UnsafeMutablePointer<AudioStreamPacketDescription>
+    var consumed = false
+
+    init(data: UnsafeMutableRawPointer, byteCount: UInt32, channels: UInt32,
+         desc: UnsafeMutablePointer<AudioStreamPacketDescription>) {
+        self.data = data
+        self.byteCount = byteCount
+        self.channels = channels
+        self.desc = desc
     }
 }
