@@ -265,6 +265,8 @@ mpd.conf.
 - [ ] Repeat/random/single/consume carry over; **volume does not**
 - [ ] Move a **paused** queue → the target is paused at the same position
 - [ ] Move a **stopped** queue → the queue arrives, nothing starts playing
+- [ ] Move a **long** queue (hundreds of tracks) from deep in it → same song,
+      same spot, no noticeable delay
 - [ ] The same actions work by swiping a partition row in Outputs & Partitions
 - [ ] The confirmation names both partitions before doing anything
 - [ ] The partition button shows a spinner while the move runs and cannot be

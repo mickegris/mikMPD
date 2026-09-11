@@ -299,3 +299,26 @@ an output that `moveoutput` had moved into a **runtime-created partition** (`sov
 outside what the app's transfer does — it never enables or moves an output — but
 a user can have set up either through the Outputs screen beforehand, so the crash
 is recorded here rather than dismissed.
+
+### A long queue is no slower
+
+The user's "Bra grejs" playlist was loaded into `snapcast`, played from song 309
+at 42 s, and transferred to `http` and back, with every command timed against
+`MPDSocket`'s 5 s receive timeout — the limit that would make a slow `save` or
+`load` fail inside the app while MPD itself succeeded.
+
+| | snapcast → http | http → snapcast |
+|---|---|---|
+| queue | 412 tracks, identical order | 412 tracks, identical order |
+| landed on | song 309, drift −0.01 s | song 309, drift +0.01 s |
+| whole transfer | 15 ms | 14 ms |
+| slowest command | `load`, 4 ms | `load`, 4 ms |
+
+So a queue of several hundred tracks runs about three orders of magnitude inside
+the timeout.
+
+The playlist holds 417 entries but loads as 412: five point at files no longer in
+the library (moved or renamed — `lsinfo` answers "No such directory"), and MPD's
+`load` skips them silently. That happens when the *playlist* becomes the queue,
+before any transfer; the transfer saves and reloads the *queue*, which contains
+only the 412, so nothing is lost and positions do not shift.
