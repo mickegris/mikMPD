@@ -2266,6 +2266,10 @@ final class MPDStore: ObservableObject {
     /// action here.
     private var oggPlayer: OggStreamPlayer?
     private var oggState: OggStreamState = .idle
+    /// Which Ogg player a state callback belongs to. Callbacks reach main
+    /// asynchronously, so one from a player already torn down can arrive after a
+    /// new stream has started — and, unchecked, would stop the new one.
+    private var oggPlayerToken: UUID?
 
     func togglePhoneStream() { isPhoneStreaming ? stopPhoneStream() : startPhoneStream() }
 
@@ -2314,13 +2318,16 @@ final class MPDStore: ObservableObject {
     }
 
     private func startOggPlayer(url: URL) {
+        let token = UUID()
+        oggPlayerToken = token
         let player = OggStreamPlayer { [weak self] state in
-            guard let self else { return }
+            guard let self, self.oggPlayerToken == token else { return }   // stale player
             self.oggState = state
-            if case .failed(let message) = state {
-                self.phoneStreamError = message
-                self.stopPhoneStream()
-            }
+            if case .failed(let message) = state { self.phoneStreamError = message }
+            // `.idle` counts too: it is how a server closing the connection
+            // arrives. Reacting to `.failed` alone left "Streaming to phone" on
+            // screen over silence, with the audio session still held.
+            if state.endsPhoneStream { self.stopPhoneStream() }
         }
         oggPlayer = player
         player.start(url: url)
@@ -2329,6 +2336,7 @@ final class MPDStore: ObservableObject {
     func stopPhoneStream() {
         streamPlayer?.pause()
         streamPlayer = nil
+        oggPlayerToken = nil        // before stop(): its own .idle must be ignored
         oggPlayer?.stop()
         oggPlayer = nil
         oggState = .idle

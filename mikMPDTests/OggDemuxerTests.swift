@@ -494,3 +494,18 @@ func drain(_ d: inout OggDemuxer) -> [OggPacket] {
         #expect(!OggStreamState.failed("x").isRendering)
     }
 }
+
+@Suite struct OggStreamEndTests {
+    /// A server closing the connection — MPD restarting, the httpd output being
+    /// disabled — arrives as `.idle`, not `.failed`. Treating only `.failed` as
+    /// the end left "Streaming to phone" on screen over silence.
+    @Test func idleAndFailedEndThePhoneStream() {
+        #expect(OggStreamState.idle.endsPhoneStream)
+        #expect(OggStreamState.failed("x").endsPhoneStream)
+    }
+
+    @Test func liveStatesDoNotEndIt() {
+        #expect(!OggStreamState.buffering.endsPhoneStream)
+        #expect(!OggStreamState.playing.endsPhoneStream)
+    }
+}

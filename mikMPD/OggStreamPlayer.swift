@@ -23,6 +23,17 @@ nonisolated enum OggStreamState: Equatable {
     case failed(String)
 
     var isRendering: Bool { self == .playing || self == .buffering }
+
+    /// Whether the store should stop phone streaming on reaching this state.
+    /// `.idle` is included because a server closing the connection — MPD
+    /// restarting, the httpd output being disabled — arrives as `.idle`, not
+    /// `.failed`.
+    var endsPhoneStream: Bool {
+        switch self {
+        case .idle, .failed: true
+        case .buffering, .playing: false
+        }
+    }
 }
 
 /// Codecs this app can play over http, for user-facing copy. The list is a fact
