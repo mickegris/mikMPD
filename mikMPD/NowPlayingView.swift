@@ -34,6 +34,9 @@ struct NowPlayingView: View {
     @State private var showOutputs    = false
     @State private var showPartitions = false
 
+    // Presents the Move Playback sheet
+    @State private var showMovePlayback = false
+
     var song: MPDSong { store.currentSong }
 
     // What fraction to show in the slider
@@ -88,6 +91,7 @@ struct NowPlayingView: View {
                     lyricsToggle
                     if store.partitions.count > 1 {
                         partitionButton
+                        movePlaybackButton
                     }
                 }
                 .frame(width: 30)
@@ -164,13 +168,32 @@ struct NowPlayingView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Switch partition")
-        .confirmationDialog("Switch Partition", isPresented: $showPartitions) {
+        .confirmationDialog("Switch Partition", isPresented: $showPartitions, titleVisibility: .visible) {
             ForEach(store.partitions, id: \.self) { part in
                 Button(part == store.currentPartition ? "✓ \(part)" : part) {
                     if part != store.currentPartition { store.switchPartition(part) }
                 }
             }
         }
+    }
+
+    /// Moving the music is its own button rather than extra rows in the partition
+    /// switcher, where "switch to" and "move playback to" sat one row apart and
+    /// read as the same kind of action.
+    var movePlaybackButton: some View {
+        Button { showMovePlayback = true } label: {
+            ZStack {
+                Image(systemName: "arrow.left.arrow.right")
+                    .font(.body)
+                    .foregroundStyle(Color.secondary)
+                    .opacity(store.isTransferringQueue ? 0 : 1)
+                if store.isTransferringQueue { ProgressView().controlSize(.small) }
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(store.isTransferringQueue)
+        .accessibilityLabel("Move playback to another partition")
+        .sheet(isPresented: $showMovePlayback) { MovePlaybackSheet() }
     }
 
     // MARK: - Subviews
@@ -638,6 +661,15 @@ struct NowPlayingView: View {
         .buttonStyle(.plain)
         .disabled(!hasURL)
         .opacity(hasURL ? 1 : 0.5)
+        // A stream that cannot be decoded must never be a toggle that just does
+        // nothing — the message names the codec that arrived and the ones that work.
+        .alert("Cannot Play This Stream",
+               isPresented: Binding(get: { store.phoneStreamError != nil },
+                                    set: { if !$0 { store.phoneStreamError = nil } })) {
+            Button("OK", role: .cancel) { store.phoneStreamError = nil }
+        } message: {
+            Text(store.phoneStreamError ?? "")
+        }
     }
 }
 

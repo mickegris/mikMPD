@@ -583,6 +583,18 @@ nonisolated struct MPDSong: Identifiable, Equatable {
     /// `list album group albumartist`, so a compilation track keyed by its own
     /// artist landed in a different cache entry than its own album's tile.
     var artKey: String { artCacheKey(artist: groupingArtist, album: album) }
+    /// A stored-playlist entry whose file is no longer in MPD's database —
+    /// moved, renamed or deleted since it was added to the playlist.
+    ///
+    /// `listplaylistinfo` answers such an entry with its `file:` line and
+    /// nothing else (verified on 0.24.0), while every song MPD knows carries
+    /// `Last-Modified` and a duration. Both being absent is the signal; requiring
+    /// *both* keeps a date that fails to parse from flagging a real song. Streams
+    /// and CD tracks are never in the database and are excluded — they are not
+    /// missing, just not files.
+    var isMissingFromLibrary: Bool {
+        sourceKind == .library && lastModified == nil && duration == 0
+    }
     var sourceKind: PlaybackSourceKind {
         let trimmedFile = file.trimmingCharacters(in: .whitespacesAndNewlines)
         let lowercasedFile = trimmedFile.lowercased()
@@ -688,6 +700,175 @@ nonisolated func shouldMigrateLegacyServer(persistedHost: String?, hasServers: B
     return true
 }
 
+// MARK: - Queue transfer between partitions
+
+/// What the source partition was doing, so the target can be put back into it.
+nonisolated enum TransferPlaybackState: String, Equatable {
+    case playing, paused, stopped
+}
+
+/// The one command that starts playback in the target — at the right song and
+/// position — or nil when the source was stopped and nothing should play.
+///
+/// A single `seek SONGPOS TIME`, which starts a stopped player at that point
+/// (verified on 0.24.0), rather than `play` followed by `seekcur`. That pair sent
+/// a seek while the target's outputs were still being opened, and a transfer
+/// into a partition whose DAC was switched off aborted the daemon during exactly
+/// that sequence.
+nonisolated func transferStartCommand(state: TransferPlaybackState, pos: Int, elapsed: Double) -> String? {
+    guard state != .stopped, pos >= 0 else { return nil }
+    return elapsed > 0.5 ? String(format: "seek %d %.3f", pos, elapsed) : "play \(pos)"
+}
+
+/// Commands to send once the target is confirmed playing. A paused source is
+/// paused only now: the target still has to prove its outputs open first.
+nonisolated func transferFinishCommands(state: TransferPlaybackState) -> [String] {
+    state == .paused ? ["pause 1"] : []
+}
+
+/// Whether the target partition has actually started playing.
+nonisolated enum TransferStartOutcome: Equatable {
+    case playing
+    case pending
+    case failed(String)
+}
+
+/// Judged from two consecutive `status` samples. `state: play` on its own is not
+/// taken as proof — it describes the player, not whether any output opened — so
+/// success also needs elapsed time to have advanced between the samples. An
+/// `error:` line (MPD's report of an output that failed to open) is failure
+/// outright; callers send `clearerror` first so an old one cannot be mistaken
+/// for a new one.
+nonisolated func transferStartOutcome(previous: [String: String]?,
+                                      current: [String: String]) -> TransferStartOutcome {
+    if let e = current["error"], !e.isEmpty { return .failed(e) }
+    guard current["state"] == "play",
+          let previous, previous["state"] == "play",
+          let before = Double(previous["elapsed"] ?? ""),
+          let now = Double(current["elapsed"] ?? ""),
+          now > before
+    else { return .pending }
+    return .playing
+}
+
+/// Why playback cannot move into a target with these enabled outputs, or nil.
+/// Only matters when something is meant to play; a stopped queue can land
+/// anywhere. Note what this cannot see: an output that is enabled but whose
+/// device is switched off — that is what waiting for playback is for.
+nonisolated func transferTargetOutputsRefusal(target: String, enabledOutputs: [String],
+                                              willPlay: Bool) -> String? {
+    guard willPlay, enabledOutputs.isEmpty else { return nil }
+    return "\(target) has no enabled outputs, so nothing could play there."
+}
+
+/// What the Move Playback sheet shows for one partition.
+nonisolated struct PartitionSummary: Identifiable, Equatable {
+    let name: String
+    let enabledOutputs: [String]
+    let state: String          // MPD's play / pause / stop
+    let queueLength: Int
+    var id: String { name }
+
+    init(name: String, status: [String: String], outputs: [[String: String]]) {
+        self.name = name
+        // MPD lists another partition's outputs as `plugin: dummy` placeholders.
+        enabledOutputs = outputs
+            .filter { $0["plugin"] != "dummy" && $0["outputenabled"] == "1" }
+            .compactMap { $0["outputname"] }
+        state = status["state"] ?? "stop"
+        queueLength = Int(status["playlistlength"] ?? "0") ?? 0
+    }
+
+    var stateLabel: String {
+        switch state {
+        case "play":  "Playing"
+        case "pause": "Paused"
+        default:      queueLength == 0 ? "Empty" : "Stopped"
+        }
+    }
+}
+
+/// Where to seek in the target, given how long the transfer itself took.
+///
+/// The source keeps playing while the queue is saved, loaded and started, so the
+/// position read at the start is already stale by the time the target seeks —
+/// resuming at it drops the music backwards by the length of the transfer. That
+/// is small on a LAN and not small at all when `save`/`load` hit slow storage
+/// with a long queue.
+///
+/// A paused or stopped source did not advance, so it is never compensated.
+/// The result is clamped short of the end, because seeking past it would skip
+/// the track the user was listening to — the one outcome worse than a little
+/// drift.
+nonisolated func transferCompensatedElapsed(elapsed: Double,
+                                            transferSeconds: Double,
+                                            duration: Double,
+                                            state: TransferPlaybackState) -> Double {
+    guard state == .playing else { return max(0, elapsed) }
+    let advanced = max(0, elapsed) + max(0, transferSeconds)
+    guard duration > 0 else { return advanced }
+    return min(advanced, max(0, duration - 0.25))
+}
+
+/// Name for the short-lived stored playlist a transfer moves the queue through.
+///
+/// Unique per transfer, not one fixed name: two devices transferring at the same
+/// moment would otherwise collide on it and the second `save` would overwrite a
+/// queue in flight. A leading dot keeps it out of the way; `/` and newlines are
+/// illegal in MPD playlist names, and hex cannot produce either.
+nonisolated func transferTempPlaylistName(uuid: UUID = UUID()) -> String {
+    "\(transferPlaylistPrefix)\(uuid.uuidString.prefix(8).lowercased())"
+}
+
+nonisolated let transferPlaylistPrefix = ".mikmpd-transfer-"
+
+/// Is this a transfer playlist left behind by a crash, safe to delete?
+///
+/// Age-gated on purpose. An ungated sweep becomes the bug it is fixing: another
+/// device's transfer, in flight right now, has a playlist matching the prefix.
+/// The window is far longer than a transfer takes and far shorter than a
+/// leftover deserves to live. A missing or unparseable timestamp is treated as
+/// *not* stale — never delete something we cannot date.
+nonisolated func isStaleTransferPlaylist(name: String,
+                                         lastModified: String,
+                                         now: Date = Date(),
+                                         maxAge: TimeInterval = 300) -> Bool {
+    guard name.hasPrefix(transferPlaylistPrefix) else { return false }
+    guard let date = iso8601Date(lastModified) else { return false }
+    return now.timeIntervalSince(date) > maxAge
+}
+
+/// MPD reports `Last-Modified` as ISO-8601 UTC, e.g. "2026-09-10T08:14:22Z".
+nonisolated func iso8601Date(_ s: String) -> Date? {
+    let f = ISO8601DateFormatter()
+    f.formatOptions = [.withInternetDateTime]
+    return f.date(from: s)
+}
+
+/// Why a queue cannot be transferred, or nil when it can.
+///
+/// CD tracks are the interesting case: `cdda:///N` URIs in a stored playlist do
+/// not reload meaningfully, and the disc is in one machine anyway — so the
+/// target would end up with a queue that looks right and plays nothing.
+nonisolated func transferRefusalReason(queueIsEmpty: Bool,
+                                       containsCDTracks: Bool,
+                                       targetPartition: String,
+                                       currentPartition: String,
+                                       storedPlaylistsAvailable: Bool) -> String? {
+    if !storedPlaylistsAvailable {
+        return "Transferring a queue needs MPD\u{2019}s stored-playlist support, which is off on "
+             + "this server. Set playlist_directory in mpd.conf and restart MPD."
+    }
+    if queueIsEmpty { return "The queue is empty." }
+    if targetPartition == currentPartition { return "That is already the current partition." }
+    if targetPartition.isEmpty { return "No target partition." }
+    if containsCDTracks {
+        return "A CD queue cannot be transferred \u{2014} CD tracks belong to the machine "
+             + "holding the disc."
+    }
+    return nil
+}
+
 /// Should a failed `connect()` be retried on a timer?
 ///
 /// Almost everything that stops a connect is transient — the daemon is down, the
@@ -726,6 +907,18 @@ nonisolated func validatePlaylistName(_ name: String) -> String? {
           !trimmed.contains("/"), !trimmed.contains("\\"),
           !trimmed.contains("\n"), !trimmed.contains("\r") else { return nil }
     return trimmed
+}
+
+/// Queue position a playlist row will occupy once the playlist is `load`ed, or
+/// nil when the row is a missing file that `load` will skip.
+///
+/// MPD silently drops entries whose files are gone when it loads a stored
+/// playlist, so every row after one moves up a place. Playing row N used to send
+/// `play N`, landing one song further down for each missing entry above it — in
+/// a real 417-entry playlist with five dead files, as many as five songs off.
+nonisolated func playlistQueueIndex(forPlaylistIndex index: Int, in songs: [MPDSong]) -> Int? {
+    guard songs.indices.contains(index), !songs[index].isMissingFromLibrary else { return nil }
+    return songs[..<index].reduce(0) { $0 + ($1.isMissingFromLibrary ? 0 : 1) }
 }
 
 /// Songs from `listplaylistinfo` carry no pos/id fields; assign pos from the

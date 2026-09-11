@@ -45,6 +45,12 @@ final class MPDStore: ObservableObject {
     @Published var lyricsState:    LyricsState     = .unavailable
     @Published var queue:          [MPDSong]       = []
     @Published var outputs:        [MPDOutput]     = []
+    /// True while a queue transfer is running. Published because a transfer is
+    /// several round trips and an audible gap, and an unacknowledged tap invites
+    /// a second one.
+    @Published var isTransferringQueue = false
+    /// False when the server has stored playlists disabled, which transfer needs.
+    @Published var canTransferQueue = true
     @Published var outputPartitions: [String: String] = [:] // outputID -> partition (for current view)
     @Published var partitions:     [String]        = []
     @Published var browseItems:    [MPDBrowseItem] = []
@@ -143,6 +149,12 @@ final class MPDStore: ObservableObject {
     private var reconnectGeneration = 0
     private var isRestoringPartition = false
     private var isMovingOutput = false   // prevents stacking a second move onto Q
+    /// nil = not probed on this connection. Stored-playlist support is server
+    /// configuration (`playlist_directory`), so it cannot change under a live
+    /// connection; probed read-only via `listplaylists`, which fails the same
+    /// way when it is off, so availability costs no write. Q-only, like
+    /// `playlistSearchAvailable`; `canTransferQueue` is the published mirror.
+    nonisolated(unsafe) private var storedPlaylistsAvailable: Bool?
     private var partitionToRestore: String?
 
     // Seek lock: elapsed from poll is ignored until this date passes
@@ -263,6 +275,7 @@ final class MPDStore: ObservableObject {
                 // Capability probes are per-connection: a different server, or
                 // the same one after an upgrade, may answer differently.
                 self.playlistSearchAvailable = nil
+                self.storedPlaylistsAvailable = nil
                 self.recentlyAddedRung = nil
                 try self.socket.connect(host: h, port: p, password: pw)
                 // MPD accepts connections without auth even when a password is
@@ -287,6 +300,9 @@ final class MPDStore: ObservableObject {
                     self.isConnected = true
                     self.startTimers()
                     self.loadAll()
+                    // Whether queues can be transferred is server configuration,
+                    // so it is established once per connection and read-only.
+                    self.probeStoredPlaylistSupport()
                 }
             } catch {
                 DispatchQueue.main.async {
@@ -1470,11 +1486,23 @@ final class MPDStore: ObservableObject {
         Q.async { [weak self] in
             guard let self else { return }
             let recs = (try? self.socket.command("listplaylists")) ?? []
-            let lists = recs.compactMap { r -> MPDPlaylist? in
+            let all = recs.compactMap { r -> MPDPlaylist? in
                 guard let name = r["playlist"], !name.isEmpty else { return nil }
                 return MPDPlaylist(name: name, lastModified: r["last-modified"] ?? "")
-            }.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            }
+            // Transfer scratch playlists are never the user's business: not while
+            // one is in flight, and not while an orphan waits to be swept.
+            let lists = all
+                .filter { !$0.name.hasPrefix(transferPlaylistPrefix) }
+                .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
             DispatchQueue.main.async { self.playlists = lists }
+
+            // Sweep orphans from a force-quit or a dropped socket mid-transfer —
+            // nothing in this app runs on termination, so this is the only thing
+            // that removes them.
+            for p in all where isStaleTransferPlaylist(name: p.name, lastModified: p.lastModified) {
+                _ = try? self.socket.command("rm \"\(p.name.esc)\"")
+            }
         }
     }
 
@@ -1621,6 +1649,10 @@ final class MPDStore: ObservableObject {
 
     /// Replace the queue with the playlist and start at the given index —
     /// tapping a playlist row plays that song in its playlist context.
+    ///
+    /// `index` is a **queue** position after the load, not the row's playlist
+    /// index: `load` skips entries whose files are gone, moving every later row
+    /// up. Map a row with `playlistQueueIndex(forPlaylistIndex:in:)`.
     func playPlaylist(name: String, at index: Int) {
         Q.async { [weak self] in
             guard let self else { return }
@@ -1691,6 +1723,256 @@ final class MPDStore: ObservableObject {
                 self.loadOutputs()
                 completion(failure)
             }
+        }
+    }
+
+    // MARK: - Queue transfer between partitions
+
+    /// Move the queue, the current track, its position and the play state to
+    /// another partition, then stop and clear this one — Roon's "transfer zone".
+    ///
+    /// MPD has no transfer command. The obvious construction — read the queue
+    /// with `playlistinfo` and re-add each URI — is one command per track, which
+    /// is the shape that once starved the poll for minutes on a large album, and
+    /// a big enough response can outrun the socket's 5 s read timeout. **Stored
+    /// playlists are global across partitions**, so `save` here and `load` there
+    /// moves any queue in two commands regardless of its length.
+    ///
+    /// The ordering is the safety property: the source is not touched until the
+    /// target holds the queue and has started. A failure anywhere before that
+    /// leaves the source exactly as it was, which is the state the user can least
+    /// afford to lose — it is the music they are listening to.
+    ///
+    /// This is **not** `moveoutput` and does not carry its deadlock: no output is
+    /// moved, only the connection's partition binding and queue commands. See
+    /// plans/move-active-output-hang.md before assuming otherwise.
+    func transferQueue(toPartition target: String,
+                       completion: @escaping @MainActor (String?) -> Void) {
+        guard !isTransferringQueue else { completion("A transfer is already in progress"); return }
+        if let reason = transferRefusalReason(
+            queueIsEmpty: queue.isEmpty,
+            containsCDTracks: queue.contains { $0.sourceKind == .cd },
+            targetPartition: target,
+            currentPartition: currentPartition,
+            storedPlaylistsAvailable: storedPlaylistsAvailable ?? true) {
+            completion(reason); return
+        }
+
+        let source = currentPartition
+        let temp = transferTempPlaylistName()
+        let state: TransferPlaybackState = isPlaying ? .playing : (isPaused ? .paused : .stopped)
+        let pos = playlistPos
+        let at = elapsed
+        let dur = duration
+        // Captured here, on main: @Published state must never be read from
+        // inside Q.async.
+        let modes = (rep: repeatMode, rnd: randomMode, sng: singleMode, csm: consumeMode)
+        isTransferringQueue = true
+
+        Q.async { [weak self] in
+            guard let self else { return }
+            var failure: String?
+
+            // Everything after the save must clean the scratch playlist up, on
+            // every path — it lives in the user's playlist directory.
+            func cleanup() {
+                _ = try? self.socket.command("rm \"\(temp.esc)\"")
+            }
+
+            // A target with no enabled outputs is refused before anything
+            // changes. One whose outputs are enabled but whose device is off
+            // cannot be seen from here — waiting for playback below catches that.
+            if state != .stopped, !source.isEmpty {
+                _ = try? self.socket.command("partition \"\(target.esc)\"")
+                let outs = (try? self.socket.command("outputs")) ?? []
+                _ = try? self.socket.command("partition \"\(source.esc)\"")
+                let enabled = outs
+                    .filter { $0["plugin"] != "dummy" && $0["outputenabled"] == "1" }
+                    .compactMap { $0["outputname"] }
+                if let why = transferTargetOutputsRefusal(target: target, enabledOutputs: enabled, willPlay: true) {
+                    DispatchQueue.main.async {
+                        self.isTransferringQueue = false
+                        completion(why)
+                    }
+                    return
+                }
+            }
+
+            // Ground truth for what to resume, read on Q milliseconds before the
+            // save rather than whatever the 10 Hz display timer had interpolated
+            // when the user tapped. `startedAt` then measures how long the
+            // transfer itself takes, so the seek can account for the music that
+            // kept playing during it.
+            var srcPos = pos, srcElapsed = at, srcDuration = dur, srcState = state
+            if let recs = try? self.socket.command("status") {
+                var st: [String: String] = [:]
+                for r in recs { st.merge(r) { _, new in new } }
+                if let v = Int(st["song"] ?? "")        { srcPos = v }
+                if let v = Double(st["elapsed"] ?? "")  { srcElapsed = v }
+                if let v = Double(st["duration"] ?? "") { srcDuration = v }
+                switch st["state"] {
+                case "play":  srcState = .playing
+                case "pause": srcState = .paused
+                case "stop":  srcState = .stopped
+                default: break
+                }
+            }
+            let startedAt = Date()
+
+            do {
+                // A leftover from a previous run under the same name would make
+                // `save` ACK on pre-0.24 servers, which take no replace mode.
+                _ = try? self.socket.command("rm \"\(temp.esc)\"")
+                _ = try self.socket.command("save \"\(temp.esc)\"")
+            } catch {
+                DispatchQueue.main.async {
+                    self.isTransferringQueue = false
+                    completion(Self.ackMessage(error.localizedDescription))
+                }
+                return
+            }
+
+            do {
+                // ---- build the target completely before touching the source ----
+                _ = try self.socket.command("partition \"\(target.esc)\"")
+                _ = try self.socket.command("clear")
+                _ = try self.socket.command("load \"\(temp.esc)\"")
+
+                // The four queue modes describe the queue, so they travel with
+                // it. Volume deliberately does not — it belongs to the target's
+                // own outputs, and carrying it over would blast a room at the
+                // level of a different one.
+                _ = try? self.socket.command("repeat \(modes.rep ? 1 : 0)")
+                _ = try? self.socket.command("random \(modes.rnd ? 1 : 0)")
+                _ = try? self.socket.command("single \(modes.sng ? 1 : 0)")
+                _ = try? self.socket.command("consume \(modes.csm ? 1 : 0)")
+
+                let seekTo = transferCompensatedElapsed(
+                    elapsed: srcElapsed,
+                    transferSeconds: Date().timeIntervalSince(startedAt),
+                    duration: srcDuration,
+                    state: srcState)
+                if let start = transferStartCommand(state: srcState, pos: srcPos, elapsed: seekTo) {
+                    // An `error:` left by an earlier failure in this partition
+                    // would otherwise read as this start failing.
+                    _ = try? self.socket.command("clearerror")
+                    _ = try self.socket.command(start)
+                    // Nothing else is sent until the target is audibly running.
+                    // The source keeps playing meanwhile, so a target whose
+                    // outputs cannot open costs nothing but a message.
+                    if case .failed(let why) = self.waitForTransferTarget() {
+                        _ = try? self.socket.command("stop")
+                        _ = try? self.socket.command("clear")
+                        throw TransferTargetDidNotStart(reason: why)
+                    }
+                    for cmd in transferFinishCommands(state: srcState) {
+                        _ = try self.socket.command(cmd)
+                    }
+                }
+
+                // ---- target is playing; only now stop the source ----
+                if !source.isEmpty {
+                    _ = try? self.socket.command("partition \"\(source.esc)\"")
+                    _ = try? self.socket.command("clear")
+                    _ = try? self.socket.command("stop")
+                }
+                // Follow the music, as Roon does: you transferred it because you
+                // want to keep controlling it.
+                _ = try? self.socket.command("partition \"\(target.esc)\"")
+            } catch let notStarted as TransferTargetDidNotStart {
+                failure = "\(target) could not start playing — its outputs may be switched off.\n\n"
+                    + "MPD said: \(notStarted.reason)\n\nNothing was moved; \(source) is unchanged."
+                if !source.isEmpty { _ = try? self.socket.command("partition \"\(source.esc)\"") }
+            } catch {
+                failure = Self.ackMessage(error.localizedDescription)
+                // Get back to where the user was; the source is untouched.
+                if !source.isEmpty { _ = try? self.socket.command("partition \"\(source.esc)\"") }
+            }
+            cleanup()
+
+            let landedOn = failure == nil ? target : source
+            DispatchQueue.main.async {
+                self.isTransferringQueue = false
+                self.currentPartition = landedOn
+                self.partitionToRestore = nil
+                if failure == nil {
+                    self.rememberPartitionForActiveServer(landedOn)
+                    // What a manual switch records. Without it the refresh below
+                    // still saw the *source* as the remembered partition, and
+                    // restorePartitionIfNeeded switched straight back to it.
+                    if self.rememberPartitions { self.lastUsedPartitionName = landedOn }
+                }
+                self.loadQueue()
+                self.loadOutputs()
+                self.loadPartitions()
+                self.loadPlaylists()
+                completion(failure)
+            }
+        }
+    }
+
+    /// Persist the partition against the active server profile, so a reconnect
+    /// comes back to where the music actually is.
+    private func rememberPartitionForActiveServer(_ name: String) {
+        guard let idx = servers.firstIndex(where: { $0.id.uuidString == activeServerID }) else { return }
+        servers[idx].lastPartition = name
+    }
+
+    nonisolated private struct TransferTargetDidNotStart: Error { let reason: String }
+
+    /// Poll the target until it is audibly playing, has failed, or times out.
+    ///
+    /// The timeout is generous on purpose. On the user's server a partition with
+    /// fifo or httpd outputs confirmed in 0.2 s, but `default` — a USB DAC and an
+    /// HDMI receiver — took 1.7 s, and a device waking from standby can take
+    /// longer. A timeout only ever delays the failure message; success returns the
+    /// moment playback is confirmed, and the source keeps playing throughout.
+    nonisolated private func waitForTransferTarget(timeout: TimeInterval = 8) -> TransferStartOutcome {
+        let deadline = Date().addingTimeInterval(timeout)
+        var previous: [String: String]?
+        while true {
+            var st: [String: String] = [:]
+            for r in (try? socket.command("status")) ?? [] { st.merge(r) { _, new in new } }
+            let outcome = transferStartOutcome(previous: previous, current: st)
+            if outcome != .pending { return outcome }
+            if Date() >= deadline {
+                return .failed("playback did not start within \(Int(timeout)) seconds")
+            }
+            previous = st
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+    }
+
+    /// One summary per partition — enabled outputs, state, queue length — for the
+    /// Move Playback sheet. Read-only; it rebinds to each partition in turn and
+    /// back to the current one, all on `Q`, so the poll never sees the detour.
+    func loadPartitionSummaries(completion: @escaping @MainActor ([PartitionSummary]) -> Void) {
+        let current = currentPartition
+        Q.async { [weak self] in
+            guard let self else { return }
+            let names = (try? self.socket.command("listpartitions"))?.compactMap { $0["partition"] } ?? []
+            var summaries: [PartitionSummary] = []
+            for name in names {
+                guard (try? self.socket.command("partition \"\(name.esc)\"")) != nil else { continue }
+                var st: [String: String] = [:]
+                for r in (try? self.socket.command("status")) ?? [] { st.merge(r) { _, new in new } }
+                let outs = (try? self.socket.command("outputs")) ?? []
+                summaries.append(PartitionSummary(name: name, status: st, outputs: outs))
+            }
+            if !current.isEmpty { _ = try? self.socket.command("partition \"\(current.esc)\"") }
+            DispatchQueue.main.async { completion(summaries) }
+        }
+    }
+
+    /// Probe stored-playlist support read-only. `listplaylists` fails the same
+    /// way `save` does when `playlist_directory` is unset, so availability costs
+    /// no write and no scratch file.
+    func probeStoredPlaylistSupport() {
+        Q.async { [weak self] in
+            guard let self else { return }
+            let ok = (try? self.socket.command("listplaylists")) != nil
+            self.storedPlaylistsAvailable = ok
+            DispatchQueue.main.async { self.canTransferQueue = ok }
         }
     }
 
@@ -2067,7 +2349,22 @@ final class MPDStore: ObservableObject {
     // MARK: - Phone Streaming
 
     @Published var isPhoneStreaming = false
+    /// Set when a stream cannot be played — an unsupported codec, most usefully.
+    /// Surfaced in Now Playing so a dead toggle always has a reason attached.
+    @Published var phoneStreamError: String?
     private var streamPlayer: AVPlayer?
+    /// Used instead of `streamPlayer` for containers AVPlayer cannot open (Ogg).
+    /// Which one runs is decided per stream start from the response's
+    /// Content-Type and never persisted, so changing MPD's encoder needs no
+    /// action here.
+    private var oggPlayer: OggStreamPlayer?
+    private var oggState: OggStreamState = .idle
+    /// Which Ogg player a state callback belongs to. Callbacks reach main
+    /// asynchronously, so one from a player already torn down can arrive after a
+    /// new stream has started — and, unchecked, would stop the new one.
+    private var oggPlayerToken: UUID?
+    /// Registered only while streaming to the phone.
+    private var routeChangeObserver: NSObjectProtocol?
 
     func togglePhoneStream() { isPhoneStreaming ? stopPhoneStream() : startPhoneStream() }
 
@@ -2087,27 +2384,120 @@ final class MPDStore: ObservableObject {
             connectionError = "Audio session: \(error.localizedDescription)"
             return
         }
+        phoneStreamError = nil
+        isPhoneStreaming = true
+        observeAudioRoute()
+        UIApplication.shared.beginReceivingRemoteControlEvents()
+        setupRemoteCommands()
+        startBgPollTimer()
+        updateNowPlayingInfo()
+
+        // Which player can open this depends on what MPD is encoding, which only
+        // the response says. Probing costs one HEAD-shaped request and keeps the
+        // codec entirely out of the app's settings.
+        Self.probeStreamKind(url) { [weak self] kind in
+            guard let self, self.isPhoneStreaming else { return }
+            switch kind {
+            case .system: self.startSystemPlayer(url: url)
+            case .ogg:    self.startOggPlayer(url: url)
+            }
+        }
+    }
+
+    private func startSystemPlayer(url: URL) {
         let item = AVPlayerItem(url: url)
         item.preferredForwardBufferDuration = 30  // buffer 30s ahead for poor connections
         let player = AVPlayer(playerItem: item)
         player.automaticallyWaitsToMinimizeStalling = true
         streamPlayer = player
         player.play()
-        isPhoneStreaming = true
-        UIApplication.shared.beginReceivingRemoteControlEvents()
-        setupRemoteCommands()
-        startBgPollTimer()
-        updateNowPlayingInfo()
+    }
+
+    private func startOggPlayer(url: URL) {
+        let token = UUID()
+        oggPlayerToken = token
+        let player = OggStreamPlayer { [weak self] state in
+            guard let self, self.oggPlayerToken == token else { return }   // stale player
+            self.oggState = state
+            if case .failed(let message) = state { self.phoneStreamError = message }
+            // `.idle` counts too: it is how a server closing the connection
+            // arrives. Reacting to `.failed` alone left "Streaming to phone" on
+            // screen over silence, with the audio session still held.
+            if state.endsPhoneStream { self.stopPhoneStream() }
+        }
+        oggPlayer = player
+        player.start(url: url)
     }
 
     func stopPhoneStream() {
+        stopObservingAudioRoute()
         streamPlayer?.pause()
         streamPlayer = nil
+        oggPlayerToken = nil        // before stop(): its own .idle must be ignored
+        oggPlayer?.stop()
+        oggPlayer = nil
+        oggState = .idle
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         isPhoneStreaming = false
         UIApplication.shared.endReceivingRemoteControlEvents()
         stopBgPollTimer()
         tearDownRemoteCommands()
+    }
+
+    // MARK: Audio route changes
+
+    private func observeAudioRoute() {
+        guard routeChangeObserver == nil else { return }
+        routeChangeObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main
+        ) { [weak self] note in
+            let raw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt
+            Task { @MainActor in self?.handleAudioRouteChange(reasonRawValue: raw) }
+        }
+    }
+
+    private func stopObservingAudioRoute() {
+        if let observer = routeChangeObserver { NotificationCenter.default.removeObserver(observer) }
+        routeChangeObserver = nil
+    }
+
+    private func handleAudioRouteChange(reasonRawValue raw: UInt?) {
+        guard isPhoneStreaming, let raw,
+              let reason = AVAudioSession.RouteChangeReason(rawValue: raw) else { return }
+        switch phoneStreamRouteAction(for: reason, oggPlayerActive: oggPlayer != nil) {
+        case .stop:
+            stopPhoneStream()
+        case .restartOggStream:
+            if let url = Self.parseStreamURL(httpStreamURL) { oggPlayer?.start(url: url) }
+        case .ignore:
+            break
+        }
+    }
+
+    /// Ask the server what it is sending, from the response headers alone.
+    ///
+    /// An httpd output is an endless stream, so anything that waits for the body
+    /// never returns on its own. The first version used `dataTask`, whose
+    /// completion handler fires only when the body finishes: against a finite
+    /// test file it downloaded all of it before answering, and against MPD it
+    /// would have waited out its 10 s cancel — delaying every stream start by
+    /// that much, with the response not reliably delivered after a cancel.
+    /// `bytes(for:)` returns as soon as the headers arrive; the body is abandoned
+    /// unread. Any failure falls back to the system player, which knows more
+    /// containers than we do.
+    nonisolated private static func probeStreamKind(_ url: URL,
+                                                    completion: @escaping @MainActor (StreamPlayerKind) -> Void) {
+        Task.detached {
+            var req = URLRequest(url: url)
+            req.timeoutInterval = 10
+            var kind: StreamPlayerKind = .system
+            if let (bytes, response) = try? await URLSession.shared.bytes(for: req) {
+                kind = StreamPlayerKind.forContentType(
+                    (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Type"))
+                bytes.task.cancel()
+            }
+            await completion(kind)
+        }
     }
 
     private func setupRemoteCommands() {
@@ -2161,10 +2551,19 @@ final class MPDStore: ObservableObject {
     /// disconnect below, indefinitely. `.waitingToPlayAtSpecifiedRate` is a
     /// stream still buffering, which is worth keeping.
     func handleEnteringBackground() {
-        if isPhoneStreaming, streamPlayer?.timeControlStatus == .paused {
+        if isPhoneStreaming, !isStreamActuallyRendering {
             stopPhoneStream()
         }
         if !isPhoneStreaming { disconnect() }
+    }
+
+    /// Is a stream genuinely running, whichever player owns it? `isPhoneStreaming`
+    /// alone is not evidence — that is the whole point of the check above — and
+    /// the Ogg player needs its own answer or the bug returns for Ogg users only.
+    private var isStreamActuallyRendering: Bool {
+        if oggPlayer != nil { return oggState.isRendering }
+        if let p = streamPlayer { return p.timeControlStatus != .paused }
+        return false   // neither player started yet
     }
 
     func updateNowPlayingInfo() {

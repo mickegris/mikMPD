@@ -84,6 +84,19 @@ Facts confirmed by querying a real server, each of which cost debugging time to 
   `listDiscCounts` currently uses the single-key form plus a base-name-uniqueness guard;
   the two-key form would make disc counts artist-aware and remove that limitation, but needs a
   two-key variant of `parseGroupedValues`.
+- **Only the `default` partition's queue survives a daemon restart.** Other partitions' queues
+  are runtime state and come back empty; partitions created with `newpartition` vanish; outputs
+  return to their mpd.conf partitions. Learned when 0.24.0 aborted mid-test — so a live test that
+  touches partitions must back up **every** partition's queue, not only the ones it uses
+  (`ServerSnapshot` covers the current partition alone).
+- **0.24.0 can abort** (SIGABRT, uncaught `std::system_error`: "Invalid argument"). Seen once,
+  during a queue transfer whose target played into an httpd output that `moveoutput` had moved
+  into a runtime-created partition, while the source's httpd output had been enabled seconds
+  earlier. **The transfer sequence itself does not reproduce it**: with fifo and httpd outputs,
+  either side playing, both partitions playing at once, HTTP clients attached to both httpd
+  outputs, and ten back-to-back transfers at app speed, the daemon survived every command. The
+  two conditions never retested — a moved output in a runtime partition, and an output enabled
+  mid-run — are the remaining suspects; see `docs/plans/v1.7/01-transfer-queue-between-partitions.md`.
 
 ### MPD stickers (v1.5 candidate)
 
@@ -147,9 +160,92 @@ Multiple server profiles (`MPDServerProfile`: name, host, port, stream URL, last
 
 **Switching servers is reachable from Now Playing** (v1.6): when `servers.count > 1`, `connectionStatus` becomes a `Menu` listing every profile — a `Menu` rather than the `confirmationDialog` the outputs/partition gutter icons use, because a full-width banner is something a menu can anchor to. `store.activeServer` resolves `activeServerID` to a profile; `serverLabel` falls back to `host:port` for an unnamed one. Selecting the **active** profile is a no-op *unless* the app is disconnected, in which case it forces a reconnect. That escape hatch was written when a failed `connect()` scheduled no retry at all and the banner was the only way back; the retry is fixed now (see "Connection lifecycle"), so it is no longer the *only* way back — but it stays, because a user looking at a red banner should not have to wait out a timer they cannot see.
 
+### Transferring a queue between partitions
+
+Roon's "transfer zone": the queue, current track, position and play state move to
+another partition, and the source stops. **MPD has no transfer command**, and the
+obvious build is the wrong one — `playlistinfo` plus one `add` per track is the
+shape that starved the poll on a large artist, and a big response can outrun the
+socket's 5 s read timeout. **Stored playlists are global across partitions**, so
+`save` in the source and `load` in the target moves any queue in two commands.
+
+**The ordering is the safety property.** The source is not cleared until the
+target holds the queue and has started; a failure before that leaves the source
+untouched, which is the state the user can least afford to lose. **This is not
+`moveoutput`** and does not carry its daemon deadlock (`plans/move-active-output-hang.md`)
+— no output is touched, only the partition binding and queue commands.
+
+The scratch playlist lands in the user's own `playlist_directory`, so it is
+treated like a lock file: **uniquely named per transfer** (`.mikmpd-transfer-<hex>`,
+because one fixed name collides between two devices transferring at once),
+removed on every exit path, **swept on each `loadPlaylists`**, and filtered from
+the visible list. The sweep is **age-gated** on `Last-Modified`
+(`isStaleTransferPlaylist`) — an ungated sweep deletes another device's in-flight
+transfer, becoming the bug it fixes — and an undatable entry is never swept.
+
+`storedPlaylistsAvailable` is probed **read-only** with `listplaylists`, which
+fails exactly as `save` does when `playlist_directory` is unset, so availability
+costs no write; `canTransferQueue` is the published mirror. When it is off the app
+**names the setting and the file** rather than hiding the control.
+
+Modes (`repeat`/`random`/`single`/`consume`) travel with the queue because they
+describe it; **volume does not**, since it belongs to the target's outputs. The
+app follows to the target afterwards — **and must record it the way a manual
+switch does** (`lastUsedPartitionName`, when "Remember partitions" is on).
+Without that, the refresh that follows still sees the source as remembered and
+`restorePartitionIfNeeded` switches straight back to it.
+
+**Nothing touches the source until the target is audibly playing.** A transfer
+into `default` with its DAC and receiver switched off aborted MPD 0.24.0
+(`terminate called recursively`, uncaught `std::system_error`), while the old
+resume sent `play`, `seekcur` and the source's `clear`/`stop` in the same
+instant. A failed output open is survivable on its own — the restarted daemon
+logged `Failed to open "E30 II"` and carried on — so the resume is now:
+
+1. refuse a target with **no enabled outputs** before anything changes
+   (`transferTargetOutputsRefusal`, from that partition's `outputs`);
+2. `clearerror`, so an old `error:` cannot pass for a new one;
+3. start with **one** command, `transferStartCommand` — `seek SONGPOS TIME`
+   starts a stopped player at that point (verified on 0.24.0), so there is no
+   separate seek while outputs are opening;
+4. poll `status` until `transferStartOutcome` sees `state: play` **with elapsed
+   advancing between two samples** and no `error:` (`play` on its own is not
+   trusted), or 8 s pass — `default`'s USB DAC and HDMI outputs took 1.7 s to
+   confirm on the real server, against 0.2 s for fifo and httpd, and a timeout
+   only delays the failure message;
+5. only then pause (if the source was paused) and stop the source.
+
+If the target never plays, it is stopped and cleared and the source is left
+exactly as it was. An output that is enabled but whose device is off cannot be
+seen before trying; this makes trying harmless rather than impossible.
+
+**The abort itself has not been reproduced.** Moving into `default` with its DAC
+and receiver reported off — a plain `play`, three runs of the old sequence and
+three of the new — survived every time, and `status` showed no `error:`, so at
+least one of that partition's outputs opened. The live refusal and success paths
+are verified; the "target never plays" path is covered only by unit tests.
+
+The entry point is a **separate Move Playback button** (⇄) in Now Playing's right
+gutter, opening `MovePlaybackSheet`: every other partition with its enabled
+outputs and state (`PartitionSummary`, from `loadPartitionSummaries`), with
+partitions that have none disabled. It first shipped as extra rows in the
+partition switcher's dialog, where "switch to" and "move playback to" sat one row
+apart and read as the same kind of action.
+
+**The current song and position transfer, and the position is compensated.** The
+resume reads `status` **on `Q`, immediately before the `save`** rather than using
+the main-thread `elapsed`, which the 10 Hz display timer has interpolated since
+the last poll. More importantly the source *keeps playing* while the queue is
+saved, loaded and started, so `transferCompensatedElapsed` adds the measured
+transfer duration — without it the music jumps backwards by however long the
+transfer took, which is small on a LAN and not small when `save`/`load` hit slow
+storage with a long queue. A paused source is never compensated (it did not
+advance), and the result is clamped short of the track end, since overshooting
+skips the very track the user was listening to.
+
 ### Stored playlists
 
-`PlaylistListView`/`PlaylistDetailView` live in the Library tab (PlaylistsView.swift). Tapping a track plays it in playlist context (`clear` + `load` + `play <index>`). Reorder uses `playlistmove` with the same optimistic local reorder as the queue's `moveRow`. The shared `AddToPlaylistSheet` is reachable from Now Playing, album detail, queue rows, search rows, and playlist detail rows.
+`PlaylistListView`/`PlaylistDetailView` live in the Library tab (PlaylistsView.swift). Tapping a track plays it in playlist context (`clear` + `load` + `play <index>`) — and **that index is a queue position, not the row's playlist index**. Stored playlists outlive their files: `listplaylistinfo` returns an entry whose file is gone as a bare `file:` line (no tags, no duration, no `Last-Modified`), and `load` silently skips it, moving every later row up one place. Playing by playlist index therefore lands on the wrong song for every row below the first dead entry; on a real 417-entry playlist with five, that was **410 of 412** rows. `playlistQueueIndex(forPlaylistIndex:in:)` maps a row to where `load` will actually put it. `MPDSong.isMissingFromLibrary` is the detection — library source, *and* no `lastModified`, *and* zero duration, so a date that fails to parse cannot flag a real song, and streams and CD tracks (never in the database) are excluded. `PlaylistDetailView` shows such entries as `MissingPlaylistRow` (filename, "Missing file", the folder it was in), offers no queue actions for them, explains on tap with a Remove option, and still lets them be swiped away; the header counts playable tracks and missing ones separately. Reorder uses `playlistmove` with the same optimistic local reorder as the queue's `moveRow`. The shared `AddToPlaylistSheet` is reachable from Now Playing, album detail, queue rows, search rows, and playlist detail rows.
 
 ### Playback context ("Playing from <playlist>")
 
@@ -158,6 +254,84 @@ Multiple server profiles (`MPDServerProfile`: name, host, port, stream URL, last
 A *restored* label describes a queue this app did not watch being built, so it is verified once per connection (`playbackContextVerified`) via `listplaylist` (URIs only) against `playlistinfo`. `playbackContextStillValid` compares them as **sets, not sequences** — `shuffle` reorders the queue on purpose — and requires the queue to be a **subset**: a superset means tracks were added afterwards, so the queue is no longer just that playlist. All writes go through `setPlaybackContext`, which also marks the value verified, since an action taken in this app needs no checking. "Add" onto an *empty* queue sets the context; onto a non-empty one it clears it.
 
 ### Phone streaming (listen on phone)
+
+**Two players, chosen per stream start.** `AVPlayer` handles what it can open
+(mp3, AAC, wav); `OggStreamPlayer` handles Ogg, which it never could. Selection
+is `StreamPlayerKind.forContentType(_:)` against the response's `Content-Type` and
+is **never persisted** — the codec is MPD's configuration, so changing the
+server's encoder needs no action in the app, no relaunch, and there is no codec
+setting anywhere in the UI. An unclear or missing content type falls back to
+`AVPlayer`, which knows more containers than we do. **The probe reads headers only**
+(`URLSession.bytes(for:)`, then cancel): an httpd output never ends, and the first
+version used `dataTask`, whose completion fires only when the body does — it
+downloaded a whole finite test file before answering and would have sat out its
+10 s timeout on every real stream start. **A server closing the stream ends phone
+streaming**: that arrives from `OggStreamPlayer` as `.idle`, not `.failed`
+(`endsPhoneStream`), and reacting to `.failed` alone left "Streaming to phone" on
+screen over silence. Each player's callbacks carry a token so a late one from a
+torn-down player cannot stop its successor. **Supported encoders are mp3,
+Opus and FLAC**, stated under the Stream URL field and again in the failure
+message; Ogg Vorbis is identified and refused, because iOS has no Vorbis decoder
+at all (`vorb` is absent from `kAudioFormatProperty_DecodeFormatIDs` and "Vorbis"
+appears nowhere in the SDK headers) and vendoring libvorbis for a codec Opus
+supersedes is not a trade worth making.
+
+**`OggDemuxer` exists because the container parser is undocumented, not because
+it is missing.** `AudioFileStream` *does* parse Ogg on iOS 26 — verified, every
+packet, even with no type hint — but `AudioFile.h` declares no Ogg type constant,
+so it is unpublished behaviour that can be withdrawn. The codec side stays
+Apple's: `kAudioFormatOpus` and `kAudioFormatFLAC` are in the public
+`CoreAudioBaseTypes.h`. **No magic cookie is set**, deliberately — Apple's Opus
+cookie is a 28-byte blob with no published layout, and a fully specified ASBD
+alone decodes byte-identically, so the undocumented format is designed out rather
+than depended on.
+
+The demuxer is pure (bytes in, packets out; no Foundation networking, no
+AudioToolbox), which is what lets it be tested exhaustively with no server and no
+device. Three things it must keep doing, each learned rather than assumed: it
+**joins mid-page**, since httpd starts sending at connect time; it **validates
+every page's CRC**, because `OggS` occurs inside packet payload and scanning
+alone resyncs onto garbage; and it **reports new logical bitstreams**, because a
+chained stream at a track boundary otherwise presents as "plays the first track
+and then goes quiet". Ogg's CRC-32 is polynomial `0x04c11db7`, init 0, **no
+reflection and no final xor** — not the zlib variant; a reflected implementation
+makes every page look corrupt, which presents as "no audio" rather than as a
+checksum bug. Opus **pre-skip** (RFC 7845) is dropped from the front of the
+decoded stream, or every stream opens with a click.
+
+**Decoding lives in `OggPacketDecoder`**, separate from the player so real Opus
+packets can be decoded in a unit test — the only place this path's audio is
+actually checked, since a simulator cannot be listened to. **The first version
+produced silence and reported nothing**: a new `AVAudioPCMBuffer` has
+`frameLength` 0 and its buffer list advertises only `frameLength` bytes, so the
+converter saw no room, wrote nothing and returned success — **set `frameLength =
+frameCapacity` before the fill**, then shrink to what was produced. Three more
+defects sat in the same function, and none of them is allowed back: the output
+`AudioBufferList` must be `mutableAudioBufferList` itself, never a copy — the
+standard format is non-interleaved, so a stereo list holds two `AudioBuffer`s and
+the Swift struct has room for one; the input pointer is valid only inside the
+`withUnsafeBytes` scope that **encloses** `AudioConverterFillComplexBuffer` (turning
+the stored array into a pointer inside the callback dangled, and the compiler said
+so in a warning); and when its packet is spent the callback returns the non-zero
+`packetSpent`, not `noErr` with zero packets, which tells the converter the whole
+*stream* has ended. `OggPacketDecoderTests` pins this with a synthetic stereo tone —
+440 Hz left, 554 Hz right — so a silent channel, a decoder that stops after one
+packet, or pre-skip applied twice each fails a test.
+
+**Audio route changes are the store's job while streaming** (`observeAudioRoute`,
+removed on stop). `phoneStreamRouteAction` stops the stream when a device goes
+away — headphones unplugged, Bluetooth gone — because AVAudioEngine stops itself
+then, and the button used to stay on "Streaming to phone" with no sound from any
+speaker. A device *arriving* restarts the Ogg stream onto the new route (AVPlayer
+follows by itself), and every other reason is ignored, including the category
+change the app makes when streaming starts, which would otherwise loop.
+
+`OggStreamPlayer` is `nonisolated` by necessity: URLSession delivers on its own
+queue and CoreAudio calls the converter's input proc on a render thread, where
+MainActor inference traps. `handleEnteringBackground` asks
+`isStreamActuallyRendering`, which consults whichever player is live — without an
+Ogg-side answer, the "dead stream holds the audio session open" bug returns for
+Ogg users only.
 
 `AVPlayer` plays an MPD httpd output URL on the device. The stream URL is per server profile (edited in the server form) and mirrored into the live `@AppStorage("httpStreamURL")` on switch. A toggle in Now Playing starts/stops the stream.
 
