@@ -233,3 +233,47 @@ moved, so the daemon-hang risk that gates that group does not apply.
 
 Manual (`TESTING.md`): the two-room case that is the whole point — music playing
 in one room, transfer, and it continues in the other from where it was.
+
+## Live verification (MPD 0.24.0)
+
+### The first attempt crashed the daemon
+
+A transfer from `http` to `sova`, with both partitions playing into **httpd**
+outputs, ended with MPD aborting at 14:56:11:
+
+```
+terminate called after throwing an instance of 'std::system_error'
+  what():  Invalid argument
+mpd.service: Main process exited, code=killed, status=6/ABRT
+```
+
+The journal places it in the same second as the transfer's last steps — the log
+shows the source's song reported as `played` just before the abort — but one-
+second resolution cannot say which command. Three conditions were present that
+the successful retest below did not have: two partitions playing into outputs at
+the same moment; httpd outputs specifically, one of which had been enabled and
+streamed from minutes earlier; and `sova`'s `http mp3`, an output moved by
+`moveoutput` into a partition created at runtime.
+
+What it cost is a server fact worth knowing: **only the `default` partition's
+queue survives a restart.** Every other queue was emptied and `sova`, created at
+runtime, disappeared. The daemon came back through socket activation, which
+starts it without a global port and therefore with zeroconf disabled.
+
+### The retest passed at every step
+
+No configuration was changed. `snapcast` had Snapcast flac (a fifo) enabled;
+`airplay` had every output disabled, which makes it an output-less partition.
+Each command was issued on its own with an uptime check after it:
+
+| Test | Result |
+|---|---|
+| `snapcast` playing into the fifo → `airplay` | queue order, song index, source emptied and stopped — pass |
+| `airplay` → `snapcast`, target starts playing into the fifo | target playing at the same song — pass |
+| both directions at app speed, no delays | 7 ms and 3 ms; daemon survived, target playing — pass |
+| scratch playlists | none left behind — pass |
+
+So the command sequence itself does not crash 0.24.0 with fifo outputs, stepwise
+or at full speed. **Still unverified:** two partitions playing into outputs at
+once, httpd outputs, and outputs moved by `moveoutput`. The crash needed at least
+one of those.

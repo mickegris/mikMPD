@@ -84,6 +84,16 @@ Facts confirmed by querying a real server, each of which cost debugging time to 
   `listDiscCounts` currently uses the single-key form plus a base-name-uniqueness guard;
   the two-key form would make disc counts artist-aware and remove that limitation, but needs a
   two-key variant of `parseGroupedValues`.
+- **Only the `default` partition's queue survives a daemon restart.** Other partitions' queues
+  are runtime state and come back empty; partitions created with `newpartition` vanish; outputs
+  return to their mpd.conf partitions. Learned when 0.24.0 aborted mid-test — so a live test that
+  touches partitions must back up **every** partition's queue, not only the ones it uses
+  (`ServerSnapshot` covers the current partition alone).
+- **0.24.0 can abort** (SIGABRT, uncaught `std::system_error`: "Invalid argument"). Seen once,
+  during a queue transfer between two partitions both playing into httpd outputs, one of them
+  moved there by `moveoutput`. The same transfer sequence with a fifo output — one command at
+  a time and at app speed, both directions — did not reproduce it. Cause not yet isolated; see
+  `docs/plans/v1.7/01-transfer-queue-between-partitions.md`.
 
 ### MPD stickers (v1.5 candidate)
 
