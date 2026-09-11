@@ -90,10 +90,13 @@ Facts confirmed by querying a real server, each of which cost debugging time to 
   touches partitions must back up **every** partition's queue, not only the ones it uses
   (`ServerSnapshot` covers the current partition alone).
 - **0.24.0 can abort** (SIGABRT, uncaught `std::system_error`: "Invalid argument"). Seen once,
-  during a queue transfer between two partitions both playing into httpd outputs, one of them
-  moved there by `moveoutput`. The same transfer sequence with a fifo output — one command at
-  a time and at app speed, both directions — did not reproduce it. Cause not yet isolated; see
-  `docs/plans/v1.7/01-transfer-queue-between-partitions.md`.
+  during a queue transfer whose target played into an httpd output that `moveoutput` had moved
+  into a runtime-created partition, while the source's httpd output had been enabled seconds
+  earlier. **The transfer sequence itself does not reproduce it**: with fifo and httpd outputs,
+  either side playing, both partitions playing at once, HTTP clients attached to both httpd
+  outputs, and ten back-to-back transfers at app speed, the daemon survived every command. The
+  two conditions never retested — a moved output in a runtime partition, and an output enabled
+  mid-run — are the remaining suspects; see `docs/plans/v1.7/01-transfer-queue-between-partitions.md`.
 
 ### MPD stickers (v1.5 candidate)
 

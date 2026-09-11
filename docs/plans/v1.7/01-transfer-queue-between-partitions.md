@@ -274,6 +274,28 @@ Each command was issued on its own with an uptime check after it:
 | scratch playlists | none left behind — pass |
 
 So the command sequence itself does not crash 0.24.0 with fifo outputs, stepwise
-or at full speed. **Still unverified:** two partitions playing into outputs at
-once, httpd outputs, and outputs moved by `moveoutput`. The crash needed at least
-one of those.
+or at full speed.
+
+### httpd outputs, overlap and attached clients also passed
+
+A second run added one crash condition per test, with no configuration change
+(the `http` partition's two httpd outputs were already enabled), stopping at the
+first abort. None came:
+
+| Test | Condition added | Result |
+|---|---|---|
+| T4 | httpd **source** playing → output-less target | pass |
+| T5 | output-less source → httpd **target** starts playing | pass |
+| T6 | **both partitions playing at once**: fifo source → httpd target | pass |
+| T7 | the same overlap reversed: httpd source → fifo target | pass |
+| T8 | overlap with **HTTP clients attached** to both httpd outputs (45 KB and 119 KB received) | pass |
+| T9 | ten back-to-back transfers at app speed, snapcast ⇄ http | pass |
+
+Uptime rose from 6560 s to 6622 s without a reset.
+
+**What remains unverified** is exactly what the crash run had and these did not:
+an output that `moveoutput` had moved into a **runtime-created partition** (`sova`'s
+`http mp3`), and an httpd output **enabled seconds before** the transfer. Both are
+outside what the app's transfer does — it never enables or moves an output — but
+a user can have set up either through the Outputs screen beforehand, so the crash
+is recorded here rather than dismissed.
