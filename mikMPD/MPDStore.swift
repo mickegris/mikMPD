@@ -1649,6 +1649,10 @@ final class MPDStore: ObservableObject {
 
     /// Replace the queue with the playlist and start at the given index —
     /// tapping a playlist row plays that song in its playlist context.
+    ///
+    /// `index` is a **queue** position after the load, not the row's playlist
+    /// index: `load` skips entries whose files are gone, moving every later row
+    /// up. Map a row with `playlistQueueIndex(forPlaylistIndex:in:)`.
     func playPlaylist(name: String, at index: Int) {
         Q.async { [weak self] in
             guard let self else { return }

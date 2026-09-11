@@ -280,3 +280,20 @@ mpd.conf.
       rather than a dead action
 - [ ] A CD queue refuses with a reason
 - [ ] Moving to the partition you are already on does nothing
+
+## 23. Missing files in playlists (v1.7)
+
+Needs a stored playlist containing a file that has since been moved or deleted
+("Bra grejs" has five).
+
+- [ ] Open the playlist: dead entries show an orange warning, the filename,
+      "Missing file" and the folder they were in
+- [ ] Header reads "N tracks · M missing", where N is what Play will play
+- [ ] Tap a missing entry → a dialog explains it and offers Remove
+- [ ] Swipe left on a missing entry removes it; no Queue / Add Next / Playlist
+      actions are offered for it
+- [ ] **Tap a normal track well below a missing one → that exact song plays**
+      (before the fix, every track after the first missing entry played the
+      wrong song)
+- [ ] The footer mentions how many files are missing
+- [ ] A playlist with no missing files looks exactly as before

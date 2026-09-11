@@ -10,7 +10,7 @@ A lightweight iOS/iPadOS client for [Music Player Daemon](https://www.musicpd.or
 
 **Recently Added** — Albums added to MPD in the last 30 days, newest first, as a list or art grid. Uses MPD 0.24's `added-since` filter, so re-tagging your library does not make everything look new.
 
-**Playlists** — Full stored-playlist support: browse, rename, and delete playlists, save the queue as a playlist, tap a track to play it in playlist context, shuffle-play a whole playlist, drag to reorder, swipe to remove or enqueue. "Add to Playlist" is available from Now Playing, albums, search results, and the queue.
+**Playlists** — Full stored-playlist support: browse, rename, and delete playlists, save the queue as a playlist, tap a track to play it in playlist context, shuffle-play a whole playlist, drag to reorder, swipe to remove or enqueue. Entries whose files have since been moved or deleted are marked as missing, with the folder they were in, and can be swiped away. "Add to Playlist" is available from Now Playing, albums, search results, and the queue.
 
 **Recently Played** — Client-side listening history, accessible from the clock button in Now Playing. Shows an album grid (tap to open the album) and a per-track list; history is kept per server for 30 days / 100 entries. Note: recording requires the app to be running — songs played on the MPD device while the app is backgrounded (without "Listen on Phone" active) are not captured.
 

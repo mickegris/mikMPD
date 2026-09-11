@@ -583,6 +583,18 @@ nonisolated struct MPDSong: Identifiable, Equatable {
     /// `list album group albumartist`, so a compilation track keyed by its own
     /// artist landed in a different cache entry than its own album's tile.
     var artKey: String { artCacheKey(artist: groupingArtist, album: album) }
+    /// A stored-playlist entry whose file is no longer in MPD's database —
+    /// moved, renamed or deleted since it was added to the playlist.
+    ///
+    /// `listplaylistinfo` answers such an entry with its `file:` line and
+    /// nothing else (verified on 0.24.0), while every song MPD knows carries
+    /// `Last-Modified` and a duration. Both being absent is the signal; requiring
+    /// *both* keeps a date that fails to parse from flagging a real song. Streams
+    /// and CD tracks are never in the database and are excluded — they are not
+    /// missing, just not files.
+    var isMissingFromLibrary: Bool {
+        sourceKind == .library && lastModified == nil && duration == 0
+    }
     var sourceKind: PlaybackSourceKind {
         let trimmedFile = file.trimmingCharacters(in: .whitespacesAndNewlines)
         let lowercasedFile = trimmedFile.lowercased()
@@ -831,6 +843,18 @@ nonisolated func validatePlaylistName(_ name: String) -> String? {
           !trimmed.contains("/"), !trimmed.contains("\\"),
           !trimmed.contains("\n"), !trimmed.contains("\r") else { return nil }
     return trimmed
+}
+
+/// Queue position a playlist row will occupy once the playlist is `load`ed, or
+/// nil when the row is a missing file that `load` will skip.
+///
+/// MPD silently drops entries whose files are gone when it loads a stored
+/// playlist, so every row after one moves up a place. Playing row N used to send
+/// `play N`, landing one song further down for each missing entry above it — in
+/// a real 417-entry playlist with five dead files, as many as five songs off.
+nonisolated func playlistQueueIndex(forPlaylistIndex index: Int, in songs: [MPDSong]) -> Int? {
+    guard songs.indices.contains(index), !songs[index].isMissingFromLibrary else { return nil }
+    return songs[..<index].reduce(0) { $0 + ($1.isMissingFromLibrary ? 0 : 1) }
 }
 
 /// Songs from `listplaylistinfo` carry no pos/id fields; assign pos from the
