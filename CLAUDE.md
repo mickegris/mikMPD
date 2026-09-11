@@ -221,7 +221,15 @@ is `StreamPlayerKind.forContentType(_:)` against the response's `Content-Type` a
 is **never persisted** — the codec is MPD's configuration, so changing the
 server's encoder needs no action in the app, no relaunch, and there is no codec
 setting anywhere in the UI. An unclear or missing content type falls back to
-`AVPlayer`, which knows more containers than we do. **Supported encoders are mp3,
+`AVPlayer`, which knows more containers than we do. **The probe reads headers only**
+(`URLSession.bytes(for:)`, then cancel): an httpd output never ends, and the first
+version used `dataTask`, whose completion fires only when the body does — it
+downloaded a whole finite test file before answering and would have sat out its
+10 s timeout on every real stream start. **A server closing the stream ends phone
+streaming**: that arrives from `OggStreamPlayer` as `.idle`, not `.failed`
+(`endsPhoneStream`), and reacting to `.failed` alone left "Streaming to phone" on
+screen over silence. Each player's callbacks carry a token so a late one from a
+torn-down player cannot stop its successor. **Supported encoders are mp3,
 Opus and FLAC**, stated under the Stream URL field and again in the failure
 message; Ogg Vorbis is identified and refused, because iOS has no Vorbis decoder
 at all (`vorb` is absent from `kAudioFormatProperty_DecodeFormatIDs` and "Vorbis"

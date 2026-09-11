@@ -230,6 +230,11 @@ thing that differs.
 
 - [ ] **Opus** stream plays, and keeps playing for >10 minutes with no drift or
       dropout
+- [ ] Playback **starts within a second or two** of tapping, not after ~10 s —
+      the codec probe must read the response headers and stop, never the body
+- [ ] Disable the httpd output (or restart MPD) **with the app in the
+      foreground** → the button returns to "Listen on phone" rather than staying
+      on "Streaming to phone" over silence
 - [ ] No click at the very start of the stream (pre-skip is being honoured)
 - [ ] Track changes are seamless — this is the chained-bitstream case, and the
       symptom if it is broken is "first track plays, then silence"

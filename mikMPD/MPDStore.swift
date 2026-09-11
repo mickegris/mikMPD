@@ -2347,25 +2347,30 @@ final class MPDStore: ObservableObject {
         tearDownRemoteCommands()
     }
 
-    /// Ask the server what it is sending. Falls back to the system player on any
-    /// failure — AVPlayer knows more containers than we do, so it is the safer
-    /// default when the answer is unclear.
+    /// Ask the server what it is sending, from the response headers alone.
+    ///
+    /// An httpd output is an endless stream, so anything that waits for the body
+    /// never returns on its own. The first version used `dataTask`, whose
+    /// completion handler fires only when the body finishes: against a finite
+    /// test file it downloaded all of it before answering, and against MPD it
+    /// would have waited out its 10 s cancel — delaying every stream start by
+    /// that much, with the response not reliably delivered after a cancel.
+    /// `bytes(for:)` returns as soon as the headers arrive; the body is abandoned
+    /// unread. Any failure falls back to the system player, which knows more
+    /// containers than we do.
     nonisolated private static func probeStreamKind(_ url: URL,
                                                     completion: @escaping @MainActor (StreamPlayerKind) -> Void) {
-        var req = URLRequest(url: url)
-        req.httpMethod = "GET"
-        req.setValue("bytes=0-0", forHTTPHeaderField: "Range")   // httpd ignores it; keeps the read short
-        req.timeoutInterval = 10
-        let task = URLSession.shared.dataTask(with: req) { _, response, _ in
-            let type = (response as? HTTPURLResponse)?
-                .value(forHTTPHeaderField: "Content-Type")
-            let kind = StreamPlayerKind.forContentType(type)
-            Task { @MainActor in completion(kind) }
+        Task.detached {
+            var req = URLRequest(url: url)
+            req.timeoutInterval = 10
+            var kind: StreamPlayerKind = .system
+            if let (bytes, response) = try? await URLSession.shared.bytes(for: req) {
+                kind = StreamPlayerKind.forContentType(
+                    (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Type"))
+                bytes.task.cancel()
+            }
+            await completion(kind)
         }
-        task.resume()
-        // The stream is endless: the response headers are all we need, and
-        // reading the body to completion would never finish.
-        DispatchQueue.global().asyncAfter(deadline: .now() + 10) { task.cancel() }
     }
 
     private func setupRemoteCommands() {

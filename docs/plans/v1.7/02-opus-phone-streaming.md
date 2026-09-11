@@ -254,3 +254,37 @@ reader works — so the fixture is assembled by hand:
 
 This fixture belongs in the test target rather than a scratch directory, since
 the demuxer tests need it permanently.
+
+## What was verified, and two bugs it found
+
+**Against the user's MPD:** the `http opus` httpd output served `audio/ogg`;
+6 s of it went through `OggDemuxer` and the system decoder as 288 packets with
+no resync loss, decoding to 5.75 s of audio (peak 0.561). The mp3 output on port
+8001 answered `audio/mpeg` and was routed to `AVPlayer`.
+
+**The app in the simulator**, against a local server replaying that capture
+(no MPD involved):
+
+| Stream | Result |
+|---|---|
+| finite Opus | selected the Ogg player; whole stream read; button returned to "Listen on phone" when the server closed it |
+| endless Opus | probe closed after 104 bytes in the same second; 37 s / 577,581 bytes streamed until switched off, then closed by the app |
+| two chained logical bitstreams | all 179,942 bytes read across the serial change; closed by the server at the end, no error |
+| Ogg Vorbis | refused with the message naming Vorbis and the supported encoders |
+
+The simulator cannot show that audio actually *rendered* — only that the
+pipeline read, demuxed and decoded without failing. Audible playback, the lock
+screen, interruptions and route changes still need a device (TESTING.md §21).
+
+Two bugs, both fixed:
+
+1. **The codec probe waited for the body.** It used `dataTask`, whose completion
+   handler fires only when the response body ends. The finite test file was
+   downloaded in full before the answer came back; against a real, endless
+   httpd output it would have sat out its 10 s cancel on every stream start.
+   It now reads headers with `bytes(for:)` and cancels.
+2. **A server closing the stream left the button on "Streaming to phone".** The
+   close arrives as `.idle`, and the store only acted on `.failed`, so the audio
+   session stayed held with nothing playing until the app went to the
+   background. `endsPhoneStream` covers both, and a per-player token stops a late
+   callback from a torn-down player ending the stream that replaced it.
