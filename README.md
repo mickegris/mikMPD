@@ -22,7 +22,7 @@ A lightweight iOS/iPadOS client for [Music Player Daemon](https://www.musicpd.or
 
 **Search** — Concurrent search across songs, artists, albums and stored playlists with debounced input, batch selection, and album art thumbnails. Playlists match both by name and by what they contain, so searching an artist finds the playlists holding their tracks.
 
-**Queue** — A tab of its own. View and manage the current playlist. Double-tap to jump to a song, drag to reorder, swipe to delete, shuffle the queue in place, clear all, toggle consume mode. "Add Next" (from album, search and playlist rows) queues a track right after the one playing.
+**Queue** — A tab of its own. View and manage the current playlist. Tap a song to play it, drag to reorder, swipe to delete, shuffle the queue in place, clear all, toggle consume mode. "Add Next" (from album, search and playlist rows) queues a track right after the one playing.
 
 **Outputs & Partitions** — Toggle audio outputs on/off and switch partitions straight from Now Playing. **Move playback between partitions** — the queue, the current track and its position follow, and the room you left stops (needs `playlist_directory` set in mpd.conf). The Outputs tab adds creating and deleting partitions and moving outputs between them (outputs are disabled before a move, which avoids a server-side stall). Optional partition memory across reconnects.
 

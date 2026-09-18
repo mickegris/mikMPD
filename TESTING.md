@@ -73,11 +73,12 @@ Wikipedia results — wrong/empty lookups are cached in memory per session.
 - [ ] Footers present and correct: playlist list (rename hint), playlist detail, queue, search songs, servers, outputs (pre-existing)
 - [ ] Playlist rename via long press works as hinted
 - [ ] New leading "Playlist" swipe works on queue rows, search rows, and playlist-detail rows
-- [ ] Queue footer visible after scrolling to the end; double-tap-to-play works as stated
+- [ ] Queue footer visible after scrolling to the end; tap-to-play works as stated
 
 ## 10. Regression sweep (touched code paths)
 
-- [ ] Queue tab: reorder, delete, clear, consume toggle, double-tap play all fine
+- [ ] Queue tab: reorder, delete, clear, consume toggle, tap-to-play all fine
+- [ ] Queue tab: tapping the underlined artist/album navigates; tapping elsewhere on the row plays (with the accent flash); in Edit mode a tap does nothing
 - [ ] Search: songs/artists/albums sections populate; select + Add Selected works
 - [ ] Playlists: create from queue, load, play at index, reorder, remove track
 - [ ] Outputs/partitions: toggle output, move between partitions, switch partition

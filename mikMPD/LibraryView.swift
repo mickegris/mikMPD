@@ -945,6 +945,7 @@ enum Haptics {
 }
 
 private struct PlayableRowModifier: ViewModifier {
+    let isEnabled: Bool
     let action: () -> Void
     @State private var flashing = false
     func body(content: Content) -> some View {
@@ -956,6 +957,9 @@ private struct PlayableRowModifier: ViewModifier {
                     .animation(.easeOut(duration: 0.35), value: flashing)
             )
             .onTapGesture {
+                // Disabled rather than removed, so the view's identity is the same
+                // either way — the Queue tab toggles this with Edit mode.
+                guard isEnabled else { return }
                 Haptics.tap()
                 action()
                 flashing = true
@@ -968,8 +972,10 @@ private struct PlayableRowModifier: ViewModifier {
 }
 
 extension View {
-    func playableRow(action: @escaping () -> Void) -> some View {
-        modifier(PlayableRowModifier(action: action))
+    /// `isEnabled: false` makes a tap do nothing — for lists in Edit mode, where a
+    /// tap is part of reordering or deleting, never a request to play.
+    func playableRow(isEnabled: Bool = true, action: @escaping () -> Void) -> some View {
+        modifier(PlayableRowModifier(isEnabled: isEnabled, action: action))
     }
 }
 
