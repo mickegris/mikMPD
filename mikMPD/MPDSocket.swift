@@ -160,6 +160,16 @@ nonisolated final class MPDSocket: @unchecked Sendable {
         var tv = timeval(tv_sec: 5, tv_usec: 0)
         setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
         setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+        // A connection the peer has reset — Wi-Fi roaming, a router dropping the
+        // NAT entry, MPD restarting — otherwise turns the next send() into
+        // SIGPIPE, whose default action kills the app outright, with no Swift
+        // error to catch. Verified: exit 141 on the first send after a reset.
+        // With this, send() returns EPIPE and the ordinary error path runs.
+        // The background poll writes every 2 s while phone streaming, so a
+        // locked phone was exactly where this bit. Per socket rather than
+        // signal(SIGPIPE, SIG_IGN), which would change it for every framework.
+        var noSigPipe: Int32 = 1
+        setsockopt(s, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
         return s
     }
 
@@ -167,7 +177,7 @@ nonisolated final class MPDSocket: @unchecked Sendable {
         let data = Array(s.utf8); var sent = 0
         while sent < data.count {
             let n = data.withUnsafeBytes { ptr in Darwin.send(fd, ptr.baseAddress! + sent, data.count - sent, 0) }
-            guard n > 0 else { throw MPDError.io("send failed") }
+            guard n > 0 else { throw MPDError.io("send failed (errno=\(errno))") }
             sent += n
         }
     }
