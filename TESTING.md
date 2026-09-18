@@ -352,6 +352,12 @@ Diagnostics on, so the command log records remote commands.
       wake-and-reconnect path) and does not crash
 - [ ] While paused and locked: no stream traffic (Xcode's Network gauge flat)
 - [ ] Start "Listen on phone" while MPD is paused → quiet; press play → sound
+- [ ] Streaming the `http` partition, switch the app to `default` → phone
+      streaming stops and the toggle reads "Listen on phone"
+- [ ] Streaming, Move Playback `http` → `default` → the toggle goes off; move it
+      back → the phone stays silent until you turn it on again
+- [ ] Wi-Fi blip while streaming (Remember partitions **off**) → the app comes
+      back on the same partition and the stream is not stopped
 - [ ] Twenty skips in a row → every song starts; no cut-off tails
 - [ ] Three songs play through by themselves → no gap between them
 - [ ] Walk to the edge of Wi-Fi → one clean "buffering" gap, then it recovers,

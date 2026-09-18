@@ -56,3 +56,26 @@ import Foundation
         #expect(mpdConnectionNeedsRefresh(connected: false, idleSeconds: 0))
     }
 }
+
+/// Phone streaming belongs to the partition it was started in — its httpd
+/// output is that partition's. Device testing: switching or moving playback to
+/// `default` muted the phone yet kept "Streaming to phone" on, and moving back
+/// started the phone speaker unasked.
+@Suite struct PhoneStreamPartitionTests {
+    @Test func leavingTheStreamsPartitionStopsIt() {
+        #expect(phoneStreamPartitionAction(streamPartition: "http", current: "default") == .stop)
+    }
+
+    @Test func stayingKeepsIt() {
+        #expect(phoneStreamPartitionAction(streamPartition: "http", current: "http") == .keep)
+    }
+
+    /// Mid-reconnect or mid-switch the partition is briefly unknown.
+    @Test func anUnknownPartitionIsNeverAReasonToStop() {
+        #expect(phoneStreamPartitionAction(streamPartition: "http", current: "") == .keep)
+    }
+
+    @Test func streamingStartedBeforeThePartitionWasKnownAdoptsIt() {
+        #expect(phoneStreamPartitionAction(streamPartition: nil, current: "http") == .adopt)
+    }
+}

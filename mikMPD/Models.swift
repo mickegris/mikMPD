@@ -811,6 +811,23 @@ nonisolated func mpdConnectionNeedsRefresh(connected: Bool, idleSeconds: TimeInt
     !connected || idleSeconds > threshold
 }
 
+/// What phone streaming does when the app's partition is `current`.
+nonisolated enum PhoneStreamPartitionAction: Equatable {
+    /// Streaming started before the partition was known; this is its partition.
+    case adopt
+    case keep
+    /// The app has left the partition whose httpd output the phone is playing.
+    case stop
+}
+
+/// An empty `current` is a connection in between partitions (reconnecting,
+/// switching servers) and is never a reason to stop.
+nonisolated func phoneStreamPartitionAction(streamPartition: String?, current: String) -> PhoneStreamPartitionAction {
+    guard !current.isEmpty else { return .keep }
+    guard let streamPartition, !streamPartition.isEmpty else { return .adopt }
+    return streamPartition == current ? .keep : .stop
+}
+
 // MARK: - Queue transfer between partitions
 
 /// What the source partition was doing, so the target can be put back into it.

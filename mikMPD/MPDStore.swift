@@ -55,7 +55,9 @@ final class MPDStore: ObservableObject {
     /// poll for VBR files, re-rendering the app once a second, and was not
     /// worth it.)
     @Published var audioFmt:    String = ""
-    @Published var currentPartition: String = ""
+    @Published var currentPartition: String = "" {
+        didSet { if currentPartition != oldValue { phoneStreamFollowPartition() } }
+    }
 
     // Other state
     @Published var currentSong     = MPDSong() {
@@ -257,6 +259,10 @@ final class MPDStore: ObservableObject {
     private func scheduleReconnect() {
         guard !isReconnecting else { return }
         isReconnecting = true
+        // Come back to the partition the connection was on. A new MPD connection
+        // starts in `default`, and a network blip is no reason to move the user —
+        // nor, while phone streaming, to end the stream (see phoneStreamPartition).
+        if partitionToRestore == nil, !currentPartition.isEmpty { partitionToRestore = currentPartition }
         reconnectGeneration &+= 1
         let generation = reconnectGeneration
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
@@ -336,6 +342,8 @@ final class MPDStore: ObservableObject {
             } catch {
                 DispatchQueue.main.async {
                     self.connectionError = error.localizedDescription
+                    // The retry must restore the same partition this attempt meant to.
+                    if self.partitionToRestore == nil { self.partitionToRestore = restorePartition }
                     // A wrong password or a non-MPD port fails the same way on
                     // every attempt; everything else is worth waiting out.
                     if shouldRetryConnect(after: error) { self.scheduleReconnect() }
@@ -2468,6 +2476,13 @@ final class MPDStore: ObservableObject {
     /// by the background check, so being quiet on purpose never switches the
     /// feature off.
     private var phoneStreamSuspended = false
+    /// The partition phone streaming was started in. The stream is that
+    /// partition's httpd output, so it only makes sense while the app is looking
+    /// at that partition: elsewhere, `isPlaying` describes *other* music, and
+    /// following it muted the phone (target paused), played the stream's own
+    /// partition over the phone (target playing), or — after moving the queue away
+    /// and back — started the phone speaker unasked.
+    private var phoneStreamPartition: String?
 
     func togglePhoneStream() { isPhoneStreaming ? stopPhoneStream() : startPhoneStream() }
 
@@ -2488,6 +2503,7 @@ final class MPDStore: ObservableObject {
             return
         }
         phoneStreamError = nil
+        phoneStreamPartition = currentPartition.isEmpty ? nil : currentPartition
         isPhoneStreaming = true
         observeAudioRoute()
         observeAudioInterruptions()
@@ -2543,6 +2559,7 @@ final class MPDStore: ObservableObject {
     func stopPhoneStream() {
         stopObservingAudioRoute()
         phoneStreamSuspended = false
+        phoneStreamPartition = nil
         streamPlayer?.pause()
         streamPlayer = nil
         oggPlayerToken = nil        // before stop(): its own .idle must be ignored
@@ -2611,8 +2628,23 @@ final class MPDStore: ObservableObject {
     /// stream (while paused, MPD's httpd output only sends encoded silence — no
     /// reason to receive, decode and play it), and play rejoins it live.
     private func phoneStreamFollowMPD() {
-        guard isPhoneStreaming else { return }
+        guard isPhoneStreaming,
+              phoneStreamPartitionAction(streamPartition: phoneStreamPartition,
+                                         current: currentPartition) != .stop else { return }
         if isPlaying { resumePhoneStreamPlayer() } else { suspendPhoneStreamPlayer() }
+    }
+
+    /// The app switched partition, by hand or by moving playback. Leaving the
+    /// stream's own partition ends phone streaming — visibly, the toggle goes
+    /// off — rather than leaving "Streaming to phone" on over a stream the app
+    /// is no longer following.
+    private func phoneStreamFollowPartition() {
+        guard isPhoneStreaming else { return }
+        switch phoneStreamPartitionAction(streamPartition: phoneStreamPartition, current: currentPartition) {
+        case .adopt: phoneStreamPartition = currentPartition
+        case .stop:  stopPhoneStream()
+        case .keep:  break
+        }
     }
 
     /// Go quiet without switching phone streaming off: let go of the stream so a
