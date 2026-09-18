@@ -303,3 +303,15 @@ CLAUDE.md → "Phone streaming": update the lock-screen-controls bullet. The
 closures no longer capture `Q`/`socket`; they hop to the store. Add a paragraph
 on the pause/resume-follows-MPD rule and why it reconnects rather than
 un-pausing.
+
+## Correction after device testing
+
+Everything above that sets `MPNowPlayingInfoCenter.playbackState` (including
+`.interrupted` while reconnecting) had no effect: on iOS the system ignores it
+and logs *"Ignoring setPlaybackState because application does not contain
+entitlement com.apple.mediaremote.set-playback-state"*. It only takes effect on
+macOS. The app no longer sets it. The lock screen's play state is the
+now-playing info's **playback rate** (`nowPlayingRate`: 0 while a stream
+reconnects). The card is cleared by clearing `nowPlayingInfo` and deactivating
+the audio session. The F6 reasoning that leaned on `playbackState` holds with
+"rate" in its place.
