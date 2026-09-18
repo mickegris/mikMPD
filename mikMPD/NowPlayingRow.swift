@@ -46,29 +46,50 @@ nonisolated func isCurrentQueueRow(pos: Int, playlistPos: Int) -> Bool {
 /// song's tags at all, so an artist comparison could never light it up.
 nonisolated func isCurrentAlbum(rowArtist: String, rowAlbum: String,
                                 compilationBase: String?, current: MPDSong) -> Bool {
-    if let base = compilationBase, !base.isEmpty {
-        guard !current.file.isEmpty,
-              !current.album.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              albumGroupingKey(rowAlbum) == albumGroupingKey(current.album)
-        else { return false }
-        return current.file.hasPrefix(base + "/")
-    }
-    return isCurrentAlbum(rowArtist: rowArtist, rowAlbum: rowAlbum, current: current)
+    isCurrentAlbum(rowKey: albumGroupingKey(rowAlbum), rowArtist: rowArtist,
+                   compilationBase: compilationBase, current: CurrentAlbumIdentity(current))
 }
 
 /// The ordinary, artist-scoped case. See the overload above for compilations.
 nonisolated func isCurrentAlbum(rowArtist: String, rowAlbum: String, current: MPDSong) -> Bool {
-    guard !current.album.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-          !rowAlbum.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-          !current.file.isEmpty
-    else { return false }
-    guard albumGroupingKey(rowAlbum) == albumGroupingKey(current.album) else { return false }
+    isCurrentAlbum(rowArtist: rowArtist, rowAlbum: rowAlbum, compilationBase: nil, current: current)
+}
+
+/// What every album row compares itself against, derived once per song rather
+/// than once per row per render. `MPDStore.currentAlbumIdentity` holds the live
+/// one; it changes only when the song does.
+nonisolated struct CurrentAlbumIdentity: Equatable {
+    /// `albumGroupingKey` of the song's album; empty when it has none.
+    let albumKey: String
+    /// The song's `groupingArtist`, trimmed and lowercased.
+    let artist: String
+    let file: String
+
+    init(_ song: MPDSong) {
+        albumKey = albumGroupingKey(song.album)
+        artist = song.groupingArtist.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        file = song.file
+    }
+}
+
+/// The implementation both overloads above delegate to, taking precomputed keys
+/// so a list row costs a string compare: `rowKey` is the row's
+/// `albumGroupingKey` (an `AlbumGroup` stores it). An empty key on either side
+/// matches nothing — the rule that stops an album-less radio stream marking
+/// every untagged album.
+nonisolated func isCurrentAlbum(rowKey: String, rowArtist: String, compilationBase: String?,
+                                current: CurrentAlbumIdentity) -> Bool {
+    guard !current.file.isEmpty, !current.albumKey.isEmpty, !rowKey.isEmpty,
+          rowKey == current.albumKey else { return false }
+    if let base = compilationBase, !base.isEmpty {
+        return current.file.hasPrefix(base + "/")
+    }
     // Album rows carry an albumartist; the song's mirror of that is
     // `groupingArtist`. An artist-less row (genre listings before 0.21-style
     // grouping) matches on the album alone rather than not at all.
     let rowA = rowArtist.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     guard !rowA.isEmpty else { return true }
-    return rowA == current.groupingArtist.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    return rowA == current.artist
 }
 
 // MARK: - Presentation

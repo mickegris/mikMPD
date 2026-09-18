@@ -2,10 +2,13 @@
 //
 // One socket, one serial queue (Q).
 // Poll timer: 1s, fires on main RunLoop, work dispatched to Q.
-// Display timer: 0.1s, fires on main RunLoop, updates elapsed directly on main thread.
+// Display timer: 0.1s, fires on main RunLoop, updates elapsed directly on main thread,
+// and runs only while playing, foreground, and some view shows the time.
 //
 // Key design decisions:
-//   - elapsed/duration/isPlaying are @Published on the store itself
+//   - duration/isPlaying are @Published on the store itself; elapsed lives on
+//     `clock` (PlaybackClock) so its 10 Hz change does not re-render every view
+//     that observes the store
 //   - display timer advances elapsed by 0.1s each tick when playing
 //   - poll sets elapsed from MPD ground truth (unless seek-locked)
 //   - togglePlay captures state synchronously on main thread before dispatching
@@ -22,8 +25,15 @@ final class MPDStore: ObservableObject {
 
     // MARK: - @Published — all written on main thread
 
+    /// Elapsed time, which changes ten times a second while playing — observed
+    /// only by the views that display it. See PlaybackClock.swift.
+    let clock = PlaybackClock()
+    var elapsed: Double {
+        get { clock.elapsed }
+        set { clock.elapsed = newValue }
+    }
+
     // Playback primitives — view reads these directly
-    @Published var elapsed:     Double = 0
     @Published var duration:    Double = 0
     @Published var isPlaying:   Bool   = false
     @Published var isPaused:    Bool   = false
@@ -36,12 +46,26 @@ final class MPDStore: ObservableObject {
     @Published var crossfadeSeconds: Int  = 0
     @Published var playlistPos: Int    = -1
     @Published var currentSongID: String = ""
-    @Published var bitrate:     String = ""
+    /// MPD's `audio` field, e.g. "44100:16:2". Changes with the song, so it is
+    /// cheap to publish here. (Bitrate was dropped: it changed on nearly every
+    /// poll for VBR files, re-rendering the app once a second, and was not
+    /// worth it.)
     @Published var audioFmt:    String = ""
     @Published var currentPartition: String = ""
 
     // Other state
-    @Published var currentSong     = MPDSong()
+    @Published var currentSong     = MPDSong() {
+        didSet {
+            if currentSong.file != oldValue.file || currentSong.album != oldValue.album
+                || currentSong.groupingArtist != oldValue.groupingArtist {
+                currentAlbumIdentity = CurrentAlbumIdentity(currentSong)
+            }
+        }
+    }
+    /// What album rows compare themselves with, derived once per song rather than
+    /// once per row per render. Not published: it only changes together with
+    /// `currentSong`, which already is.
+    private(set) var currentAlbumIdentity = CurrentAlbumIdentity(MPDSong())
     @Published var lyricsState:    LyricsState     = .unavailable
     @Published var queue:          [MPDSong]       = []
     @Published var outputs:        [MPDOutput]     = []
@@ -165,6 +189,7 @@ final class MPDStore: ObservableObject {
 
     // MARK: - Init
     init() {
+        clock.onObserversChanged = { [weak self] in self?.updateDisplayTimer() }
         if let legacy = UserDefaults.standard.string(forKey: "mpd_password"), !legacy.isEmpty {
             KeychainHelper.save(key: "mpd_password", value: legacy)
             UserDefaults.standard.removeObject(forKey: "mpd_password")
@@ -476,7 +501,7 @@ final class MPDStore: ObservableObject {
         outputs = []; outputPartitions = [:]; outputNameToPartition = [:]; partitions = []
         searchResults = []; browseItems = []; playlists = []
         elapsed = 0; duration = 0; isPlaying = false; isPaused = false
-        playlistPos = -1; bitrate = ""; audioFmt = ""; currentPartition = ""
+        playlistPos = -1; audioFmt = ""; currentPartition = ""
         // playbackContext is cleared here and restored by loadPlaybackContext()
         // immediately after — it is per-server persisted state, not live state.
         lyricsState = .unavailable; playbackContext = nil
@@ -498,14 +523,9 @@ final class MPDStore: ObservableObject {
         RunLoop.main.add(p, forMode: .common)
         pollTimer = p
 
-        // Display timer starts running; first poll (≤1s away) calls setDisplayTimerActive
-        // to stop it immediately if MPD is paused/stopped.
-        let d = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
-            guard let self else { return }
-            Task { @MainActor in self.tickElapsed() }
-        }
-        RunLoop.main.add(d, forMode: .common)
-        displayTimer = d
+        // The display timer follows the first poll (≤1 s away), which knows
+        // whether MPD is playing.
+        updateDisplayTimer()
     }
 
     private func stopTimers() {
@@ -514,8 +534,27 @@ final class MPDStore: ObservableObject {
         currentPollInterval = 1.0
     }
 
-    /// Start or stop the 10 Hz display timer based on whether we are actively playing.
-    /// Stopping it eliminates 10 CPU wakes/second when paused or stopped.
+    /// Whether the app is in the foreground. Set from the scene phase; the
+    /// display timer never runs in the background, where nobody can see it —
+    /// the lock screen extrapolates elapsed time itself from `playbackRate`.
+    private var sceneActive = true
+
+    func setSceneActive(_ active: Bool) {
+        guard sceneActive != active else { return }
+        sceneActive = active
+        updateDisplayTimer()
+    }
+
+    /// Start or stop the 10 Hz display timer. It runs only while MPD is playing,
+    /// the app is in the foreground *and* some on-screen view shows the time
+    /// (`PlaybackClock.observers`) — otherwise it would publish ten times a
+    /// second to nothing. Stopped, it costs zero wakes; the poll keeps `elapsed`
+    /// right to within a second, and the timer resumes from there.
+    private func updateDisplayTimer() {
+        setDisplayTimerActive(displayTimerShouldRun(isPlaying: isPlaying, sceneActive: sceneActive,
+                                                    observers: clock.observers))
+    }
+
     private func setDisplayTimerActive(_ active: Bool) {
         if active {
             guard displayTimer == nil else { return }
@@ -603,7 +642,6 @@ final class MPDStore: ObservableObject {
             let vol  = Int(s["volume"]  ?? "80") ?? 80
             let pos  = Int(s["song"]    ?? "-1") ?? -1
             let sid  = s["songid"]  ?? ""
-            let br   = s["bitrate"] ?? ""
             let af   = s["audio"]   ?? ""
             let rep   = s["repeat"]  == "1"
             let ran   = s["random"]  == "1"
@@ -638,7 +676,7 @@ final class MPDStore: ObservableObject {
 
                 // Stop 10 Hz display timer while paused/stopped; restart when playing.
                 // Throttle poll from 1s → 3s when not playing.
-                self.setDisplayTimerActive(self.isPlaying)
+                self.updateDisplayTimer()
                 self.setPollingInterval(self.isPlaying ? 1.0 : 3.0)
 
                 // Only fire @Published setters when values actually change
@@ -647,7 +685,6 @@ final class MPDStore: ObservableObject {
                 if self.volume       != vol { self.volume       = vol }
                 if self.playlistPos  != pos { self.playlistPos  = pos }
                 if self.currentSongID != sid { self.currentSongID = sid }
-                if self.bitrate      != br  { self.bitrate      = br }
                 if self.audioFmt     != af  { self.audioFmt     = af }
 
                 let previousPartition = self.currentPartition
@@ -679,7 +716,7 @@ final class MPDStore: ObservableObject {
                 if let entry = self.recentRecorder.tick(song: song, isPlaying: self.isPlaying, now: Date()) {
                     self.pushRecent(entry)
                 }
-                if self.isPhoneStreaming { self.updateNowPlayingInfo() }
+                if self.isPhoneStreaming { self.updateNowPlayingInfoIfNeeded() }
             }
         } catch {
             DispatchQueue.main.async { [weak self] in
@@ -2595,6 +2632,8 @@ final class MPDStore: ObservableObject {
         // after the stream ends (or after a force-quit, where nothing else runs).
         MPNowPlayingInfoCenter.default().playbackState = .stopped
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        lastNowPlaying = nil
+        nowPlayingArtwork = nil
     }
 
     /// Entering the background.
@@ -2621,19 +2660,55 @@ final class MPDStore: ObservableObject {
         return false   // neither player started yet
     }
 
+    /// What the lock screen was last told, for `updateNowPlayingInfoIfNeeded`.
+    private var lastNowPlaying: (snapshot: NowPlayingInfoSnapshot, elapsed: Double, at: Date)?
+    /// Built once per song: a new MPMediaItemArtwork every poll made the system
+    /// re-process the same image every second.
+    private var nowPlayingArtwork: (key: String, artwork: MPMediaItemArtwork)?
+
+    private var nowPlayingSnapshot: NowPlayingInfoSnapshot {
+        NowPlayingInfoSnapshot(
+            title: currentSong.displayTitle, artist: currentSong.displayArtist,
+            album: currentSong.album, duration: duration,
+            playing: isPlaying, paused: isPaused,
+            hasArtwork: albumArtCache[currentSong.artKey] != nil)
+    }
+
+    /// Called from every poll while streaming, but only talks to the system when
+    /// something it cannot work out for itself has changed — the song, the play
+    /// state, the artwork arriving, or a jump in position (a seek, from any
+    /// client). Between those the lock screen extrapolates elapsed time from
+    /// `playbackRate`, which is how the API is meant to be used.
+    private func updateNowPlayingInfoIfNeeded() {
+        let now = Date()
+        guard nowPlayingInfoNeedsUpdate(last: lastNowPlaying?.snapshot,
+                                        lastElapsed: lastNowPlaying?.elapsed ?? 0,
+                                        lastAt: lastNowPlaying?.at ?? .distantPast,
+                                        current: nowPlayingSnapshot, elapsed: elapsed, now: now)
+        else { return }
+        updateNowPlayingInfo()
+    }
+
     func updateNowPlayingInfo() {
         guard isPhoneStreaming else { return }
+        let snapshot = nowPlayingSnapshot
+        lastNowPlaying = (snapshot, elapsed, Date())
         var info = [String: Any]()
-        info[MPMediaItemPropertyTitle] = currentSong.displayTitle
-        info[MPMediaItemPropertyArtist] = currentSong.displayArtist
-        info[MPMediaItemPropertyAlbumTitle] = currentSong.album
+        info[MPMediaItemPropertyTitle] = snapshot.title
+        info[MPMediaItemPropertyArtist] = snapshot.artist
+        info[MPMediaItemPropertyAlbumTitle] = snapshot.album
         info[MPMediaItemPropertyPlaybackDuration] = duration
         info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = elapsed
         info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? 1.0 : 0.0
-        if let img = albumArtCache[currentSong.artKey] ?? Self.fallbackArtwork(for: currentSong) {
+        let artKey = "\(currentSong.artKey)|\(snapshot.hasArtwork)"
+        if let cached = nowPlayingArtwork, cached.key == artKey {
+            info[MPMediaItemPropertyArtwork] = cached.artwork
+        } else if let img = albumArtCache[currentSong.artKey] ?? Self.fallbackArtwork(for: currentSong) {
             // MediaPlayer invokes the request handler on its own queue —
             // it must be @Sendable or the MainActor inference traps there.
-            info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: img.size) { @Sendable _ in img }
+            let artwork = MPMediaItemArtwork(boundsSize: img.size) { @Sendable _ in img }
+            nowPlayingArtwork = (artKey, artwork)
+            info[MPMediaItemPropertyArtwork] = artwork
         }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
         // The playback *rate* alone isn't enough: the system reads playbackState

@@ -78,13 +78,20 @@ struct AlbumListView: View {
     @State private var discMap: [String: Int] = [:]
     /// album grouping key → shared directory, for rows detected as compilations
     @State private var compilations: [String: String] = [:]
+    /// The rows on screen. Computed when an input changes — never in `body`:
+    /// grouping ~820 albums runs two regexes and a string fold per album, and in
+    /// `body` it ran on every store change, which was ten times a second while
+    /// playing (an iOS CPU report: 57 % CPU for minutes, on battery).
+    @State private var groups: [AlbumGroup] = []
 
     var shown: [(artist: String, album: String)] {
         filter.isEmpty ? albums : albums.filter {
             $0.album.localizedCaseInsensitiveContains(filter) || $0.artist.localizedCaseInsensitiveContains(filter)
         }
     }
-    var groups: [AlbumGroup] {
+    private func recomputeGroups() { groups = computeGroups() }
+
+    private func computeGroups() -> [AlbumGroup] {
         let collapsed = compilations.isEmpty ? groupAlbumVariants(shown)
             : collapsingCompilations(groupAlbumVariants(shown)) { base in
                 // A non-empty stand-in is enough: the directory is already known,
@@ -122,6 +129,10 @@ struct AlbumListView: View {
             }
         }
         .searchable(text: $filter, prompt: "Filter albums…")
+        .onChange(of: filter) { _, _ in recomputeGroups() }
+        .onChange(of: albumSort) { _, _ in recomputeGroups() }
+        .onChange(of: discMap) { _, _ in recomputeGroups() }
+        .onChange(of: compilations) { _, _ in recomputeGroups() }
         .sheet(item: $addRequest) { AddToPlaylistSheet(uris: $0.uris) }
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
@@ -144,6 +155,7 @@ struct AlbumListView: View {
             guard albums.isEmpty else { return }
             store.listAlbumsByArtist { pairs in
                 albums = pairs
+                recomputeGroups()
                 loading = false
                 // One probe pass over the handful of albums owned by more than
                 // one artist; the result is a key → directory map the `groups`
@@ -170,8 +182,8 @@ struct AlbumListView: View {
     }
 
     private func isPlayingAlbum(_ g: AlbumGroup) -> Bool {
-        isCurrentAlbum(rowArtist: g.artist, rowAlbum: g.base,
-                       compilationBase: g.compilationBase, current: store.currentSong)
+        isCurrentAlbum(rowKey: g.groupingKey, rowArtist: g.artist,
+                       compilationBase: g.compilationBase, current: store.currentAlbumIdentity)
     }
 
     @ViewBuilder
@@ -222,8 +234,8 @@ struct AlbumGroupRow: View {
     @EnvironmentObject var store: MPDStore
     let group: AlbumGroup
     private var isPlaying: Bool {
-        isCurrentAlbum(rowArtist: group.artist, rowAlbum: group.base,
-                       compilationBase: group.compilationBase, current: store.currentSong)
+        isCurrentAlbum(rowKey: group.groupingKey, rowArtist: group.artist,
+                       compilationBase: group.compilationBase, current: store.currentAlbumIdentity)
     }
     var body: some View {
         NavigationLink(destination:AlbumDetailView(album:group.variants[0],
@@ -427,9 +439,12 @@ struct ArtistListView: View {
     @EnvironmentObject var store: MPDStore
     @State private var artists:[String]=[];@State private var loading=true;@State private var filter=""
     @AppStorage("librarySortArtists") private var artistSort: ArtistSort = .az
-    var shown:[String]{
+    /// Filtered and sorted on input change, never in `body` — a localized sort
+    /// of every artist on each store change is work the list does not need.
+    @State private var shown:[String]=[]
+    private func recomputeShown(){
         let filtered = filter.isEmpty ? artists : artists.filter{$0.localizedCaseInsensitiveContains(filter)}
-        return sortedArtists(filtered, by: artistSort)
+        shown = sortedArtists(filtered, by: artistSort)
     }
     var body: some View {
         Group {
@@ -454,7 +469,9 @@ struct ArtistListView: View {
                 } label: { Image(systemName: "arrow.up.arrow.down") }
             }
         }
-        .onAppear{ guard artists.isEmpty else{return}; store.listArtists{artists=$0;loading=false} }
+        .onChange(of: filter) { _, _ in recomputeShown() }
+        .onChange(of: artistSort) { _, _ in recomputeShown() }
+        .onAppear{ guard artists.isEmpty else{return}; store.listArtists{artists=$0;recomputeShown();loading=false} }
     }
 }
 struct ArtistDetailView: View {
@@ -575,7 +592,9 @@ struct GenreDetailView: View {
     let genre:String
     @State private var albums:[(artist: String, album: String)]=[];@State private var loading=true
     @State private var discMap:[String:Int]=[:]
-    var groups:[AlbumGroup]{
+    /// Computed on input change, never in `body` (see AlbumListView.groups).
+    @State private var groups:[AlbumGroup]=[]
+    private func computeGroups()->[AlbumGroup]{
         var gs=groupAlbumVariants(albums)
         if !discMap.isEmpty {
             var byBase:[String:Set<String>]=[:]
@@ -601,8 +620,8 @@ struct GenreDetailView: View {
         .listStyle(.insetGrouped)
         .navigationTitle(genre.isEmpty ? "(none)" : genre).navigationBarTitleDisplayMode(.inline)
         .onAppear{
-            store.listAlbumsByArtist(filter:"genre",value:genre){albums=$0;loading=false}
-            store.listDiscCounts(filter:"genre",value:genre){discMap=$0}
+            store.listAlbumsByArtist(filter:"genre",value:genre){albums=$0;groups=computeGroups();loading=false}
+            store.listDiscCounts(filter:"genre",value:genre){discMap=$0;groups=computeGroups()}
         }
     }
 }

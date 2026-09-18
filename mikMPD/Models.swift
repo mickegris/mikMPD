@@ -128,16 +128,19 @@ nonisolated func albumLookupTitle(_ album: String) -> String {
 /// wrong disc caption on each. Folding only punctuation and case keeps this safe — the
 /// artist is still part of every key that uses it, so distinct albums never merge.
 nonisolated func albumGroupingKey(_ album: String) -> String {
-    let base = albumBaseAndDisc(album).base
-        .replacingOccurrences(of: "\u{2013}", with: "-")   // en dash
-        .replacingOccurrences(of: "\u{2014}", with: "-")   // em dash
-        .replacingOccurrences(of: "\u{2212}", with: "-")   // minus sign
-        .replacingOccurrences(of: "\u{2018}", with: "'")   // left single quote
-        .replacingOccurrences(of: "\u{2019}", with: "'")   // right single quote
-        .replacingOccurrences(of: "\u{201C}", with: "\"")  // left double quote
-        .replacingOccurrences(of: "\u{201D}", with: "\"")  // right double quote
-        .replacingOccurrences(of: "\u{2026}", with: "...") // ellipsis
-    return base.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    // One pass over the scalars rather than eight replacingOccurrences — this
+    // runs for every album in a list (~820 here) each time the list regroups.
+    var folded = String.UnicodeScalarView()
+    for scalar in albumBaseAndDisc(album).base.unicodeScalars {
+        switch scalar {
+        case "\u{2013}", "\u{2014}", "\u{2212}": folded.append("-")    // en/em dash, minus
+        case "\u{2018}", "\u{2019}":             folded.append("'")    // smart single quotes
+        case "\u{201C}", "\u{201D}":             folded.append("\"")   // smart double quotes
+        case "\u{2026}":                         folded.append(contentsOf: "...".unicodeScalars)
+        default:                                 folded.append(scalar)
+        }
+    }
+    return String(folded).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
 }
 
 /// Collapse disc variants of the same album into one entry, preserving the
@@ -187,7 +190,9 @@ nonisolated func albumDiscCount(variants: [String], tagDiscs: Int?) -> Int {
 /// One row in an artist-aware album list: disc variants merged per artist.
 nonisolated struct AlbumGroup: Identifiable, Equatable {
     var artist: String
-    var base: String
+    var base: String {
+        didSet { groupingKey = albumGroupingKey(base) }
+    }
     var variants: [String]
     var tagDiscs: Int? = nil          // from listDiscCounts; nil = not yet fetched
     /// Set when this row is a compilation: the directory its tracks share. Nil
@@ -198,7 +203,19 @@ nonisolated struct AlbumGroup: Identifiable, Equatable {
     /// since its displayed artist is a placeholder shared with every other one.
     var artKeyArtist: String { compilationBase ?? artist }
     /// Punctuation-folded key; use this to look up disc maps, never `base` directly.
-    var groupingKey: String { albumGroupingKey(base) }
+    /// Stored, not computed: it runs two regexes and a string fold, and rows read
+    /// it on every render (disc maps, now-playing matching).
+    private(set) var groupingKey: String
+
+    init(artist: String, base: String, variants: [String], tagDiscs: Int? = nil,
+         compilationBase: String? = nil) {
+        self.artist = artist
+        self.base = base
+        self.variants = variants
+        self.tagDiscs = tagDiscs
+        self.compilationBase = compilationBase
+        self.groupingKey = albumGroupingKey(base)
+    }
     var discCount: Int { albumDiscCount(variants: variants, tagDiscs: tagDiscs) }
 }
 
@@ -698,6 +715,58 @@ nonisolated func shouldMigrateLegacyServer(persistedHost: String?, hasServers: B
           let host = persistedHost?.trimmingCharacters(in: .whitespaces),
           !host.isEmpty else { return false }
     return true
+}
+
+/// MPD's `audio` status field made readable: "44100:16:2" → "44.1 kHz · 16-bit ·
+/// stereo", "96000:24:2" → "96 kHz · 24-bit · stereo", "48000:f:2" → "48 kHz ·
+/// 32-bit float · stereo", "dsd64:2" → "DSD64 · stereo". Anything it does not
+/// recognise comes back unchanged — showing MPD's own text beats guessing.
+nonisolated func formatAudioFormat(_ raw: String) -> String {
+    let parts = raw.split(separator: ":").map(String.init)
+    func channels(_ c: String) -> String? {
+        switch c {
+        case "1": "mono"
+        case "2": "stereo"
+        default:  Int(c).map { "\($0) ch" }
+        }
+    }
+    if parts.count == 2, parts[0].lowercased().hasPrefix("dsd"), let ch = channels(parts[1]) {
+        return "\(parts[0].uppercased()) · \(ch)"
+    }
+    guard parts.count == 3, let rate = Int(parts[0]), rate > 0, let ch = channels(parts[2]) else { return raw }
+    let khz = Double(rate) / 1000
+    let rateText = khz == khz.rounded() ? "\(Int(khz)) kHz" : String(format: "%.1f kHz", khz)
+    let bits: String?
+    switch parts[1] {
+    case "f":  bits = "32-bit float"
+    case "dsd": bits = "DSD"
+    default:   bits = Int(parts[1]).map { "\($0)-bit" }
+    }
+    return [rateText, bits, ch].compactMap { $0 }.joined(separator: " · ")
+}
+
+/// What the lock screen shows, minus elapsed time (which it extrapolates).
+nonisolated struct NowPlayingInfoSnapshot: Equatable {
+    var title: String
+    var artist: String
+    var album: String
+    var duration: Double
+    var playing: Bool
+    var paused: Bool
+    var hasArtwork: Bool
+}
+
+/// Whether the lock-screen info must be re-sent. The system extrapolates elapsed
+/// time from the playback rate, so re-sending every poll is wasted work; it is
+/// needed only when the snapshot changed or the position jumped (a seek) by
+/// more than `tolerance` from where extrapolation would put it.
+nonisolated func nowPlayingInfoNeedsUpdate(last: NowPlayingInfoSnapshot?, lastElapsed: Double,
+                                           lastAt: Date, current: NowPlayingInfoSnapshot,
+                                           elapsed: Double, now: Date,
+                                           tolerance: Double = 2) -> Bool {
+    guard let last, last == current else { return true }
+    let expected = lastElapsed + (current.playing ? now.timeIntervalSince(lastAt) : 0)
+    return abs(elapsed - expected) > tolerance
 }
 
 // MARK: - Queue transfer between partitions

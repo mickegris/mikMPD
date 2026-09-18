@@ -1,14 +1,12 @@
 // NowPlayingView.swift
-// Reads store.elapsed, store.isPlaying etc directly — no @State bridging.
-// The store's display timer drives elapsed; this view just renders it.
+// Reads store state directly — no @State bridging. Elapsed time comes from
+// PlaybackClock and is read only by the small subviews that show it
+// (NowPlayingSeekBar, SyncedLyricsView), so the rest of this screen does not
+// re-render ten times a second.
 import SwiftUI
 
 struct NowPlayingView: View {
     @EnvironmentObject var store: MPDStore
-
-    // Slider drag state — only active while finger is on the slider
-    @State private var dragging     = false
-    @State private var dragFraction = 0.0   // 0..1
 
     // Local volume copy (synced from store, committed on release)
     @State private var localVolume  = 80.0
@@ -38,18 +36,6 @@ struct NowPlayingView: View {
     @State private var showMovePlayback = false
 
     var song: MPDSong { store.currentSong }
-
-    // What fraction to show in the slider
-    var sliderFraction: Double {
-        if dragging { return dragFraction }
-        guard store.duration > 0 else { return 0 }
-        return (store.elapsed / store.duration).clamped(to: 0...1)
-    }
-
-    // What time to show in the elapsed label
-    var displayElapsed: Double {
-        dragging ? dragFraction * store.duration : store.elapsed
-    }
 
     var body: some View {
         NavigationStack {
@@ -451,45 +437,8 @@ struct NowPlayingView: View {
         }
     }
 
-    /// Scrolling synced lyrics with the active line highlighted.
-    ///
-    /// Following is opt-out: while `lyricsFollow` is on, the pane keeps the
-    /// active line centered, which is what makes synced lyrics worth having and
-    /// also what makes the pane unreadable anywhere else — scrolling back to an
-    /// earlier verse used to survive only until the song reached the next line.
-    /// The highlight stays in both modes: scrolled away, it is the only
-    /// indication of where the song actually is.
     func syncedLyricsView(_ lines: [LyricLine]) -> some View {
-        let active = activeLyricLine(lines, elapsed: store.elapsed)
-        return ScrollViewReader { proxy in
-            ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    ForEach(Array(lines.enumerated()), id: \.offset) { i, line in
-                        Text(line.text.isEmpty ? " " : line.text)
-                            .font(i == active ? .body.bold() : .callout)
-                            .foregroundStyle(i == active ? Color.accentColor : Color.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .id(i)
-                    }
-                }
-                .padding(.vertical, 8)
-            }
-            .animation(.easeInOut(duration: 0.2), value: active)
-            .onChange(of: active) { _, newValue in
-                guard lyricsFollow, let newValue else { return }
-                withAnimation(.easeInOut(duration: 0.3)) {
-                    proxy.scrollTo(newValue, anchor: .center)
-                }
-            }
-            // Re-enabling has to snap now, not at the next line change —
-            // otherwise turning Sync back on appears to do nothing for seconds.
-            .onChange(of: lyricsFollow) { _, following in
-                guard following, let active else { return }
-                withAnimation(.easeInOut(duration: 0.3)) {
-                    proxy.scrollTo(active, anchor: .center)
-                }
-            }
-        }
+        SyncedLyricsView(lines: lines, follow: $lyricsFollow)
     }
 
     /// Sync/Scroll switch, shown only when the current lyrics are synced —
@@ -548,34 +497,7 @@ struct NowPlayingView: View {
         }
     }
 
-    var seekBar: some View {
-        VStack(spacing: 4) {
-            Slider(
-                value: Binding(
-                    get: { sliderFraction },
-                    set: { dragFraction = $0 }
-                ),
-                in: 0...1,
-                onEditingChanged: { editing in
-                    if editing {
-                        dragging = true
-                    } else {
-                        let target = dragFraction * store.duration
-                        dragging = false
-                        store.seek(to: target)
-                    }
-                }
-            )
-            .tint(.primary)
-
-            HStack {
-                Text(formatTime(displayElapsed))
-                Spacer()
-                Text(formatTime(store.duration))
-            }
-            .font(.caption).monospacedDigit().foregroundStyle(.secondary)
-        }
-    }
+    var seekBar: some View { NowPlayingSeekBar() }
 
     var transportButtons: some View {
         HStack(spacing: 36) {
@@ -632,17 +554,7 @@ struct NowPlayingView: View {
         }
     }
 
-    @ViewBuilder
-    var audioInfo: some View {
-        let parts = [
-            store.bitrate.isEmpty  ? nil : "\(store.bitrate) kbps",
-            store.audioFmt.isEmpty ? nil : store.audioFmt
-        ].compactMap { $0 }
-        if !parts.isEmpty {
-            Text(parts.joined(separator: "  ·  "))
-                .font(.caption2).foregroundStyle(.secondary)
-        }
-    }
+    var audioInfo: some View { AudioInfoLine() }
 
     @ViewBuilder
     var phoneStreamToggle: some View {
@@ -931,4 +843,122 @@ struct MarqueeText: View {
 
 extension Double {
     func clamped(to r: ClosedRange<Double>) -> Double { min(max(self, r.lowerBound), r.upperBound) }
+}
+
+// MARK: - Clock-observing subviews
+//
+// The only parts of Now Playing that read PlaybackClock. Keeping them separate
+// is the point: the clock changes ten times a second while playing, and only
+// these small views re-render for it.
+
+/// Seek slider and time labels.
+private struct NowPlayingSeekBar: View {
+    @EnvironmentObject var store: MPDStore
+    @EnvironmentObject var clock: PlaybackClock
+
+    // Slider drag state — only active while finger is on the slider
+    @State private var dragging     = false
+    @State private var dragFraction = 0.0   // 0..1
+
+    // What fraction to show in the slider
+    private var sliderFraction: Double {
+        if dragging { return dragFraction }
+        guard store.duration > 0 else { return 0 }
+        return (clock.elapsed / store.duration).clamped(to: 0...1)
+    }
+
+    // What time to show in the elapsed label
+    private var displayElapsed: Double {
+        dragging ? dragFraction * store.duration : clock.elapsed
+    }
+
+    var body: some View {
+        VStack(spacing: 4) {
+            Slider(
+                value: Binding(
+                    get: { sliderFraction },
+                    set: { dragFraction = $0 }
+                ),
+                in: 0...1,
+                onEditingChanged: { editing in
+                    if editing {
+                        dragging = true
+                    } else {
+                        let target = dragFraction * store.duration
+                        dragging = false
+                        store.seek(to: target)
+                    }
+                }
+            )
+            .tint(.primary)
+
+            HStack {
+                Text(formatTime(displayElapsed))
+                Spacer()
+                Text(formatTime(store.duration))
+            }
+            .font(.caption).monospacedDigit().foregroundStyle(.secondary)
+        }
+        .observesPlaybackClock(clock)
+    }
+}
+
+/// Scrolling synced lyrics with the active line highlighted.
+///
+/// Following is opt-out: while `follow` is on, the pane keeps the active line
+/// centered, which is what makes synced lyrics worth having and also what makes
+/// the pane unreadable anywhere else — scrolling back to an earlier verse used
+/// to survive only until the song reached the next line. The highlight stays in
+/// both modes: scrolled away, it is the only indication of where the song
+/// actually is.
+private struct SyncedLyricsView: View {
+    @EnvironmentObject var clock: PlaybackClock
+    let lines: [LyricLine]
+    @Binding var follow: Bool
+
+    var body: some View {
+        let active = activeLyricLine(lines, elapsed: clock.elapsed)
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach(Array(lines.enumerated()), id: \.offset) { i, line in
+                        Text(line.text.isEmpty ? " " : line.text)
+                            .font(i == active ? .body.bold() : .callout)
+                            .foregroundStyle(i == active ? Color.accentColor : Color.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .id(i)
+                    }
+                }
+                .padding(.vertical, 8)
+            }
+            .animation(.easeInOut(duration: 0.2), value: active)
+            .onChange(of: active) { _, newValue in
+                guard follow, let newValue else { return }
+                withAnimation(.easeInOut(duration: 0.3)) {
+                    proxy.scrollTo(newValue, anchor: .center)
+                }
+            }
+            // Re-enabling has to snap now, not at the next line change —
+            // otherwise turning Sync back on appears to do nothing for seconds.
+            .onChange(of: follow) { _, following in
+                guard following, let active else { return }
+                withAnimation(.easeInOut(duration: 0.3)) {
+                    proxy.scrollTo(active, anchor: .center)
+                }
+            }
+        }
+        .observesPlaybackClock(clock)
+    }
+}
+
+/// The playing file's audio format, e.g. "44.1 kHz · 16-bit · stereo".
+private struct AudioInfoLine: View {
+    @EnvironmentObject var store: MPDStore
+
+    var body: some View {
+        if !store.audioFmt.isEmpty {
+            Text(formatAudioFormat(store.audioFmt))
+                .font(.caption2).foregroundStyle(.secondary)
+        }
+    }
 }
