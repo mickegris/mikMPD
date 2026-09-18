@@ -2457,6 +2457,13 @@ final class MPDStore: ObservableObject {
     private var oggPlayerToken: UUID?
     /// Registered only while streaming to the phone.
     private var routeChangeObserver: NSObjectProtocol?
+    private var interruptionObserver: NSObjectProtocol?
+    /// Streaming to the phone is on, but deliberately silent — an interruption
+    /// (or, from item 2, MPD being paused). The players have let go of the
+    /// stream; `resumePhoneStreamPlayer` rejoins it live. Counted as "rendering"
+    /// by the background check, so being quiet on purpose never switches the
+    /// feature off.
+    private var phoneStreamSuspended = false
 
     func togglePhoneStream() { isPhoneStreaming ? stopPhoneStream() : startPhoneStream() }
 
@@ -2479,6 +2486,7 @@ final class MPDStore: ObservableObject {
         phoneStreamError = nil
         isPhoneStreaming = true
         observeAudioRoute()
+        observeAudioInterruptions()
         UIApplication.shared.beginReceivingRemoteControlEvents()
         setupRemoteCommands()
         startBgPollTimer()
@@ -2523,6 +2531,7 @@ final class MPDStore: ObservableObject {
 
     func stopPhoneStream() {
         stopObservingAudioRoute()
+        phoneStreamSuspended = false
         streamPlayer?.pause()
         streamPlayer = nil
         oggPlayerToken = nil        // before stop(): its own .idle must be ignored
@@ -2551,6 +2560,65 @@ final class MPDStore: ObservableObject {
     private func stopObservingAudioRoute() {
         if let observer = routeChangeObserver { NotificationCenter.default.removeObserver(observer) }
         routeChangeObserver = nil
+        if let observer = interruptionObserver { NotificationCenter.default.removeObserver(observer) }
+        interruptionObserver = nil
+    }
+
+    /// A call, Siri, an alarm or another app's audio. AVAudioEngine stops
+    /// itself when one begins, and v1.7 did not notice: the Ogg player went on
+    /// "playing" silence. AVPlayer pauses itself but never resumes. Both now
+    /// suspend, and rejoin the live stream when iOS says to resume.
+    private func observeAudioInterruptions() {
+        guard interruptionObserver == nil else { return }
+        interruptionObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.interruptionNotification, object: nil, queue: .main
+        ) { [weak self] note in
+            let type = (note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt)
+                .flatMap(AVAudioSession.InterruptionType.init(rawValue:))
+            let options = AVAudioSession.InterruptionOptions(
+                rawValue: note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0)
+            Task { @MainActor in
+                guard let type else { return }
+                self?.handleAudioInterruption(phoneStreamInterruptionAction(type: type, options: options))
+            }
+        }
+    }
+
+    private func handleAudioInterruption(_ action: PhoneStreamInterruptionAction) {
+        guard isPhoneStreaming else { return }
+        switch action {
+        case .suspend: suspendPhoneStreamPlayer()
+        case .resume:  resumePhoneStreamPlayer()
+        case .ignore:  break
+        }
+    }
+
+    /// Go quiet without switching phone streaming off: let go of the stream so a
+    /// silent phone uses no network or audio power.
+    func suspendPhoneStreamPlayer() {
+        guard isPhoneStreaming, !phoneStreamSuspended else { return }
+        phoneStreamSuspended = true
+        oggPlayer?.suspend()
+        if let p = streamPlayer {
+            p.pause()
+            p.replaceCurrentItem(with: nil)      // drop the stale buffer
+        }
+    }
+
+    /// Rejoin the live stream — never resume a buffer that is behind MPD.
+    func resumePhoneStreamPlayer() {
+        guard isPhoneStreaming, phoneStreamSuspended,
+              let url = Self.parseStreamURL(httpStreamURL) else { return }
+        phoneStreamSuspended = false
+        try? AVAudioSession.sharedInstance().setActive(true)
+        if let ogg = oggPlayer {
+            ogg.start(url: url)
+        } else if let p = streamPlayer {
+            let item = AVPlayerItem(url: url)
+            item.preferredForwardBufferDuration = 30
+            p.replaceCurrentItem(with: item)
+            p.play()
+        }
     }
 
     private func handleAudioRouteChange(reasonRawValue raw: UInt?) {
@@ -2560,6 +2628,8 @@ final class MPDStore: ObservableObject {
         case .stop:
             stopPhoneStream()
         case .restartOggStream:
+            // Not while quiet on purpose: that would start sound nobody asked for.
+            guard !phoneStreamSuspended else { return }
             if let url = Self.parseStreamURL(httpStreamURL) { oggPlayer?.start(url: url) }
         case .ignore:
             break
@@ -2655,6 +2725,7 @@ final class MPDStore: ObservableObject {
     /// alone is not evidence — that is the whole point of the check above — and
     /// the Ogg player needs its own answer or the bug returns for Ogg users only.
     private var isStreamActuallyRendering: Bool {
+        if phoneStreamSuspended { return true }      // quiet on purpose
         if oggPlayer != nil { return oggState.isRendering }
         if let p = streamPlayer { return p.timeControlStatus != .paused }
         return false   // neither player started yet

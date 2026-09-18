@@ -14,7 +14,7 @@ import Foundation
 /// Codecs identifiable from the first packet of a logical bitstream.
 nonisolated enum OggCodec: Equatable {
     case opus(OpusHeader)
-    case flac
+    case flac(FLACStreamInfo)
     case vorbis          // identified so the user gets a reason, never decoded
     case unknown
 
@@ -59,6 +59,43 @@ nonisolated struct OpusHeader: Equatable {
                           inputSampleRate: Int(p[12]) | Int(p[13]) << 8 | Int(p[14]) << 16 | Int(p[15]) << 24,
                           outputGain: Int(Int16(bitPattern: UInt16(p[16]) | UInt16(p[17]) << 8)),
                           mappingFamily: Int(p[18]))
+    }
+}
+
+/// The FLAC STREAMINFO block, from the first packet of an Ogg FLAC stream.
+///
+/// Needed to decode at all, not just to decode right. `AudioConverterNew`
+/// refuses a FLAC format whose frames-per-packet is 0 — v1.7 passed exactly
+/// that, so Ogg FLAC never played — and a frames-per-packet smaller than the
+/// stream's block size decodes nothing (both verified with macOS's decoder).
+/// The sample rate matters as much: MPD's FLAC encoder sends the *source file's*
+/// rate, so a CD rip arrives at 44.1 kHz and decoding it as 48 kHz plays it ~9 %
+/// fast; and since the rate follows the file, it can change at a track boundary.
+nonisolated struct FLACStreamInfo: Equatable {
+    var sampleRate: Int
+    var channels: Int
+    var bitsPerSample: Int
+    var minBlockSize: Int
+    var maxBlockSize: Int
+
+    /// Ogg FLAC mapping: `0x7F "FLAC"`, version (2 bytes), header count
+    /// (2 bytes), `"fLaC"`, then a metadata block header (type 0 = STREAMINFO,
+    /// 3-byte length 34) and the 34-byte STREAMINFO itself, all big-endian.
+    static func parse(oggFirstPacket p: [UInt8]) -> FLACStreamInfo? {
+        guard p.count >= 51,
+              p[0] == 0x7F, Array(p[1..<5]) == Array("FLAC".utf8),
+              Array(p[9..<13]) == Array("fLaC".utf8),
+              p[13] & 0x7F == 0 else { return nil }
+        let si = Array(p[17..<51])
+        let minBS = Int(si[0]) << 8 | Int(si[1])
+        let maxBS = Int(si[2]) << 8 | Int(si[3])
+        // 20 bits of rate, 3 of channels−1, 5 of bits-per-sample−1.
+        let rate = Int(si[10]) << 12 | Int(si[11]) << 4 | Int(si[12]) >> 4
+        let channels = Int((si[12] >> 1) & 0x07) + 1
+        let bits = (Int(si[12] & 0x01) << 4 | Int(si[13]) >> 4) + 1
+        guard rate > 0, maxBS >= 16, minBS <= maxBS else { return nil }
+        return FLACStreamInfo(sampleRate: rate, channels: channels, bitsPerSample: bits,
+                              minBlockSize: minBS, maxBlockSize: maxBS)
     }
 }
 
@@ -271,7 +308,11 @@ nonisolated enum OggCodecIdentifier {
     /// Identify a logical bitstream from its first packet.
     static func identify(firstPacket p: [UInt8]) -> OggCodec {
         if let head = OpusHeader.parse(p) { return .opus(head) }
-        if p.count >= 5, p[0] == 0x7F, Array(p[1..<5]) == Array("FLAC".utf8) { return .flac }
+        if p.count >= 5, p[0] == 0x7F, Array(p[1..<5]) == Array("FLAC".utf8) {
+            // Without a readable STREAMINFO there is nothing to configure a
+            // decoder with, so it is as good as unrecognised.
+            return FLACStreamInfo.parse(oggFirstPacket: p).map(OggCodec.flac) ?? .unknown
+        }
         if p.count >= 7, p[0] == 0x01, Array(p[1..<7]) == Array("vorbis".utf8) { return .vorbis }
         return .unknown
     }
@@ -282,7 +323,9 @@ nonisolated enum OggCodecIdentifier {
         switch codec {
         case .opus:   p.count >= 8 && Array(p[0..<8]) == Array("OpusTags".utf8)
         case .vorbis: p.count >= 7 && p[0] == 0x03 && Array(p[1..<7]) == Array("vorbis".utf8)
-        case .flac:   p.count >= 1 && p[0] & 0x7F == 4      // VORBIS_COMMENT metadata block
+        // Every FLAC metadata block (VORBIS_COMMENT, PADDING, PICTURE, …) is a
+        // header; only audio frames, which open with the 0xFF sync byte, decode.
+        case .flac:   p.first != 0xFF
         case .unknown: false
         }
     }

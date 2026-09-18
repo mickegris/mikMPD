@@ -287,10 +287,14 @@ setting anywhere in the UI. An unclear or missing content type falls back to
 (`URLSession.bytes(for:)`, then cancel): an httpd output never ends, and the first
 version used `dataTask`, whose completion fires only when the body does — it
 downloaded a whole finite test file before answering and would have sat out its
-10 s timeout on every real stream start. **A server closing the stream ends phone
-streaming**: that arrives from `OggStreamPlayer` as `.idle`, not `.failed`
-(`endsPhoneStream`), and reacting to `.failed` alone left "Streaming to phone" on
-screen over silence. Each player's callbacks carry a token so a late one from a
+10 s timeout on every real stream start. **A lost stream is retried, then ends phone
+streaming**: a server close or a transient `URLError` puts the Ogg player in
+`.reconnecting(attempt:)` — 1, 2, 4, 8 s (`oggReconnectDelay`), about 15 s in all —
+and only a spent budget becomes `.failed`, which `endsPhoneStream`. v1.7 ended
+streaming at the first `.idle`, so any Wi-Fi blip or MPD restart silently switched
+the feature off; before that, reacting to `.failed` alone left "Streaming to
+phone" on screen over silence. Neither regresses: `.idle` now only follows an
+explicit `stop()`, and nothing retries beyond the budget. Each player's callbacks carry a token so a late one from a
 torn-down player cannot stop its successor. **Supported encoders are mp3,
 Opus and FLAC**, stated under the Stream URL field and again in the failure
 message; Ogg Vorbis is identified and refused, because iOS has no Vorbis decoder
@@ -339,6 +343,41 @@ so in a warning); and when its packet is spent the callback returns the non-zero
 *stream* has ended. `OggPacketDecoderTests` pins this with a synthetic stereo tone —
 440 Hz left, 554 Hz right — so a silent channel, a decoder that stops after one
 packet, or pre-skip applied twice each fails a test.
+
+**The Ogg player's lifecycle (v1.7.1), each part learned from a field report.**
+*Jitter buffer* (`OggBufferPolicy`): play at 2 s buffered, pause and refill to 2 s
+at an underrun (≤ 0.25 s), and drop incoming audio beyond 6 s — v1.7 buffered 0.5 s
+once and then stuttered through every hiccup, and nothing bounded how far behind
+MPD the phone could drift. *The engine is configured per format, never per
+bitstream*: MPD's Opus encoder starts a new chained bitstream at **every track
+change** (verified live: six bitstreams over five skips), and v1.7 tore the engine
+down for each one, cutting the song's tail and restarting from an empty buffer —
+"failed to play next song". The decoder is still replaced per bitstream (pre-skip
+and STREAMINFO belong to it); `LiveOggPlayerTests` pins one engine configuration
+across five track changes. *`node.play()` is only ever called on a running
+engine* (`playNodeLocked`) — on a stopped one it raises an Objective-C exception
+Swift cannot catch — and `AVAudioEngineConfigurationChange` is observed and
+rebuilt from. *Health is checked on every data arrival*: "playing" with nothing
+played back for 3 s (`oggStreamStalled`) means the engine died under the player,
+at no timer cost. *Buffer completions carry a generation*, so completions of
+discarded audio (which `node.stop()` fires) cannot drive the frame count
+negative. *Decoded packets are coalesced into ~100 ms buffers*, 10 schedules a
+second instead of 50. The idle timeout is 10 s: MPD's httpd output sends encoded
+silence while paused (verified), so silence on the wire means the server is gone.
+**FLAC needs its STREAMINFO to decode at all.** `AudioConverterNew` refuses a
+FLAC format with frames-per-packet 0 — v1.7 passed exactly that, so Ogg FLAC never
+played — and a value below the block size decodes nothing; no magic cookie is
+needed (all verified with the system decoder). `FLACStreamInfo` supplies the block
+size, channels and the **source's** sample rate, which MPD's FLAC encoder passes
+through (a CD rip is 44.1 kHz, and may change at a track boundary);
+`OggFLACFixtures` holds generated 44.1 k, 48 k and chained streams, and the tests
+check the tones come out at their true frequency.
+**Interruptions are the store's job too** (`observeAudioInterruptions`):
+`.began` suspends the player (`suspendPhoneStreamPlayer` — the stream is let go,
+so a silent phone uses no network or audio power), `.ended` with `.shouldResume`
+rejoins the live stream (`resumePhoneStreamPlayer`), never a stale buffer.
+`phoneStreamSuspended` counts as rendering for the background check, so being
+quiet on purpose never switches the feature off.
 
 **Audio route changes are the store's job while streaming** (`observeAudioRoute`,
 removed on stop). `phoneStreamRouteAction` stops the stream when a device goes
