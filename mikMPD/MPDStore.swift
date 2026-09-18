@@ -2486,6 +2486,34 @@ final class MPDStore: ObservableObject {
 
     func togglePhoneStream() { isPhoneStreaming ? stopPhoneStream() : startPhoneStream() }
 
+    /// Every `setActive` goes through this serial queue, never the main thread:
+    /// it is a synchronous round trip to the audio server, and Xcode flags it on
+    /// main as a cause of UI hangs. iOS has no asynchronous form
+    /// (`activateWithOptions:completionHandler:` is watchOS-only). One serial
+    /// queue keeps the calls in order — a stop's deactivate always lands before
+    /// the next start's activate.
+    private let audioSessionQueue = DispatchQueue(label: "mikmpd.audiosession", qos: .userInitiated)
+    /// Bumped by every start and stop, so an activation that completes after the
+    /// user has already changed their mind does not start anything.
+    private var phoneStreamGeneration = 0
+
+    /// Activate the session off the main thread, then continue on main with nil
+    /// or the error's description.
+    nonisolated private static func activateAudioSession(on queue: DispatchQueue, setCategory: Bool,
+                                                         then: @escaping @MainActor (String?) -> Void) {
+        queue.async {
+            var failure: String?
+            do {
+                let session = AVAudioSession.sharedInstance()
+                if setCategory { try session.setCategory(.playback, mode: .default) }
+                try session.setActive(true)
+            } catch {
+                failure = error.localizedDescription
+            }
+            Task { @MainActor in then(failure) }
+        }
+    }
+
     func startPhoneStream() {
         guard let url = Self.parseStreamURL(httpStreamURL) else { return }
         // Tear down *before* touching the session. This used to run after
@@ -2494,14 +2522,8 @@ final class MPDStore: ObservableObject {
         // notification at the apps we were about to interrupt, and calling
         // play() on a session that had just been switched off.
         stopPhoneStream()
-        do {
-            let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playback, mode: .default)
-            try session.setActive(true)
-        } catch {
-            connectionError = "Audio session: \(error.localizedDescription)"
-            return
-        }
+        phoneStreamGeneration &+= 1
+        let generation = phoneStreamGeneration
         phoneStreamError = nil
         phoneStreamPartition = currentPartition.isEmpty ? nil : currentPartition
         isPhoneStreaming = true
@@ -2512,14 +2534,22 @@ final class MPDStore: ObservableObject {
         startBgPollTimer()
         updateNowPlayingInfo()
 
-        // Which player can open this depends on what MPD is encoding, which only
-        // the response says. Probing costs one HEAD-shaped request and keeps the
-        // codec entirely out of the app's settings.
-        Self.probeStreamKind(url) { [weak self] kind in
-            guard let self, self.isPhoneStreaming else { return }
-            switch kind {
-            case .system: self.startSystemPlayer(url: url)
-            case .ogg:    self.startOggPlayer(url: url)
+        Self.activateAudioSession(on: audioSessionQueue, setCategory: true) { [weak self] failure in
+            guard let self, self.isPhoneStreaming, generation == self.phoneStreamGeneration else { return }
+            if let failure {
+                self.stopPhoneStream()
+                self.connectionError = "Audio session: \(failure)"
+                return
+            }
+            // Which player can open this depends on what MPD is encoding, which
+            // only the response says. Probing costs one HEAD-shaped request and
+            // keeps the codec entirely out of the app's settings.
+            Self.probeStreamKind(url) { [weak self] kind in
+                guard let self, self.isPhoneStreaming, generation == self.phoneStreamGeneration else { return }
+                switch kind {
+                case .system: self.startSystemPlayer(url: url)
+                case .ogg:    self.startOggPlayer(url: url)
+                }
             }
         }
     }
@@ -2566,7 +2596,10 @@ final class MPDStore: ObservableObject {
         oggPlayer?.stop()
         oggPlayer = nil
         oggState = .idle
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        phoneStreamGeneration &+= 1
+        audioSessionQueue.async {
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        }
         isPhoneStreaming = false
         UIApplication.shared.endReceivingRemoteControlEvents()
         stopBgPollTimer()
@@ -2665,14 +2698,21 @@ final class MPDStore: ObservableObject {
         guard isPhoneStreaming, phoneStreamSuspended, isPlaying,
               let url = Self.parseStreamURL(httpStreamURL) else { return }
         phoneStreamSuspended = false
-        try? AVAudioSession.sharedInstance().setActive(true)
-        if let ogg = oggPlayer {
-            ogg.start(url: url)
-        } else if let p = streamPlayer {
-            let item = AVPlayerItem(url: url)
-            item.preferredForwardBufferDuration = 30
-            p.replaceCurrentItem(with: item)
-            p.play()
+        let generation = phoneStreamGeneration
+        // The session normally stays active while suspended, so this is cheap —
+        // but it is still a round trip, and never on main.
+        Self.activateAudioSession(on: audioSessionQueue, setCategory: false) { [weak self] _ in
+            // Paused again, or stopped, while activating: start nothing.
+            guard let self, self.isPhoneStreaming, !self.phoneStreamSuspended,
+                  generation == self.phoneStreamGeneration else { return }
+            if let ogg = self.oggPlayer {
+                ogg.start(url: url)
+            } else if let p = self.streamPlayer {
+                let item = AVPlayerItem(url: url)
+                item.preferredForwardBufferDuration = 30
+                p.replaceCurrentItem(with: item)
+                p.play()
+            }
         }
     }
 
