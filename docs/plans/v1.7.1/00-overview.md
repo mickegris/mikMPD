@@ -10,7 +10,8 @@ numbered findings, so each fix can be traced to a line of code.
 | 2 | Lock-screen pause felt ignored, once for ten minutes | [02-lock-screen-controls.md](02-lock-screen-controls.md) | **Device** + phone streaming |
 | 3 | Transfer never changes consume / ReplayGain / crossfade on **either** partition | [03-transfer-keeps-playback-settings.md](03-transfer-keeps-playback-settings.md) | **Server** with two partitions |
 | 4 | Ogg (Opus, FLAC) streaming review: buffering, lost track changes, silent stops, FLAC rates | [04-ogg-streaming-review.md](04-ogg-streaming-review.md) | **Device**; the pure parts are unit-tested |
-| 5 | Crash while streaming with the screen locked | [05-background-crash.md](05-background-crash.md) | Unit test for the socket fix; the crash log confirms which cause it was |
+| 5 | Crash while streaming with the screen locked | [05-background-crash.md](05-background-crash.md) | Unit test for the socket fix (no crash log survived) |
+| 6 | Energy: the whole app re-renders at 10 Hz; the Albums list regroups ~820 albums each time | [06-energy.md](06-energy.md) | Device, **Release** build, Xcode CPU/Energy gauges |
 
 ## Version and branch
 
@@ -43,21 +44,34 @@ lock-screen pause held for ten minutes until unlock:
   the server or Wi-Fi has reset kills the app instantly, and the background poll
   writes every 2 s while streaming. The fix is `SO_NOSIGPIPE`, two lines per
   socket, and it gets a unit test. The other candidate is the Ogg engine being
-  played while iOS has stopped it (4, O4). **The crash log decides**; item 5
-  says where to find it on the phone.
+  played while iOS has stopped it (4, O4). No crash log survived, so both are
+  fixed.
 - **Silent stop (4)**: the Ogg player does not observe interruptions or engine
   configuration changes, has no underrun handling and no reconnect, and restarts
   the audio engine at every track change. Any of these ends in silence with the
   app still claiming to stream, or streaming switched off at the first network
   blip.
 - **Pause held until unlock (2)**: ten minutes cannot be buffering. The press was
-  *held*, so the app was not running. iOS suspends a background-audio app that
-  has stopped producing audio, and the lock screen kept showing mikMPD because
-  `playbackState` follows MPD's state rather than the phone's. The fix is
+  *held* or lost, not slow. The most likely story: the stream went silent, iOS
+  suspended the app, and the lock screen kept showing mikMPD because
+  `playbackState` follows MPD's state rather than the phone's. The woken app then
+  found a dead MPD socket, where the command either failed silently or hit
+  SIGPIPE. The fix is
   detecting the silence (a stall watchdog) and never leaving a "playing" lock
   screen over a dead stream. Separately, a pause that *does* arrive is heard only
   after the phone's buffer runs out (up to 30 s for mp3). That is fixed by
   silencing the phone on pause and rejoining the live stream on play.
+
+**Energy (6)**: a CPU resource report from 2026-09-15 (57 % CPU for 2.5 min,
+on battery, in the foreground) symbolicates to `AlbumListView.groups`, which
+recomputes the whole album grouping inside `body`. It runs ten times a second
+because `elapsed` is `@Published` on the store, which invalidates all 29 views
+observing it. Fix: move `elapsed`/`bitrate` into a separate `PlaybackClock`
+observed only by the time displays, run the display timer only when visible and
+foreground, compute groupings on input change, and set lock-screen info on
+change only. Item 6 also sets **energy rules the other items must follow**: no
+new timers, bounded retries, a closed stream while paused (the biggest saving
+for phone streaming) and coalesced audio buffers.
 
 **FLAC** is always decoded as 48 kHz stereo. MPD sends the source file's rate,
 so 44.1 kHz FLAC plays ~9 % fast, and the rate can change between tracks. The
@@ -89,12 +103,12 @@ Questions whose answers sharpen the reproduction, not the fix:
   or from MPD's own speakers?
 - **Item 4:** when it "just stopped" after ten minutes, did the "Listen on
   phone" toggle turn itself off, or stay on over silence?
-- **Item 5:** the crash's `.ips` file from the phone.
 
 ## Order of work
 
-1 → 3 → 5 → 4 → 2. Item 1 and item 3 are independent. Item 5's socket fix is
-tiny and removes a crash from every later device test. Item 4 must come before
+1 → 3 → 5 → 6 → 4 → 2. Item 1 and item 3 are independent. Item 5's socket fix is
+tiny and removes a crash from every later device test. Item 6 goes before 4
+and 2 so their device testing measures energy against a quiet baseline. Item 4 must come before
 item 2, because item 2 relies on the Ogg player's `suspend()`, its played-back
 timestamps and its reconnect.
 
@@ -103,4 +117,6 @@ timestamps and its reconnect.
 - Search's "Double-tap to play" footer (noted in item 1 as a follow-up).
 - Lock-screen controls when *not* streaming to the phone: iOS shows none for an
   app without an active audio session. This is expected.
+- Migrating `MPDStore` to `@Observable` (the full fix for item 6's cause). It
+  gets its own plan.
 - Vorbis, and any codec setting in the app (unchanged from v1.7).

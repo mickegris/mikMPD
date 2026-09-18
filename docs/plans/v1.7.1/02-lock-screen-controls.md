@@ -35,6 +35,25 @@ That same day: the app crashed while locked (item 5), and after the restart
   playing" earlier the same day, which is the same silent death seen from the
   other side.
 
+  **A caveat on this theory.** iOS normally *does* wake a suspended app that
+  owns the lock screen's Now Playing slot, in order to deliver a remote command.
+  That is how a paused Spotify resumes from the lock screen. So "suspended"
+  alone would not hold a press for ten minutes. Suspension combined with what
+  the app finds on waking fits better. By then MPD has closed the idle
+  connection (`connection_timeout`), the handler's `pause 1` fails silently
+  (F2), or the write hits the reset socket and dies of SIGPIPE (item 5). At
+  unlock, a fresh connection and poll then show a state that makes it *look*
+  as if the pause landed at that moment. Either way, the fixes are the same:
+  detect the silence (0), reconnect-then-send (2), `SO_NOSIGPIPE` (item 5), and
+  log it so the next occurrence explains itself (4).
+
+  **This matters for the new pause behaviour too.** Once pausing closes the
+  stream (change 3), a paused app *will* be suspended by iOS, correctly and
+  by design, and every lock-screen "play" will arrive on a woken app with a
+  dead MPD socket. Reconnect-then-send is therefore a requirement, not a
+  nicety, and must be verified on a device after at least 2 minutes paused and
+  locked.
+
   **To confirm (question for you):** during those ten minutes, was the music
   coming **from the phone** (headphones or speaker) or from MPD's own speakers?
   If it was audibly from the phone, the app cannot have been suspended, and the
@@ -262,8 +281,12 @@ Streaming mp3, then Opus:
       starts (F4);
 - [ ] Wi-Fi off for 10 s while locked, back on, press pause → it works, and the
       diagnostics log shows the reconnect;
-- [ ] pause for 5 minutes on the lock screen, then play → resumes; the stream was
-      not torn down by `handleEnteringBackground`.
+- [ ] pause for 5 minutes on the lock screen, then play → resumes. By then iOS has
+      suspended the app and MPD has dropped the idle socket, so this exercises
+      the wake + reconnect-then-send path end to end, and it must not crash
+      (item 5);
+- [ ] energy: while paused and locked, no stream bytes are received (Xcode's Network
+      gauge stays flat, because the app is suspended).
 - [ ] F6: Opus streaming, locked; kill the stream from the server side without
       closing the socket cleanly (disable the httpd output, or pull the MPD
       host's network cable) → within ~15 s the lock screen either recovers or

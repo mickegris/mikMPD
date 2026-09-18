@@ -242,6 +242,25 @@ audio), cancels the data task and sets state `.suspended`. **It does not end
 phone streaming** (`endsPhoneStream` is false for it). Resume is a normal
 `start(url:)`. Item 2 uses this when MPD pauses.
 
+### F. Energy (see item 6's rules)
+
+- **Coalesce packets into ~100 ms buffers.** Accumulate decoded PCM into one
+  `AVAudioPCMBuffer` of ~4800 frames before calling `scheduleBuffer`. Today each
+  20 ms Opus packet is scheduled on its own, with a completion dispatch per
+  packet: 50 wakes a second on two threads, which drops to 10. The jitter
+  buffer (A) counts frames, so its policy is unaffected. Flush a partial buffer
+  at a bitstream boundary and on underrun, so nothing is held back.
+- **No timers.** Underrun detection happens in the completion callback
+  (`bufferedFrames` crossing `lowFrames`). Stall detection piggybacks on the
+  store's existing 2 s background poll (item 2 F6). Reconnect uses one-shot
+  `asyncAfter`s, four at most.
+- **A suspended player holds nothing.** `suspend()` cancels the data task and
+  stops the engine, so there is no radio and no audio hardware while MPD is
+  paused.
+- The decoder and converter are reused across packets (as today). Only a new
+  bitstream allocates a new converter, and only a format change reconfigures the
+  engine (B).
+
 ### State machine after the change
 
 ```

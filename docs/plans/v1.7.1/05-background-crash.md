@@ -15,13 +15,18 @@ background:
 | the 3 s reconnect after a poll failure | `scheduleReconnect` → `connect()` |
 | lock-screen metadata once per poll | `updateNowPlayingInfo` |
 
-## Step 0 — get the crash report (do this first)
+## Step 0 — get the crash report
 
-The report settles which of the candidates below it was. It is on the phone
-now:
+**Update 2026-09-18:** there is no report from that day on the phone, so the
+cause cannot be confirmed. C1 and C2 are both fixed in this release anyway. If
+the crash recurs on 1.7.1, the report is what to look for, as described below.
+(The one report that was found is a CPU resource report from 2026-09-15. It is
+not a crash, and item 6 covers it.)
+
+Where to find a report if it recurs:
 
 **Settings → Privacy & Security → Analytics & Improvements → Analytics Data**,
-entries starting `mikMPD-2026-09-17…`. Open one, share it (AirDrop or Mail to
+entries starting `mikMPD-` (a crash has no `cpu_resource` in its name). Open one, share it (AirDrop or Mail to
 yourself), and drop the `.ips` in the repo root or paste it. Or, with the phone
 plugged in: Xcode → Window → Devices and Simulators → the phone → **View Device
 Logs**.
@@ -116,9 +121,8 @@ a locked phone. Item 4's `maxFrames` cap fixes it.
 
 ## Plan of record
 
-1. Get the `.ips` (step 0). If it names C1, C2 or C3, the matching fix is
-   already in this release. If it names something else, stop and plan for that
-   instead of shipping a guess.
+1. No `.ips` from the crash exists, so ship the fixes for the known candidates
+   and watch for a recurrence.
 2. Land C1 regardless. It is a real crash path even if it was not *this* crash,
    and it costs two lines per socket.
 3. C2 and C3 land with item 4.
