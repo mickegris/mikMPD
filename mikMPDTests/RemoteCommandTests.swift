@@ -79,3 +79,15 @@ import Foundation
         #expect(phoneStreamPartitionAction(streamPartition: nil, current: "http") == .adopt)
     }
 }
+
+@Suite struct NowPlayingRateTests {
+    /// iOS ignores playbackState; the rate is the whole signal.
+    @Test func playingIsOneEverythingElseZero() {
+        #expect(nowPlayingRate(isPlaying: true, reconnecting: false) == 1)
+        #expect(nowPlayingRate(isPlaying: false, reconnecting: false) == 0)
+    }
+
+    @Test func aReconnectingStreamDoesNotClaimToPlay() {
+        #expect(nowPlayingRate(isPlaying: true, reconnecting: true) == 0)
+    }
+}

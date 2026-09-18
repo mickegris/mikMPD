@@ -828,6 +828,14 @@ nonisolated func phoneStreamPartitionAction(streamPartition: String?, current: S
     return streamPartition == current ? .keep : .stop
 }
 
+/// The lock screen's playback rate — on iOS the only play-state signal an app
+/// can give it (`MPNowPlayingInfoCenter.playbackState` is ignored without a
+/// private entitlement). A phone stream that is reconnecting shows as stopped
+/// rather than claiming to play, the same honesty rule as the toggle.
+nonisolated func nowPlayingRate(isPlaying: Bool, reconnecting: Bool) -> Double {
+    isPlaying && !reconnecting ? 1 : 0
+}
+
 // MARK: - Queue transfer between partitions
 
 /// What the source partition was doing, so the target can be put back into it.

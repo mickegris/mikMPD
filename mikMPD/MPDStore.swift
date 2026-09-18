@@ -2854,10 +2854,11 @@ final class MPDStore: ObservableObject {
         center.togglePlayPauseCommand.removeTarget(nil)
         center.nextTrackCommand.removeTarget(nil)
         center.previousTrackCommand.removeTarget(nil)
-        // Clearing the info alone leaves the system's idea of playback state
-        // behind, which is what keeps a stale mikMPD card in Control Center
-        // after the stream ends (or after a force-quit, where nothing else runs).
-        MPNowPlayingInfoCenter.default().playbackState = .stopped
+        // No `playbackState` here or anywhere: on iOS the system ignores it
+        // ("[MRNowPlaying] Ignoring setPlaybackState because application does
+        // not contain entitlement com.apple.mediaremote.set-playback-state") —
+        // it only takes effect on macOS. What ends the card on iOS is clearing
+        // the info and deactivating the audio session, which stopPhoneStream does.
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
         lastNowPlaying = nil
         nowPlayingArtwork = nil
@@ -2927,7 +2928,8 @@ final class MPDStore: ObservableObject {
         info[MPMediaItemPropertyAlbumTitle] = snapshot.album
         info[MPMediaItemPropertyPlaybackDuration] = duration
         info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = elapsed
-        info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? 1.0 : 0.0
+        let reconnecting: Bool = { if case .reconnecting = oggState { true } else { false } }()
+        info[MPNowPlayingInfoPropertyPlaybackRate] = nowPlayingRate(isPlaying: isPlaying, reconnecting: reconnecting)
         let artKey = "\(currentSong.artKey)|\(snapshot.hasArtwork)"
         if let cached = nowPlayingArtwork, cached.key == artKey {
             info[MPMediaItemPropertyArtwork] = cached.artwork
@@ -2938,18 +2940,8 @@ final class MPDStore: ObservableObject {
             nowPlayingArtwork = (artKey, artwork)
             info[MPMediaItemPropertyArtwork] = artwork
         }
+        // The rate is the play state on iOS; `playbackState` is ignored here.
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
-        // The playback *rate* alone isn't enough: the system reads playbackState
-        // to know whether this app is still the playing one. It was never set,
-        // which is why the now-playing entry could outlive the stream.
-        MPNowPlayingInfoCenter.default().playbackState = nowPlayingPlaybackState
-    }
-
-    /// What the lock screen is told. A phone stream that is reconnecting says so
-    /// rather than claiming to play — the same honesty rule as the toggle.
-    private var nowPlayingPlaybackState: MPNowPlayingPlaybackState {
-        if isPlaying, case .reconnecting = oggState { return .interrupted }
-        return isPlaying ? .playing : (isPaused ? .paused : .stopped)
     }
 
     nonisolated static func parseStreamURL(_ s: String) -> URL? {
