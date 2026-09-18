@@ -1,89 +1,106 @@
 # v1.7.1 — plan overview
 
-A bug-fix release: four reports from living with v1.7, two of which asked for a
-review rather than a fix. The reviews are done and are written into the plans as
+A bug-fix release: reports from living with v1.7, two of which asked for a review
+rather than a fix. The reviews are done and are written into the plans as
 numbered findings, so each fix can be traced to a line of code.
 
 | # | Item | Plan | Needs a live server / device to verify? |
 |---|---|---|---|
-| 1 | Queue tab: single tap plays (Spotify-style) | [01-queue-tab-tap-to-play.md](01-queue-tab-tap-to-play.md) | Simulator only |
-| 2 | Lock-screen play/pause felt ignored | [02-lock-screen-controls.md](02-lock-screen-controls.md) | **Device** + phone streaming |
-| 3 | Queue transfer must not change consume / ReplayGain / crossfade | [03-transfer-keeps-playback-settings.md](03-transfer-keeps-playback-settings.md) | **Server** with two partitions |
-| 4 | Ogg (Opus) phone streaming review — buffering, a crash, lost track changes | [04-ogg-streaming-review.md](04-ogg-streaming-review.md) | **Device**; the pure parts are unit-tested |
+| 1 | Queue tab: single tap plays, like the mini-queue | [01-queue-tab-tap-to-play.md](01-queue-tab-tap-to-play.md) | Simulator only |
+| 2 | Lock-screen pause felt ignored, once for ten minutes | [02-lock-screen-controls.md](02-lock-screen-controls.md) | **Device** + phone streaming |
+| 3 | Transfer never changes consume / ReplayGain / crossfade on **either** partition | [03-transfer-keeps-playback-settings.md](03-transfer-keeps-playback-settings.md) | **Server** with two partitions |
+| 4 | Ogg (Opus, FLAC) streaming review: buffering, lost track changes, silent stops, FLAC rates | [04-ogg-streaming-review.md](04-ogg-streaming-review.md) | **Device**; the pure parts are unit-tested |
+| 5 | Crash while streaming with the screen locked | [05-background-crash.md](05-background-crash.md) | Unit test for the socket fix; the crash log confirms which cause it was |
 
 ## Version and branch
 
 - **Version:** `MARKETING_VERSION` 1.7.0 → **1.7.1**, `CURRENT_PROJECT_VERSION`
   40 → **41**, in the Debug and Release configs of the app target in
-  `mikMPD.xcodeproj/project.pbxproj`. No new features, so this is a patch bump.
+  `mikMPD.xcodeproj/project.pbxproj`. A patch bump.
 - **Branch:** `v1.7.1` off `main` (this branch), merged back with a
-  `Merge v1.7.1 — …` commit, as for v1.5 to v1.7.
+  `Merge v1.7.1 — …` commit.
 - The bump lands first as its own commit, then one commit per item.
 
-## What the reviews found, in one paragraph each
+## The findings, briefly
 
-**Item 2** is probably not a dropped command. A remote pause reaches MPD, but
-the phone still holds whatever its player has buffered. For mp3,
-`preferredForwardBufferDuration = 30` lets AVPlayer hold up to 30 s. MPD pauses,
-and the phone keeps playing until that buffer runs out, which reads as "nothing
-happened". Two real defects make it worse. The handlers fire and forget with
-`try?`, and they return `.success` even when the socket is down. They also
-bypass the store, so the lock-screen glyph stays wrong until the next 2 s poll.
+**Item 1**: the Queue tab only has a double-tap handler, so a single tap falls
+through to the row's first `NavigationLink`, the artist. The fix is to use the
+mini-queue's `.playableRow`.
 
-**Item 3**: crossfade and ReplayGain mode are **per-partition** in MPD, and the
-transfer carries neither. After the app follows the music to the target, you
-hear and see the *target's* settings. It looks intermittent because it only
-shows when the two partitions differ. On top of that, the app reads ReplayGain
-mode once per connection, so after a transfer or a partition switch the
-ReplayGain button shows a value that no longer applies. `single oneshot` (and
-0.24's `consume oneshot`) collapse to "off" in transit.
+**Item 3**: v1.7 explicitly sends the **source's consume** to the target, which
+is the direct cause. ReplayGain and crossfade are per partition in MPD and are
+never sent. The app, however, reads ReplayGain only on connect, so after
+following the music the button shows the source's value. Crossfade shows the
+source's value until the next poll. Both *look* like the transfer changed them.
+Fix: send none of the three, then snapshot both partitions before and after,
+repair any drift and report it.
 
-**Item 4**: the Ogg player has **no underrun handling**. It buffers 0.5 s once,
-at start, and never again, so every network hiccup after that is a hard dropout
-instead of a rebuffer. It **tears down and restarts the audio engine at every
-track boundary**, because MPD's Opus encoder starts a new chained bitstream per
-song. That throws away buffered audio and makes the next song start from zero,
-which is the "failed to play next song". It also corrupts the buffer counter.
-The **crash** is most likely `AVAudioPlayerNode.play()` on an engine that iOS
-has stopped: interruptions and configuration changes stop the engine, and
-nothing observes either.
+**Items 2, 4 and 5 are one evening seen three ways.** Yesterday's session had a
+crash while locked, then "it just stopped playing" after ten minutes, then a
+lock-screen pause held for ten minutes until unlock:
 
-## Decisions taken in the plans (confirm or overrule)
+- **Crash (5)**: neither socket suppresses **SIGPIPE**. A write to a connection
+  the server or Wi-Fi has reset kills the app instantly, and the background poll
+  writes every 2 s while streaming. The fix is `SO_NOSIGPIPE`, two lines per
+  socket, and it gets a unit test. The other candidate is the Ogg engine being
+  played while iOS has stopped it (4, O4). **The crash log decides**; item 5
+  says where to find it on the phone.
+- **Silent stop (4)**: the Ogg player does not observe interruptions or engine
+  configuration changes, has no underrun handling and no reconnect, and restarts
+  the audio engine at every track change. Any of these ends in silence with the
+  app still claiming to stream, or streaming switched off at the first network
+  blip.
+- **Pause held until unlock (2)**: ten minutes cannot be buffering. The press was
+  *held*, so the app was not running. iOS suspends a background-audio app that
+  has stopped producing audio, and the lock screen kept showing mikMPD because
+  `playbackState` follows MPD's state rather than the phone's. The fix is
+  detecting the silence (a stall watchdog) and never leaving a "playing" lock
+  screen over a dead stream. Separately, a pause that *does* arrive is heard only
+  after the phone's buffer runs out (up to 30 s for mp3). That is fixed by
+  silencing the phone on pause and rejoining the live stream on play.
 
-1. **Queue tab rows keep their artist/album links**, exactly as the Now Playing
-   mini-queue does. A tap on the row plays; a tap on the underlined text still
-   navigates. The alternative, Spotify's plain rows with navigation only in the
-   context menu, is described in item 1 and is a one-line change if preferred.
-2. **"Must not change" means what you heard before the transfer is what you hear
-   after.** Consume, ReplayGain and crossfade (plus repeat/random/single and
-   MixRamp) are copied from the source to the target, and the source is left as
-   it was. The other reading, "never touch the target's settings", would make a
-   transfer *change* what you hear whenever the partitions differ. That is the
-   symptom being reported.
-3. **Pausing while streaming to the phone silences the phone immediately**, and
-   resuming reconnects to the live stream rather than playing out a stale
-   buffer. The lock screen and the in-app buttons get the same fix, because the
-   latency is the same.
-4. **The Ogg player reconnects on its own** (bounded, with backoff) when the
-   server closes the stream or the network blips, instead of ending phone
-   streaming at the first `.idle`. It gives up with a message after the retry
-   budget. That keeps v1.7's rule that the toggle never shows "Streaming" over
-   silence indefinitely.
+**FLAC** is always decoded as 48 kHz stereo. MPD sends the source file's rate,
+so 44.1 kHz FLAC plays ~9 % fast, and the rate can change between tracks. The
+fix parses `STREAMINFO`; 44.1, 48 and other rates all work.
 
-## Shared ground
+## Decisions
 
-Items 2 and 4 both touch the phone-streaming section of `MPDStore` and
-`OggStreamPlayer`. Do **4 before 2**: item 2's "flush on pause, reconnect on
-play" needs the Ogg player to have a pause/flush entry point, and item 4 is
-where that player's lifecycle gets rewritten. Items 1 and 3 are independent of
-everything else.
+Settled by you:
+
+1. Queue rows keep their artist/album links, exactly like the mini-queue.
+2. **Consume, ReplayGain and crossfade (and MixRamp) belong to the partition.**
+   A transfer never changes them on the target or the source, and verifies that
+   before and after.
+3. FLAC plays at the source's rate (44.1, 48, …), not just 48.
+
+Still in the plans as the default, confirm or overrule:
+
+4. **Repeat / random / single keep travelling with the queue**, as in v1.7, so a
+   shuffled playlist stays shuffled after moving. The alternative is to make them
+   partition-owned too (item 3, "Open question").
+5. Pausing while streaming to the phone silences it immediately; resuming
+   rejoins the live stream (about 1–2 s wait).
+6. The Ogg player retries a lost stream for about 15 s before giving up with a
+   message.
+
+Questions whose answers sharpen the reproduction, not the fix:
+
+- **Item 2:** during the ten-minute wait, was the music coming from the phone,
+  or from MPD's own speakers?
+- **Item 4:** when it "just stopped" after ten minutes, did the "Listen on
+  phone" toggle turn itself off, or stay on over silence?
+- **Item 5:** the crash's `.ips` file from the phone.
+
+## Order of work
+
+1 → 3 → 5 → 4 → 2. Item 1 and item 3 are independent. Item 5's socket fix is
+tiny and removes a crash from every later device test. Item 4 must come before
+item 2, because item 2 relies on the Ogg player's `suspend()`, its played-back
+timestamps and its reconnect.
 
 ## Out of scope
 
-- Search's "Double-tap to play" footer. The same Spotify argument applies, but
-  it was not reported, and Search rows carry more actions. It is noted in item 1
-  as a follow-up.
-- Lock-screen controls when *not* streaming to the phone. iOS shows controls only
-  for an app that holds an active audio session, so without phone streaming
-  there is nothing to show. This is expected, not a bug.
+- Search's "Double-tap to play" footer (noted in item 1 as a follow-up).
+- Lock-screen controls when *not* streaming to the phone: iOS shows none for an
+  app without an active audio session. This is expected.
 - Vorbis, and any codec setting in the app (unchanged from v1.7).

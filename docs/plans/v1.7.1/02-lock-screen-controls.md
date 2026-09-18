@@ -5,6 +5,42 @@
 > Not completely sure play/pause etc on lock screen work as it should. Yesterday
 > I pressed pause, nothing happened, then I unlocked the screen and it paused.
 
+Clarified, with a second occurrence:
+
+> When I was done listening I tapped pause on the lock screen and waited for like
+> 10 minutes (opus stream) and nothing happened. Directly when I unlocked the
+> screen it paused.
+
+That same day: the app crashed while locked (item 5), and after the restart
+"I listened for about ten minutes and then it just stopped playing" (item 4).
+
+## What the 10-minute case rules in and out
+
+- **It is not buffering (F1 below).** No player holds ten minutes of a live
+  stream. F1 is real, and it explains a pause that takes seconds to be heard. It
+  cannot explain this one.
+- **"Directly when I unlocked" means the command was *held*, not lost.** A
+  command lost to a dead socket (F2) would never pause MPD, not even on unlock.
+  Nothing in `refreshOnForeground` sends a pause. The pause therefore ran at
+  unlock, which means **the handler did not run until the app was running
+  again**.
+- **The app was suspended (F6).** iOS keeps a background-audio app running only
+  while it is *actually producing audio*. The Ogg player can stop producing
+  audio while the app still believes it is streaming: the engine is stopped by
+  an interruption or a configuration change (item 4 O4), or the stream has died.
+  iOS then suspends the app. The lock screen keeps showing mikMPD, because
+  `nowPlayingInfo` and `playbackState = .playing` are still set. A press on that
+  stale widget is held by the system and delivered when the app next runs,
+  which is at unlock. That fits every detail, including "it just stopped
+  playing" earlier the same day, which is the same silent death seen from the
+  other side.
+
+  **To confirm (question for you):** during those ten minutes, was the music
+  coming **from the phone** (headphones or speaker) or from MPD's own speakers?
+  If it was audibly from the phone, the app cannot have been suspended, and the
+  next suspect is `Q` being blocked. Socket I/O is bounded at 5 s, so that would
+  be a new bug.
+
 ## Scope
 
 Lock-screen, Control Center and headphone controls exist **only while streaming
@@ -19,7 +55,7 @@ below is about that path.
 Code: `MPDStore.swift`, `setupRemoteCommands()` (≈2502) and
 `updateNowPlayingInfo()` (≈2569).
 
-### F1 — The phone keeps playing its buffer after MPD pauses (most likely cause)
+### F1 — The phone keeps playing its buffer after MPD pauses (the first report: seconds, not minutes)
 
 A remote pause sends `pause 1` to MPD, and MPD pauses. The phone is a *listener*
 on MPD's httpd output, though, and its player holds audio that MPD has already
@@ -72,7 +108,42 @@ is *stopped*. A headphone button press on a stopped queue does nothing.
 `MPDCommandLog` records the MPD command but not that it came from the lock
 screen. The next "nothing happened" will be just as undiagnosable as this one.
 
+### F6 — A silent stream leaves a live-looking lock screen, and the app gets suspended (the 10-minute report)
+
+`updateNowPlayingInfo()` publishes `playbackState` from **MPD's** state
+(`isPlaying`), not from whether the phone is producing sound. When the Ogg
+player dies silently (item 4 O4/O5), the lock screen goes on saying "playing".
+iOS stops running the app because no audio is being produced, and every
+lock-screen press waits until you unlock. Nothing in the app notices that the
+phone has gone quiet.
+
 ## Changes
+
+### 0. Never present a dead stream as playing (F6)
+
+Most of this lands with item 4. Listed here because it is what fixes the
+10-minute report:
+
+- **Detect silence, don't infer it.** `OggStreamPlayer` records when it last had
+  a buffer *played back* (the `.dataPlayedBack` completion from item 4 A). A
+  pure `oggStreamStalled(lastPlayedBack:now:state:)` is true when the state
+  claims `.playing` but nothing has been played back for more than 3 s. The
+  background poll (every 2 s, on `Q`) asks the player, and a stall is handled as
+  a transient failure: item 4's bounded reconnect (D), then `.failed` → stop
+  phone streaming. The same check makes `isStreamActuallyRendering` truthful.
+- **Stop claiming playback when there is none.** When phone streaming ends for
+  any reason, `tearDownRemoteCommands()` already sets `.stopped` and clears the
+  info. The fix is to make sure a dead stream actually *reaches*
+  `stopPhoneStream()`, which the stall check does. While reconnecting, publish
+  `playbackState = .interrupted`, so the lock screen does not show a confident
+  "playing".
+- Engine stops from interruptions and configuration changes are observed
+  (item 4 C), so the common causes of a silent death go away as well as being
+  detected.
+
+The result: the app is either producing audio, and therefore running, so
+lock-screen presses act immediately; or it has stopped streaming and cleared the
+lock screen, so there is no stale widget to press.
 
 ### 1. Route remote commands through the store, on main
 
@@ -193,6 +264,11 @@ Streaming mp3, then Opus:
       diagnostics log shows the reconnect;
 - [ ] pause for 5 minutes on the lock screen, then play → resumes; the stream was
       not torn down by `handleEnteringBackground`.
+- [ ] F6: Opus streaming, locked; kill the stream from the server side without
+      closing the socket cleanly (disable the httpd output, or pull the MPD
+      host's network cable) → within ~15 s the lock screen either recovers or
+      clears. It never keeps showing "playing" over silence, and a press on it
+      is never held until unlock.
 
 ## Docs
 

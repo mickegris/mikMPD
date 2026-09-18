@@ -6,6 +6,19 @@
 > Worse buffering, once it crashed the app, it has failed to play next song
 > sometimes, one time it just stopped playing. It works but can work better.
 
+Clarified: it crashed while listening with the screen locked, on Wi-Fi (item 5
+has the crash analysis). After the restart, "I listened for about ten minutes and
+then it just stopped playing." A lock-screen pause was then held for ten minutes
+until unlock (item 2, F6). That is the same silent death, seen from the lock
+screen.
+
+**Question for you:** when it "just stopped" after ten minutes, did the "Listen
+on phone" toggle turn itself **off** (maybe with a message), or did it stay
+**on** over silence? Off points to O5: the connection ended and the app gave up
+at once. On points to O4: the engine was stopped under it and nothing noticed.
+The plan fixes both, but the answer tells us which one to reproduce first on the
+device.
+
 ## Context
 
 `OggStreamPlayer` (OggStreamPlayer.swift) replaced nothing. It sits beside
@@ -81,8 +94,9 @@ codec switch, AirPlay, a sample-rate change), **iOS stops the engine**, and:
   open* in the background: the v1.7 bug, back again for Ogg;
 - the next `node.play()` on a stopped engine raises the Objective-C exception
   *"player started when engine not running"*. That is **an uncatchable
-  crash**, and the likeliest explanation for "once it crashed the app". It can
-  be reached from `schedule(_:)` after an underrun, or after O3's re-attach, if
+  crash**, and one of the two candidates for "once it crashed the app". The
+  other is SIGPIPE on the MPD socket (item 5), which fits "locked, on Wi-Fi"
+  slightly better; the crash log decides. It can be reached from `schedule(_:)` after an underrun, or after O3's re-attach, if
   the start threshold is crossed while the engine is down.
 
 `.newDeviceAvailable` already restarts the stream (v1.7). Everything else that
@@ -110,14 +124,29 @@ pause/resume lag.
 
 ### O7 — Smaller issues
 
-- **FLAC assumes 48 kHz stereo.** `STREAMINFO` is not parsed, and MPD's FLAC
-  encoder uses the *source* format, typically 44.1 kHz. 44.1 kHz FLAC would play
-  about 9 % fast and high-pitched. It is stated nowhere in the UI, which claims
-  FLAC works. Parse `STREAMINFO` (the rate is 20 bits at byte offset 18 of the
-  first packet, after the `\x7fFLAC` mapping header and the `fLaC` marker) and
-  build the ASBD from it. This also needs an engine format that follows the
-  source rate: the player node connection takes the decoder's format, so that
-  already works once the decoder's format is right.
+- **FLAC assumes 48 kHz stereo; it must play 44.1 and 48 (and anything else
+  MPD sends).** FLAC itself handles any rate up to 655 kHz; 44.1 and 48 are
+  simply the common ones. `STREAMINFO` is not parsed, and the decoder is always
+  built for 48 kHz stereo. MPD's FLAC encoder sends the **source file's** format
+  unless the httpd output sets `format`. A CD rip (44.1 kHz) would therefore play
+  about 9 % fast and high-pitched, and a 96 kHz file twice as fast. Because the
+  rate follows the file, **it can change at a track boundary**: a new chained
+  bitstream with a new `STREAMINFO`.
+
+  Fix: parse `STREAMINFO` from the first packet. The Ogg FLAC mapping is
+  `0x7F "FLAC"`, a version, a header count, then `"fLaC"` and the 34-byte
+  STREAMINFO block. In that block the sample rate is 20 bits, channels 3 bits
+  (+1) and bits per sample 5 bits (+1), all big-endian from byte 10 of the
+  block. `OggCodec.flac` becomes `.flac(FLACStreamInfo)`, like
+  `.opus(OpusHead)`, and `OggPacketDecoder` builds both the source ASBD and the
+  output `AVAudioFormat` at that rate and channel count. Fix B (engine
+  reconfigured only when the format changes) then handles a 44.1 → 48 track
+  change: the engine is reconfigured *only* at that boundary, and the playback
+  hardware resamples as usual. Opus is unaffected: it always decodes at 48 kHz
+  whatever the source was.
+
+  The server-form copy ("mikMPD can play MP3, Opus and FLAC") stays true, and
+  becomes so for real.
 - **Opus `mFramesPerPacket = 960` is hard-coded.** It is correct for MPD's
   default 20 ms frames. A packet whose TOC says otherwise is decoded by the
   converter per its own TOC, and the output buffer is sized for the 120 ms
@@ -248,6 +277,13 @@ plus `.suspended` for the background check in item 2.
   resume; ended without it → stay.
 - FLAC `STREAMINFO` parse: 44.1 k/stereo, 48 k/stereo and 96 k/mono fixtures,
   built with the recipe in the v1.7 plan's appendix.
+- FLAC decode at 44.1 kHz, like `OggPacketDecoderTests`' Opus tone: a 1 kHz tone
+  encoded at 44.1 k decodes to a 44.1 k buffer, and the zero-crossing count over
+  one second is ~2000, not ~2180 (the "9 % fast" bug).
+- A FLAC chained stream 44.1 k → 48 k → exactly two engine configurations.
+- `oggStreamStalled(lastPlayedBack:now:state:)` (item 2 F6): `.playing` with no
+  playback for more than 3 s → stalled; `.buffering`/`.reconnecting` → never
+  stalled (they are already handling it).
 - The existing `OggPacketDecoderTests` stay green untouched. They are the proof
   that the decode path still produces audio.
 
@@ -267,7 +303,10 @@ Opus stream, iPhone, on Wi-Fi:
 - [ ] Siri, and an alarm, mid-stream → no crash, recovers;
 - [ ] AirPods in/out, AirPlay to a speaker and back → no crash;
 - [ ] restart MPD mid-stream → reconnects within the budget;
-- [ ] FLAC at 44.1 kHz → correct pitch;
+- [ ] FLAC at 44.1 kHz and at 48 kHz → correct pitch for both, including across
+      a track change from one rate to the other;
+- [ ] a 30-minute locked session on Wi-Fi → no crash, no silent stop (the
+      combined reproduction of yesterday's three reports);
 - [ ] mp3: all of the above that apply → unchanged from v1.7.
 
 ## Docs
