@@ -1747,155 +1747,40 @@ final class MPDStore: ObservableObject {
     /// moved, only the connection's partition binding and queue commands. See
     /// plans/move-active-output-hang.md before assuming otherwise.
     func transferQueue(toPartition target: String,
-                       completion: @escaping @MainActor (String?) -> Void) {
-        guard !isTransferringQueue else { completion("A transfer is already in progress"); return }
+                       completion: @escaping @MainActor (TransferResult) -> Void) {
+        guard !isTransferringQueue else {
+            completion(TransferResult(failure: "A transfer is already in progress")); return
+        }
         if let reason = transferRefusalReason(
             queueIsEmpty: queue.isEmpty,
             containsCDTracks: queue.contains { $0.sourceKind == .cd },
             targetPartition: target,
             currentPartition: currentPartition,
             storedPlaylistsAvailable: storedPlaylistsAvailable ?? true) {
-            completion(reason); return
+            completion(TransferResult(failure: reason)); return
         }
 
         let source = currentPartition
         let temp = transferTempPlaylistName()
-        let state: TransferPlaybackState = isPlaying ? .playing : (isPaused ? .paused : .stopped)
-        let pos = playlistPos
-        let at = elapsed
-        let dur = duration
         // Captured here, on main: @Published state must never be read from
-        // inside Q.async.
-        let modes = (rep: repeatMode, rnd: randomMode, sng: singleMode, csm: consumeMode)
+        // inside Q.async. These are only fallbacks — the transfer re-reads the
+        // source's status on Q just before the save.
+        let fallback = TransferFallback(
+            state: isPlaying ? .playing : (isPaused ? .paused : .stopped),
+            pos: playlistPos, elapsed: elapsed, duration: duration)
         isTransferringQueue = true
+        let sock = socket
 
         Q.async { [weak self] in
-            guard let self else { return }
-            var failure: String?
-
-            // Everything after the save must clean the scratch playlist up, on
-            // every path — it lives in the user's playlist directory.
-            func cleanup() {
-                _ = try? self.socket.command("rm \"\(temp.esc)\"")
-            }
-
-            // A target with no enabled outputs is refused before anything
-            // changes. One whose outputs are enabled but whose device is off
-            // cannot be seen from here — waiting for playback below catches that.
-            if state != .stopped, !source.isEmpty {
-                _ = try? self.socket.command("partition \"\(target.esc)\"")
-                let outs = (try? self.socket.command("outputs")) ?? []
-                _ = try? self.socket.command("partition \"\(source.esc)\"")
-                let enabled = outs
-                    .filter { $0["plugin"] != "dummy" && $0["outputenabled"] == "1" }
-                    .compactMap { $0["outputname"] }
-                if let why = transferTargetOutputsRefusal(target: target, enabledOutputs: enabled, willPlay: true) {
-                    DispatchQueue.main.async {
-                        self.isTransferringQueue = false
-                        completion(why)
-                    }
-                    return
-                }
-            }
-
-            // Ground truth for what to resume, read on Q milliseconds before the
-            // save rather than whatever the 10 Hz display timer had interpolated
-            // when the user tapped. `startedAt` then measures how long the
-            // transfer itself takes, so the seek can account for the music that
-            // kept playing during it.
-            var srcPos = pos, srcElapsed = at, srcDuration = dur, srcState = state
-            if let recs = try? self.socket.command("status") {
-                var st: [String: String] = [:]
-                for r in recs { st.merge(r) { _, new in new } }
-                if let v = Int(st["song"] ?? "")        { srcPos = v }
-                if let v = Double(st["elapsed"] ?? "")  { srcElapsed = v }
-                if let v = Double(st["duration"] ?? "") { srcDuration = v }
-                switch st["state"] {
-                case "play":  srcState = .playing
-                case "pause": srcState = .paused
-                case "stop":  srcState = .stopped
-                default: break
-                }
-            }
-            let startedAt = Date()
-
-            do {
-                // A leftover from a previous run under the same name would make
-                // `save` ACK on pre-0.24 servers, which take no replace mode.
-                _ = try? self.socket.command("rm \"\(temp.esc)\"")
-                _ = try self.socket.command("save \"\(temp.esc)\"")
-            } catch {
-                DispatchQueue.main.async {
-                    self.isTransferringQueue = false
-                    completion(Self.ackMessage(error.localizedDescription))
-                }
-                return
-            }
-
-            do {
-                // ---- build the target completely before touching the source ----
-                _ = try self.socket.command("partition \"\(target.esc)\"")
-                _ = try self.socket.command("clear")
-                _ = try self.socket.command("load \"\(temp.esc)\"")
-
-                // The four queue modes describe the queue, so they travel with
-                // it. Volume deliberately does not — it belongs to the target's
-                // own outputs, and carrying it over would blast a room at the
-                // level of a different one.
-                _ = try? self.socket.command("repeat \(modes.rep ? 1 : 0)")
-                _ = try? self.socket.command("random \(modes.rnd ? 1 : 0)")
-                _ = try? self.socket.command("single \(modes.sng ? 1 : 0)")
-                _ = try? self.socket.command("consume \(modes.csm ? 1 : 0)")
-
-                let seekTo = transferCompensatedElapsed(
-                    elapsed: srcElapsed,
-                    transferSeconds: Date().timeIntervalSince(startedAt),
-                    duration: srcDuration,
-                    state: srcState)
-                if let start = transferStartCommand(state: srcState, pos: srcPos, elapsed: seekTo) {
-                    // An `error:` left by an earlier failure in this partition
-                    // would otherwise read as this start failing.
-                    _ = try? self.socket.command("clearerror")
-                    _ = try self.socket.command(start)
-                    // Nothing else is sent until the target is audibly running.
-                    // The source keeps playing meanwhile, so a target whose
-                    // outputs cannot open costs nothing but a message.
-                    if case .failed(let why) = self.waitForTransferTarget() {
-                        _ = try? self.socket.command("stop")
-                        _ = try? self.socket.command("clear")
-                        throw TransferTargetDidNotStart(reason: why)
-                    }
-                    for cmd in transferFinishCommands(state: srcState) {
-                        _ = try self.socket.command(cmd)
-                    }
-                }
-
-                // ---- target is playing; only now stop the source ----
-                if !source.isEmpty {
-                    _ = try? self.socket.command("partition \"\(source.esc)\"")
-                    _ = try? self.socket.command("clear")
-                    _ = try? self.socket.command("stop")
-                }
-                // Follow the music, as Roon does: you transferred it because you
-                // want to keep controlling it.
-                _ = try? self.socket.command("partition \"\(target.esc)\"")
-            } catch let notStarted as TransferTargetDidNotStart {
-                failure = "\(target) could not start playing — its outputs may be switched off.\n\n"
-                    + "MPD said: \(notStarted.reason)\n\nNothing was moved; \(source) is unchanged."
-                if !source.isEmpty { _ = try? self.socket.command("partition \"\(source.esc)\"") }
-            } catch {
-                failure = Self.ackMessage(error.localizedDescription)
-                // Get back to where the user was; the source is untouched.
-                if !source.isEmpty { _ = try? self.socket.command("partition \"\(source.esc)\"") }
-            }
-            cleanup()
-
-            let landedOn = failure == nil ? target : source
+            let result = Self.performTransfer(on: sock, source: source, target: target,
+                                              scratch: temp, fallback: fallback)
             DispatchQueue.main.async {
+                guard let self else { return }
                 self.isTransferringQueue = false
+                let landedOn = result.failure == nil ? target : source
                 self.currentPartition = landedOn
                 self.partitionToRestore = nil
-                if failure == nil {
+                if result.failure == nil {
                     self.rememberPartitionForActiveServer(landedOn)
                     // What a manual switch records. Without it the refresh below
                     // still saw the *source* as the remembered partition, and
@@ -1906,9 +1791,174 @@ final class MPDStore: ObservableObject {
                 self.loadOutputs()
                 self.loadPartitions()
                 self.loadPlaylists()
-                completion(failure)
+                // Show the partition we landed on at once. ReplayGain is read only
+                // on demand (it is not in `status`), and the next poll could be
+                // 3 s away — both used to show the *source's* values for a while,
+                // which read as the transfer having changed them.
+                self.loadReplayGainStatus()
+                self.Q.async { [weak self] in self?.poll() }
+                completion(result)
             }
         }
+    }
+
+    /// What main-thread state said when the user tapped, in case `status` cannot
+    /// be read on Q.
+    nonisolated struct TransferFallback: Sendable {
+        let state: TransferPlaybackState
+        let pos: Int
+        let elapsed: Double
+        let duration: Double
+    }
+
+    /// The whole transfer, on the socket queue. Static and socket-parameterised
+    /// so a live test can drive exactly this sequence against a real server.
+    ///
+    /// Partition-owned settings — consume, crossfade, MixRamp, ReplayGain — are
+    /// never sent to either side. They are snapshotted on both partitions before
+    /// anything changes and checked again afterwards; drift is put back and
+    /// reported, so a transfer can never silently change them.
+    nonisolated static func performTransfer(on socket: MPDSocket, source: String, target: String,
+                                            scratch temp: String,
+                                            fallback: TransferFallback) -> TransferResult {
+        func merged(_ cmd: String) -> [String: String]? {
+            guard let recs = try? socket.command(cmd) else { return nil }
+            var d: [String: String] = [:]
+            for r in recs { d.merge(r) { _, new in new } }
+            return d
+        }
+        func settingsHere() -> PartitionSettings? {
+            guard let st = merged("status") else { return nil }
+            return PartitionSettings(status: st, replayGainStatus: merged("replay_gain_status"))
+        }
+        func bind(_ p: String) -> Bool {
+            !p.isEmpty && (try? socket.command("partition \"\(p.esc)\"")) != nil
+        }
+
+        // A target with no enabled outputs is refused before anything changes.
+        // One whose outputs are enabled but whose device is off cannot be seen
+        // from here — waiting for playback below catches that.
+        if fallback.state != .stopped, !source.isEmpty {
+            _ = bind(target)
+            let outs = (try? socket.command("outputs")) ?? []
+            _ = bind(source)
+            let enabled = outs
+                .filter { $0["plugin"] != "dummy" && $0["outputenabled"] == "1" }
+                .compactMap { $0["outputname"] }
+            if let why = transferTargetOutputsRefusal(target: target, enabledOutputs: enabled, willPlay: true) {
+                return TransferResult(failure: why)
+            }
+        }
+
+        // Ground truth for what to resume, read on Q milliseconds before the save
+        // rather than whatever the 10 Hz display timer had interpolated when the
+        // user tapped. The same read is the source's "before" snapshot.
+        // `startedAt` then measures how long the transfer itself takes, so the
+        // seek can account for the music that kept playing during it.
+        var srcPos = fallback.pos, srcElapsed = fallback.elapsed
+        var srcDuration = fallback.duration, srcState = fallback.state
+        let srcStatus = merged("status")
+        if let st = srcStatus {
+            if let v = Int(st["song"] ?? "")        { srcPos = v }
+            if let v = Double(st["elapsed"] ?? "")  { srcElapsed = v }
+            if let v = Double(st["duration"] ?? "") { srcDuration = v }
+            switch st["state"] {
+            case "play":  srcState = .playing
+            case "pause": srcState = .paused
+            case "stop":  srcState = .stopped
+            default: break
+            }
+        }
+        let srcBefore = srcStatus.map {
+            PartitionSettings(status: $0, replayGainStatus: merged("replay_gain_status"))
+        }
+        let startedAt = Date()
+
+        do {
+            // A leftover from a previous run under the same name would make
+            // `save` ACK on pre-0.24 servers, which take no replace mode.
+            _ = try? socket.command("rm \"\(temp.esc)\"")
+            _ = try socket.command("save \"\(temp.esc)\"")
+        } catch {
+            return TransferResult(failure: ackMessage(error.localizedDescription))
+        }
+
+        let setup = transferTargetSetupCommands(target: target, scratchPlaylist: temp,
+                                                sourceStatus: srcStatus ?? [:])
+        var failure: String?
+        var touchedTarget = false
+        var dstBefore: PartitionSettings?
+        do {
+            // ---- build the target completely before touching the source ----
+            _ = try socket.command(setup.required[0])            // partition <target>
+            touchedTarget = true
+            dstBefore = settingsHere()                           // before anything changes there
+            for cmd in setup.required.dropFirst() { _ = try socket.command(cmd) }
+            // Repeat/random/single travel with the queue; consume does not.
+            for cmd in setup.bestEffort { _ = try? socket.command(cmd) }
+
+            let seekTo = transferCompensatedElapsed(
+                elapsed: srcElapsed,
+                transferSeconds: Date().timeIntervalSince(startedAt),
+                duration: srcDuration,
+                state: srcState)
+            if let start = transferStartCommand(state: srcState, pos: srcPos, elapsed: seekTo) {
+                // An `error:` left by an earlier failure in this partition
+                // would otherwise read as this start failing.
+                _ = try? socket.command("clearerror")
+                _ = try socket.command(start)
+                // Nothing else is sent until the target is audibly running.
+                // The source keeps playing meanwhile, so a target whose
+                // outputs cannot open costs nothing but a message.
+                if case .failed(let why) = waitForTransferTarget(on: socket) {
+                    _ = try? socket.command("stop")
+                    _ = try? socket.command("clear")
+                    throw TransferTargetDidNotStart(reason: why)
+                }
+                for cmd in transferFinishCommands(state: srcState) {
+                    _ = try socket.command(cmd)
+                }
+            }
+
+            // ---- target is playing; only now stop the source ----
+            if bind(source) {
+                _ = try? socket.command("clear")
+                _ = try? socket.command("stop")
+            }
+        } catch let notStarted as TransferTargetDidNotStart {
+            failure = "\(target) could not start playing — its outputs may be switched off.\n\n"
+                + "MPD said: \(notStarted.reason)\n\nNothing was moved; \(source) is unchanged."
+        } catch {
+            failure = ackMessage(error.localizedDescription)
+        }
+        _ = try? socket.command("rm \"\(temp.esc)\"")
+
+        // ---- check both partitions' own settings, and repair any drift ----
+        var notes: [String] = []
+        var summary: [String] = []
+        func verify(_ before: PartitionSettings?, on partition: String, label: String) {
+            guard let before, bind(partition), let after = settingsHere() else {
+                summary.append("\(label) unchecked"); return
+            }
+            let drift = before.drift(to: after)
+            guard !drift.isEmpty else { summary.append("\(label) ok"); return }
+            for cmd in before.restoreCommands(from: after) { _ = try? socket.command(cmd) }
+            let repaired = settingsHere().map { before.drift(to: $0).isEmpty } ?? false
+            if let note = transferSettingsNote(partition: partition, drift: drift, repaired: repaired) {
+                notes.append(note)
+            }
+            summary.append("\(label) \(drift.joined(separator: "+")) \(repaired ? "restored" : "NOT restored")")
+        }
+        if touchedTarget { verify(dstBefore, on: target, label: "dst") }
+        if !source.isEmpty { verify(srcBefore, on: source, label: "src") }
+        MPDCommandLog.shared.record(command: "transfer \(source)→\(target) settings",
+                                    duration: Date().timeIntervalSince(startedAt),
+                                    outcome: summary.joined(separator: ", "))
+
+        // Follow the music on success, as Roon does: you transferred it because
+        // you want to keep controlling it. Otherwise go back to where you were.
+        _ = bind(failure == nil ? target : source)
+        return TransferResult(failure: failure, notes: notes)
     }
 
     /// Persist the partition against the active server profile, so a reconnect
@@ -1927,7 +1977,8 @@ final class MPDStore: ObservableObject {
     /// HDMI receiver — took 1.7 s, and a device waking from standby can take
     /// longer. A timeout only ever delays the failure message; success returns the
     /// moment playback is confirmed, and the source keeps playing throughout.
-    nonisolated private func waitForTransferTarget(timeout: TimeInterval = 8) -> TransferStartOutcome {
+    nonisolated private static func waitForTransferTarget(on socket: MPDSocket,
+                                                          timeout: TimeInterval = 8) -> TransferStartOutcome {
         let deadline = Date().addingTimeInterval(timeout)
         var previous: [String: String]?
         while true {
@@ -2042,6 +2093,10 @@ final class MPDStore: ObservableObject {
                 self.loadQueue()
                 self.loadOutputs()
                 self.loadPartitions()
+                // ReplayGain mode is per partition and not in `status`, so the poll
+                // never refreshes it — without this the button kept showing the
+                // previous partition's mode.
+                self.loadReplayGainStatus()
             }
         }
     }

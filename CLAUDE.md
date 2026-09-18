@@ -74,6 +74,10 @@ Facts confirmed by querying a real server, each of which cost debugging time to 
 - **`xfade` is omitted from `status` when crossfade is 0** (not reported as `xfade: 0`).
   `poll()` handles this with `Int(s["xfade"] ?? "0") ?? 0`; any new status field may be absent
   when it holds its default.
+- **ReplayGain mode is per partition and is not in `status`** — only
+  `replay_gain_status` reports it, so the poll never sees it change. Refresh it
+  explicitly whenever the connection's partition changes. Crossfade and MixRamp
+  are per partition too, but do appear in `status`.
 - **ACK does not always keep the connection alive.** A bad *argument* on a *known* command
   ACKs and leaves the socket usable (`setvol 9999`). Some builds close the TCP connection
   outright for an *unknown* command, which surfaces as a non-ACK I/O error and disconnects.
@@ -188,8 +192,24 @@ fails exactly as `save` does when `playlist_directory` is unset, so availability
 costs no write; `canTransferQueue` is the published mirror. When it is off the app
 **names the setting and the file** rather than hiding the control.
 
-Modes (`repeat`/`random`/`single`/`consume`) travel with the queue because they
-describe it; **volume does not**, since it belongs to the target's outputs. The
+**Consume, crossfade, MixRamp and ReplayGain belong to the partition and never
+travel** — on either side. In MPD each partition has its own player, so all four
+are per partition; v1.7 copied the source's `consume` onto the target, which the
+user saw as the transfer "intermittently" changing settings (only when the two
+partitions differed). The app also read ReplayGain only on connect, so after
+following the music the button showed the *source's* mode — `switchPartition` and
+the transfer now refresh it. `performTransfer` snapshots both partitions'
+`PartitionSettings` before anything changes and checks them afterwards; drift is
+put back and reported in `TransferResult.notes`, and the outcome is logged to
+`MPDCommandLog`. `transferTargetSetupCommands` is pure so a test can pin that no
+partition-owned command is ever sent. **Repeat, random and single do travel**,
+read raw from the source's `status` on `Q` (so `single oneshot` survives),
+because they describe how this queue is played — a shuffled playlist stays
+shuffled. **Volume does not**, since it belongs to the target's outputs.
+The whole Q-side sequence is `MPDStore.performTransfer(on:…)`, static and
+socket-parameterised so the live test (`LiveTransferSettingsTests`, between two
+throwaway output-less partitions with the source stopped — nothing plays) drives
+exactly what the app runs. The
 app follows to the target afterwards — **and must record it the way a manual
 switch does** (`lastUsedPartitionName`, when "Remember partitions" is on).
 Without that, the refresh that follows still sees the source as remembered and

@@ -256,3 +256,134 @@ import Foundation
                                            duration: 300, state: .playing) == 100.05)
     }
 }
+
+/// Consume, crossfade, MixRamp and ReplayGain belong to the partition. A transfer
+/// must leave them alone on both sides — v1.7 copied the source's consume onto
+/// the target, which is what the user noticed.
+@Suite struct PartitionSettingsTests {
+    private func settings(_ status: [String: String], gain: String? = "off") -> PartitionSettings {
+        PartitionSettings(status: status, replayGainStatus: gain.map { ["replay_gain_mode": $0] })
+    }
+
+    @Test func absentXfadeMeansZero() {
+        #expect(settings(["consume": "1"]).crossfade == 0)
+        #expect(settings(["xfade": "5"]).crossfade == 5)
+    }
+
+    @Test func oneshotConsumeIsKeptRaw() {
+        #expect(settings(["consume": "oneshot"]).consume == "oneshot")
+    }
+
+    @Test func nanMixrampDelayMeansOff() {
+        #expect(settings(["mixrampdelay": "nan"]).mixrampDelay == nil)
+        #expect(settings([:]).mixrampDelay == nil)
+        #expect(settings(["mixrampdelay": "2.5"]).mixrampDelay == 2.5)
+    }
+
+    @Test func replayGainComesFromItsOwnRecord() {
+        #expect(settings([:], gain: "album").replayGainMode == "album")
+        #expect(settings([:], gain: nil).replayGainMode == nil)
+    }
+
+    @Test func noDriftWhenEqual() {
+        let a = settings(["consume": "1", "xfade": "5", "mixrampdb": "0.000000"], gain: "track")
+        #expect(a.drift(to: a).isEmpty)
+        #expect(a.restoreCommands(from: a).isEmpty)
+    }
+
+    @Test func driftNamesEveryChangedSettingInAFixedOrder() {
+        let before = settings(["consume": "1", "xfade": "5"], gain: "track")
+        let after = settings(["consume": "0"], gain: "off")
+        #expect(before.drift(to: after) == ["Consume", "Crossfade", "ReplayGain"])
+    }
+
+    @Test func restoreSendsOnlyTheDriftedSettings() {
+        let before = settings(["consume": "1", "xfade": "5"], gain: "track")
+        let after = settings(["consume": "0", "xfade": "5"], gain: "track")
+        #expect(before.restoreCommands(from: after) == ["consume 1"])
+    }
+
+    @Test func restoreQuotesTheReplayGainMode() {
+        let before = settings([:], gain: "album")
+        let after = settings([:], gain: "off")
+        #expect(before.restoreCommands(from: after) == ["replay_gain_mode \"album\""])
+    }
+
+    @Test func restoringMixrampOffSendsNan() {
+        let before = settings(["mixrampdb": "0"])
+        let after = settings(["mixrampdb": "0", "mixrampdelay": "3"])
+        #expect(before.restoreCommands(from: after) == ["mixrampdb 0.0", "mixrampdelay nan"])
+    }
+
+    /// An unreadable ReplayGain mode is never "restored" to nothing.
+    @Test func unknownReplayGainIsNeverDrift() {
+        let before = settings([:], gain: nil)
+        let after = settings([:], gain: "album")
+        #expect(before.drift(to: after).isEmpty)
+        #expect(after.drift(to: before).isEmpty)
+    }
+
+    /// A float written back must not read as drift because of its last decimal.
+    @Test func floatsCompareWithTolerance() {
+        let before = settings(["mixrampdb": "-17.5"])
+        let after = settings(["mixrampdb": "-17.500000"])
+        #expect(before.drift(to: after).isEmpty)
+    }
+
+    @Test func notesNameThePartitionAndOutcome() {
+        #expect(transferSettingsNote(partition: "Kitchen", drift: [], repaired: true) == nil)
+        #expect(transferSettingsNote(partition: "Kitchen", drift: ["Consume"], repaired: true)
+                == "Kitchen: Consume changed during the move and was put back.")
+        #expect(transferSettingsNote(partition: "Kitchen", drift: ["Consume", "Crossfade"], repaired: false)
+                == "Kitchen: Consume, Crossfade changed during the move and could not be put back.")
+    }
+}
+
+@Suite struct TransferTargetSetupTests {
+    private let status = ["repeat": "1", "random": "1", "single": "oneshot", "consume": "1",
+                          "xfade": "5", "mixrampdb": "0", "state": "play"]
+
+    /// The regression test for the reported bug: nothing partition-owned is sent.
+    @Test func neverSendsPartitionOwnedSettings() {
+        let setup = transferTargetSetupCommands(target: "Kitchen", scratchPlaylist: ".mikmpd-transfer-1",
+                                                sourceStatus: status)
+        for cmd in setup.required + setup.bestEffort {
+            for owned in ["consume", "crossfade", "mixramp", "replay_gain"] {
+                #expect(!cmd.hasPrefix(owned), "sent \(cmd)")
+            }
+        }
+    }
+
+    @Test func buildsTheTargetBeforeAnythingElse() {
+        let setup = transferTargetSetupCommands(target: "Kit\"chen", scratchPlaylist: ".mikmpd-transfer-1",
+                                                sourceStatus: status)
+        #expect(setup.required == ["partition \"Kit\\\"chen\"", "clear", "load \".mikmpd-transfer-1\""])
+    }
+
+    /// Repeat/random/single travel with the queue, raw — so oneshot survives.
+    @Test func queueModesTravelRaw() {
+        #expect(transferQueueModeCommands(sourceStatus: status) == ["repeat 1", "random 1", "single oneshot"])
+    }
+
+    @Test func missingModesAreNotInvented() {
+        #expect(transferQueueModeCommands(sourceStatus: [:]).isEmpty)
+    }
+}
+
+@Suite struct TransferResultTests {
+    @Test func cleanMoveNeedsNoAlert() {
+        #expect(!TransferResult().needsAttention)
+    }
+
+    @Test func notesAloneReportAMove() {
+        let r = TransferResult(notes: ["Kitchen: Consume changed during the move and was put back."])
+        #expect(r.needsAttention)
+        #expect(r.alertTitle == "Playback Moved")
+    }
+
+    @Test func failureLeadsTheMessage() {
+        let r = TransferResult(failure: "No.", notes: ["A note."])
+        #expect(r.alertTitle == "Could Not Move Playback")
+        #expect(r.alertMessage == "No.\n\nA note.")
+    }
+}

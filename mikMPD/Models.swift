@@ -761,6 +761,145 @@ nonisolated func transferTargetOutputsRefusal(target: String, enabledOutputs: [S
     return "\(target) has no enabled outputs, so nothing could play there."
 }
 
+/// The playback settings that belong to a *partition*, not to the queue, and
+/// that a transfer must therefore leave alone on both sides.
+///
+/// In MPD each partition has its own player, so crossfade, MixRamp and the
+/// ReplayGain mode are per partition — and so is consume, which v1.7 wrongly
+/// copied from the source onto the target. The user's rule: if the destination
+/// has consume on, track gain and a crossfade, they are still there afterwards,
+/// and the source is not touched either. `transferQueue` snapshots both
+/// partitions before and after, and repairs any drift it finds.
+nonisolated struct PartitionSettings: Equatable {
+    /// Raw: "0", "1" or (MPD 0.24) "oneshot" — never collapsed to a Bool.
+    var consume: String
+    /// Seconds. `xfade` is *absent* from `status` when crossfade is 0.
+    var crossfade: Int
+    /// nil when absent from `status`.
+    var mixrampDB: Double?
+    /// nil when absent or "nan" — MPD's way of saying MixRamp is off.
+    var mixrampDelay: Double?
+    /// From `replay_gain_status` (it is not in `status`); nil when that could
+    /// not be read, in which case it is left out of every comparison and repair
+    /// rather than "restored" to nothing.
+    var replayGainMode: String?
+
+    init(consume: String, crossfade: Int, mixrampDB: Double?, mixrampDelay: Double?,
+         replayGainMode: String?) {
+        self.consume = consume
+        self.crossfade = crossfade
+        self.mixrampDB = mixrampDB
+        self.mixrampDelay = mixrampDelay
+        self.replayGainMode = replayGainMode
+    }
+
+    init(status: [String: String], replayGainStatus: [String: String]?) {
+        consume = status["consume"] ?? "0"
+        crossfade = Int(status["xfade"] ?? "0") ?? 0
+        mixrampDB = status["mixrampdb"].flatMap(Double.init).flatMap { $0.isNaN ? nil : $0 }
+        mixrampDelay = status["mixrampdelay"].flatMap(Double.init).flatMap { $0.isNaN ? nil : $0 }
+        replayGainMode = replayGainStatus?["replay_gain_mode"]
+    }
+
+    private enum Field: CaseIterable { case consume, crossfade, mixramp, replayGain }
+
+    private func differs(_ f: Field, _ other: PartitionSettings) -> Bool {
+        switch f {
+        case .consume:   return consume != other.consume
+        case .crossfade: return crossfade != other.crossfade
+        case .mixramp:
+            return !Self.same(mixrampDB, other.mixrampDB) || !Self.same(mixrampDelay, other.mixrampDelay)
+        case .replayGain:
+            guard let a = replayGainMode, let b = other.replayGainMode else { return false }
+            return a != b
+        }
+    }
+
+    /// Compared with a tolerance: MPD prints floats, and a value written back
+    /// must not read as drift because of its last decimal.
+    private static func same(_ a: Double?, _ b: Double?) -> Bool {
+        switch (a, b) {
+        case (nil, nil): true
+        case let (x?, y?): abs(x - y) < 0.001
+        default: false
+        }
+    }
+
+    private static func name(_ f: Field) -> String {
+        switch f {
+        case .consume: "Consume"
+        case .crossfade: "Crossfade"
+        case .mixramp: "MixRamp"
+        case .replayGain: "ReplayGain"
+        }
+    }
+
+    /// Names of the settings that differ between `self` (before) and `after`,
+    /// in a fixed order, for messages and the log.
+    func drift(to after: PartitionSettings) -> [String] {
+        Field.allCases.filter { differs($0, after) }.map(Self.name)
+    }
+
+    /// Commands that put a partition back to `self`, for the drifted fields only.
+    func restoreCommands(from after: PartitionSettings) -> [String] {
+        var cmds: [String] = []
+        for f in Field.allCases where differs(f, after) {
+            switch f {
+            case .consume:   cmds.append("consume \(consume)")
+            case .crossfade: cmds.append("crossfade \(crossfade)")
+            case .mixramp:
+                if let db = mixrampDB { cmds.append("mixrampdb \(db)") }
+                cmds.append(mixrampDelay.map { "mixrampdelay \($0)" } ?? "mixrampdelay nan")
+            case .replayGain:
+                if let m = replayGainMode { cmds.append("replay_gain_mode \"\(m.esc)\"") }
+            }
+        }
+        return cmds
+    }
+}
+
+/// The queue modes that *do* travel with the queue — repeat, random and single
+/// describe how this queue is played, so a shuffled playlist stays shuffled in
+/// the new room. Read from the source's `status` on the socket queue (not from
+/// main-thread state, which lags a poll), and sent raw, so `single oneshot`
+/// survives. Consume is deliberately absent: it belongs to the partition.
+nonisolated func transferQueueModeCommands(sourceStatus st: [String: String]) -> [String] {
+    [("repeat", st["repeat"]), ("random", st["random"]), ("single", st["single"])]
+        .compactMap { key, value in value.map { "\(key) \($0)" } }
+}
+
+/// Everything the target is sent before playback starts, in order. The first
+/// three must succeed; the mode commands are best-effort. Pure so a test can pin
+/// that no partition-owned setting (consume, crossfade, MixRamp, ReplayGain)
+/// is ever in it.
+nonisolated func transferTargetSetupCommands(target: String, scratchPlaylist: String,
+                                             sourceStatus: [String: String])
+    -> (required: [String], bestEffort: [String]) {
+    (["partition \"\(target.esc)\"", "clear", "load \"\(scratchPlaylist.esc)\""],
+     transferQueueModeCommands(sourceStatus: sourceStatus))
+}
+
+/// Outcome of a transfer, for the UI. `failure` means nothing moved; `notes`
+/// are things worth telling the user either way — a partition setting that
+/// changed during the move and was put back (or could not be).
+nonisolated struct TransferResult: Equatable {
+    var failure: String?
+    var notes: [String] = []
+
+    var needsAttention: Bool { failure != nil || !notes.isEmpty }
+    var alertTitle: String { failure != nil ? "Could Not Move Playback" : "Playback Moved" }
+    var alertMessage: String { ([failure].compactMap { $0 } + notes).joined(separator: "\n\n") }
+}
+
+/// Note for one partition whose settings drifted during a transfer.
+nonisolated func transferSettingsNote(partition: String, drift: [String], repaired: Bool) -> String? {
+    guard !drift.isEmpty else { return nil }
+    let what = drift.joined(separator: ", ")
+    return repaired
+        ? "\(partition): \(what) changed during the move and was put back."
+        : "\(partition): \(what) changed during the move and could not be put back."
+}
+
 /// What the Move Playback sheet shows for one partition.
 nonisolated struct PartitionSummary: Identifiable, Equatable {
     let name: String

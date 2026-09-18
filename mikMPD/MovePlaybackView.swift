@@ -9,7 +9,7 @@ struct MovePlaybackSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var summaries: [PartitionSummary] = []
     @State private var loading = true
-    @State private var failure: String?
+    @State private var result: TransferResult?
 
     private var targets: [PartitionSummary] {
         summaries.filter { $0.name != store.currentPartition }
@@ -63,12 +63,12 @@ struct MovePlaybackSheet: View {
                     ToolbarItem(placement: .confirmationAction) { ProgressView() }
                 }
             }
-            .alert("Could Not Move Playback",
-                   isPresented: Binding(get: { failure != nil },
-                                        set: { if !$0 { failure = nil } })) {
-                Button("OK", role: .cancel) { failure = nil }
+            .alert(result?.alertTitle ?? "",
+                   isPresented: Binding(get: { result != nil },
+                                        set: { if !$0 { closeAfterAlert() } })) {
+                Button("OK", role: .cancel) { closeAfterAlert() }
             } message: {
-                Text(failure ?? "")
+                Text(result?.alertMessage ?? "")
             }
             .onAppear {
                 store.loadPartitionSummaries { summaries = $0; loading = false }
@@ -78,9 +78,17 @@ struct MovePlaybackSheet: View {
     }
 
     private func move(to target: String) {
-        store.transferQueue(toPartition: target) { error in
-            if let error { failure = error } else { dismiss() }
+        store.transferQueue(toPartition: target) { outcome in
+            if outcome.needsAttention { result = outcome } else { dismiss() }
         }
+    }
+
+    /// A moved queue with a note still closes the sheet once the note is read;
+    /// a failure leaves it open so another partition can be chosen.
+    private func closeAfterAlert() {
+        let moved = result?.failure == nil
+        result = nil
+        if moved { dismiss() }
     }
 }
 
