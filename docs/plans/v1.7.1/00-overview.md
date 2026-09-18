@@ -13,6 +13,17 @@ numbered findings, so each fix can be traced to a line of code.
 | 5 | Crash while streaming with the screen locked | [05-background-crash.md](05-background-crash.md) | Unit test for the socket fix (no crash log survived) |
 | 6 | Energy: the whole app re-renders at 10 Hz; the Albums list regroups ~820 albums each time | [06-energy.md](06-energy.md) | Device, **Release** build, Xcode CPU/Energy gauges |
 
+> **Status: all six implemented on branch `v1.7.1` (build 41).** 593 unit tests
+> pass, plus live tests against the real server: transfer settings (both
+> directions, three rounds, and a proof run with the v1.7 bug put back, which
+> the check caught and repaired every time), and the Ogg player end to end
+> (muted): play, suspend and resume, a dead server retried four times then
+> reported, and five track changes giving six bitstreams on **one** engine
+> configuration. Two findings went beyond the plans. **Ogg FLAC never played
+> in 1.7.0**: frames-per-packet 0 is refused by `AudioConverterNew`. **Bitrate
+> is gone** at the user's request, and the audio format is shown readably.
+> What still needs a device is TESTING.md §24.
+
 ## Version and branch
 
 - **Version:** `MARKETING_VERSION` 1.7.0 → **1.7.1**, `CURRENT_PROJECT_VERSION`

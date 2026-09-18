@@ -54,11 +54,15 @@ That same day: the app crashed while locked (item 5), and after the restart
   nicety, and must be verified on a device after at least 2 minutes paused and
   locked.
 
-  **To confirm (question for you):** during those ten minutes, was the music
-  coming **from the phone** (headphones or speaker) or from MPD's own speakers?
-  If it was audibly from the phone, the app cannot have been suspended, and the
-  next suspect is `Q` being blocked. Socket I/O is bounded at 5 s, so that would
-  be a new bug.
+  **Answered: the music was coming from the phone, in headphones.** So the app
+  was running and suspension is ruled out for this case. It remains
+  unexplained: nothing on `Q` can block for minutes (socket I/O is bounded at
+  5 s). The implementation therefore makes the symptom impossible rather than
+  guessing at its cause. A lock-screen pause now silences the phone locally
+  and immediately, whatever becomes of the command. The command is sent on a
+  connection known to be alive. And each remote command is logged with **how
+  long it waited on `Q`**, which is the number that would explain a press
+  held until unlock if it ever happens again (turn Diagnostics on).
 
 ## Scope
 

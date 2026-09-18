@@ -310,3 +310,60 @@ Needs a stored playlist containing a file that has since been moved or deleted
       wrong song)
 - [ ] The footer mentions how many files are missing
 - [ ] A playlist with no missing files looks exactly as before
+
+## 24. v1.7.1 fixes
+
+**Queue tab.** Simulator is enough.
+
+- [ ] Tap a row (title, number or duration) → that song plays, with the accent
+      flash and no double-tap delay
+- [ ] Tap the underlined artist / album → navigates, does not play
+- [ ] Edit → tapping rows does nothing; reorder and delete still work
+
+**Transfer settings.** Two partitions with *different* consume, ReplayGain and
+crossfade. The live test `LiveTransferSettingsTests` covers the protocol; this is
+the app.
+
+- [ ] A (consume off, RG off, crossfade 0) → B (consume on, RG track,
+      crossfade 5): Now Playing shows B's values immediately — no flicker
+      through A's — and the next track change crossfades
+- [ ] Switch back to A manually: A's values, unchanged; the ReplayGain button
+      follows the partition switch
+- [ ] Move B → A: mirrored
+- [ ] Diagnostics on: each move logs `transfer A→B settings: dst ok, src ok`
+
+**Energy.** A **Release** build on a device, Xcode's Debug Navigator open.
+
+- [ ] Albums tab while music plays: CPU near 0–2 % at rest, no 10 Hz sawtooth
+- [ ] Energy Impact "Low" on the Albums tab and on Now Playing with lyrics open
+- [ ] Seek bar and synced lyrics exactly as smooth as before
+- [ ] The audio format line reads e.g. "44.1 kHz · 16-bit · stereo"; no bitrate
+
+**Phone streaming, Opus and mp3.** A device, locked where it says so.
+Diagnostics on, so the command log records remote commands.
+
+- [ ] Lock, press pause → silent within ~0.5 s; the lock-screen button flips at once
+- [ ] Press play → music within ~2 s, at MPD's position (compare another
+      client), not where the phone stopped
+- [ ] Pause from another client (`mpc pause`) → the phone goes quiet within ~2 s
+- [ ] Stop MPD from another client, press the headphone button → it plays
+- [ ] **Paused and locked for 5 minutes, then play on the lock screen** → it
+      resumes (the app was suspended and MPD dropped the socket: this is the
+      wake-and-reconnect path) and does not crash
+- [ ] While paused and locked: no stream traffic (Xcode's Network gauge flat)
+- [ ] Start "Listen on phone" while MPD is paused → quiet; press play → sound
+- [ ] Twenty skips in a row → every song starts; no cut-off tails
+- [ ] Three songs play through by themselves → no gap between them
+- [ ] Walk to the edge of Wi-Fi → one clean "buffering" gap, then it recovers,
+      not stutter
+- [ ] Wi-Fi off 5 s → reconnects by itself; off 30 s → stops with a message,
+      and the toggle is off
+- [ ] Restart MPD mid-stream → reconnects within ~15 s
+- [ ] A phone call, declined → streaming resumes; taken and ended → resumes or
+      waits for lock-screen play, as iOS says
+- [ ] Siri and an alarm mid-stream; AirPods in/out; AirPlay there and back → no
+      crash, and it recovers
+- [ ] FLAC output (`http flac`) at 44.1 kHz and at 48 kHz → correct pitch both,
+      including across a track change between them (FLAC never played in 1.7.0)
+- [ ] **30 minutes locked, on Wi-Fi** → no crash, no silent stop
+
