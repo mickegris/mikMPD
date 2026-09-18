@@ -23,6 +23,11 @@ typealias MPDRecord = [String: String]
 // access after init happens on MPDStore's serial queue Q (see CLAUDE.md).
 nonisolated final class MPDSocket: @unchecked Sendable {
     private(set) var connected = false
+    /// When the connection last completed a command. MPD drops clients idle for
+    /// longer than its `connection_timeout`, so a long-quiet socket is suspect
+    /// even while `connected` is still true (see `mpdConnectionNeedsRefresh`).
+    private(set) var lastActivity = Date.distantPast
+    var idleSeconds: TimeInterval { Date().timeIntervalSince(lastActivity) }
     private var fd: Int32 = -1
     private var buf = Data()
 
@@ -42,6 +47,7 @@ nonisolated final class MPDSocket: @unchecked Sendable {
             if resp.first?.hasPrefix("ACK") == true { disconnect(); throw MPDError.authFailed }
         }
         connected = true
+        lastActivity = Date()
     }
 
     func disconnect() {
@@ -59,6 +65,7 @@ nonisolated final class MPDSocket: @unchecked Sendable {
         do {
             try send(cmd + "\n")
             let records = try readRecords()
+            lastActivity = Date()
             MPDCommandLog.shared.record(command: cmd,
                                         duration: Date().timeIntervalSince(started),
                                         outcome: "ok (\(records.count) records)")
@@ -87,6 +94,7 @@ nonisolated final class MPDSocket: @unchecked Sendable {
         do {
             try send(cmd + "\n")
             let lines = try readUntilOK()
+            lastActivity = Date()
             if lines.first?.hasPrefix("ACK") == true { throw MPDError.ack(lines[0]) }
             MPDCommandLog.shared.record(command: cmd,
                                         duration: Date().timeIntervalSince(started),

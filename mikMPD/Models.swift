@@ -769,6 +769,48 @@ nonisolated func nowPlayingInfoNeedsUpdate(last: NowPlayingInfoSnapshot?, lastEl
     return abs(elapsed - expected) > tolerance
 }
 
+/// A lock-screen, Control Center or headphone command.
+nonisolated enum PhoneRemoteCommand: String, Equatable {
+    case play, pause, toggle, next, previous
+}
+
+/// The MPD command for a remote command given what MPD is doing, or nil when
+/// there is nothing to do. State-aware on purpose: a bare `pause` (what v1.7
+/// sent for the headphone toggle) does nothing on a *stopped* player, and a
+/// lock-screen "pause" must never become a resume because local state was stale
+/// — hence explicit `pause 1` / `pause 0`, never the flip-flop form.
+nonisolated func remoteCommandMPD(_ command: PhoneRemoteCommand, isPlaying: Bool, isPaused: Bool) -> String? {
+    switch command {
+    case .play:     isPlaying ? nil : (isPaused ? "pause 0" : "play")
+    case .pause:    isPlaying || isPaused ? "pause 1" : nil
+    case .toggle:   isPlaying ? "pause 1" : (isPaused ? "pause 0" : "play")
+    case .next:     "next"
+    case .previous: "previous"
+    }
+}
+
+/// Whether MPD will be playing after `command`, for the optimistic update — nil
+/// for commands that do not change play state.
+nonisolated func remoteCommandResultIsPlaying(_ command: PhoneRemoteCommand, isPlaying: Bool) -> Bool? {
+    switch command {
+    case .play:     true
+    case .pause:    false
+    case .toggle:   !isPlaying
+    case .next, .previous: nil
+    }
+}
+
+/// Whether the MPD connection should be re-established before a command is sent
+/// on it. MPD drops idle clients after `connection_timeout` (60 s by default), and
+/// a phone that iOS suspended while paused wakes for a lock-screen press with a
+/// socket that still *looks* connected — sending on it costs a 5 s read timeout
+/// before failing. Reconnecting first when it has been quiet for a while is
+/// cheaper than finding out.
+nonisolated func mpdConnectionNeedsRefresh(connected: Bool, idleSeconds: TimeInterval,
+                                           threshold: TimeInterval = 45) -> Bool {
+    !connected || idleSeconds > threshold
+}
+
 // MARK: - Queue transfer between partitions
 
 /// What the source partition was doing, so the target can be put back into it.

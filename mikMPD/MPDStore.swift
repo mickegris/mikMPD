@@ -35,7 +35,11 @@ final class MPDStore: ObservableObject {
 
     // Playback primitives — view reads these directly
     @Published var duration:    Double = 0
-    @Published var isPlaying:   Bool   = false
+    @Published var isPlaying:   Bool   = false {
+        // The phone follows MPD's play state the moment it changes — from this
+        // app's buttons, the lock screen, or another client via the poll.
+        didSet { if isPlaying != oldValue { phoneStreamFollowMPD() } }
+    }
     @Published var isPaused:    Bool   = false
     @Published var volume:      Int    = 80
     @Published var repeatMode:  Bool   = false
@@ -2505,11 +2509,14 @@ final class MPDStore: ObservableObject {
     }
 
     private func startSystemPlayer(url: URL) {
-        let item = AVPlayerItem(url: url)
-        item.preferredForwardBufferDuration = 30  // buffer 30s ahead for poor connections
-        let player = AVPlayer(playerItem: item)
+        let player = AVPlayer()
         player.automaticallyWaitsToMinimizeStalling = true
         streamPlayer = player
+        // MPD not playing: stay quiet, and closed, until it is.
+        guard isPlaying else { phoneStreamSuspended = true; return }
+        let item = AVPlayerItem(url: url)
+        item.preferredForwardBufferDuration = 30  // buffer 30s ahead for poor connections
+        player.replaceCurrentItem(with: item)
         player.play()
     }
 
@@ -2520,12 +2527,16 @@ final class MPDStore: ObservableObject {
             guard let self, self.oggPlayerToken == token else { return }   // stale player
             self.oggState = state
             if case .failed(let message) = state { self.phoneStreamError = message }
-            // `.idle` counts too: it is how a server closing the connection
-            // arrives. Reacting to `.failed` alone left "Streaming to phone" on
-            // screen over silence, with the audio session still held.
-            if state.endsPhoneStream { self.stopPhoneStream() }
+            // `.failed` arrives once the reconnect budget is spent; `.idle` only
+            // after an explicit stop. Either way, never "Streaming to phone" over
+            // silence with the audio session still held.
+            if state.endsPhoneStream { self.stopPhoneStream(); return }
+            // Keep the lock screen honest about a stream that is coming back.
+            self.updateNowPlayingInfo()
         }
         oggPlayer = player
+        // MPD not playing: stay quiet, and closed, until it is.
+        guard isPlaying else { phoneStreamSuspended = true; return }
         player.start(url: url)
     }
 
@@ -2593,6 +2604,17 @@ final class MPDStore: ObservableObject {
         }
     }
 
+    /// MPD's play state changed. Pausing used to leave the phone playing out
+    /// whatever it had buffered — up to 30 s for mp3 — which read as a lock-screen
+    /// pause being ignored; resuming then played stale audio before reaching MPD's
+    /// live point. Now a pause silences the phone at once and lets go of the
+    /// stream (while paused, MPD's httpd output only sends encoded silence — no
+    /// reason to receive, decode and play it), and play rejoins it live.
+    private func phoneStreamFollowMPD() {
+        guard isPhoneStreaming else { return }
+        if isPlaying { resumePhoneStreamPlayer() } else { suspendPhoneStreamPlayer() }
+    }
+
     /// Go quiet without switching phone streaming off: let go of the stream so a
     /// silent phone uses no network or audio power.
     func suspendPhoneStreamPlayer() {
@@ -2605,9 +2627,10 @@ final class MPDStore: ObservableObject {
         }
     }
 
-    /// Rejoin the live stream — never resume a buffer that is behind MPD.
+    /// Rejoin the live stream — never resume a buffer that is behind MPD. Only
+    /// while MPD is playing: an interruption ending over a paused MPD stays quiet.
     func resumePhoneStreamPlayer() {
-        guard isPhoneStreaming, phoneStreamSuspended,
+        guard isPhoneStreaming, phoneStreamSuspended, isPlaying,
               let url = Self.parseStreamURL(httpStreamURL) else { return }
         phoneStreamSuspended = false
         try? AVAudioSession.sharedInstance().setActive(true)
@@ -2665,29 +2688,91 @@ final class MPDStore: ObservableObject {
     private func setupRemoteCommands() {
         tearDownRemoteCommands()
         let center = MPRemoteCommandCenter.shared()
-        let q = self.Q
-        let sock = self.socket
-        center.playCommand.addTarget { @Sendable _ in
-            q.async { _ = try? sock.command("play") }
-            return .success
-        }
-        center.pauseCommand.addTarget { @Sendable _ in
-            q.async { _ = try? sock.command("pause 1") }
-            return .success
-        }
-        center.togglePlayPauseCommand.addTarget { @Sendable _ in
-            q.async { _ = try? sock.command("pause") }
-            return .success
-        }
-        center.nextTrackCommand.addTarget { @Sendable _ in
-            q.async { _ = try? sock.command("next") }
-            return .success
-        }
-        center.previousTrackCommand.addTarget { @Sendable _ in
-            q.async { _ = try? sock.command("previous") }
-            return .success
+        // Through the store, on main — not straight to the socket as v1.7 did,
+        // which skipped the optimistic state, the lock-screen update and every
+        // check. MediaPlayer calls these on its own terms; the closures stay
+        // @Sendable and hop explicitly, since a MainActor-inferred closure traps
+        // if invoked elsewhere (see PhoneStreamTests).
+        let targets: [(MPRemoteCommand, PhoneRemoteCommand)] = [
+            (center.playCommand, .play), (center.pauseCommand, .pause),
+            (center.togglePlayPauseCommand, .toggle),
+            (center.nextTrackCommand, .next), (center.previousTrackCommand, .previous),
+        ]
+        for (remote, command) in targets {
+            remote.addTarget { @Sendable [weak self] _ in
+                guard let self else { return .commandFailed }
+                Task { @MainActor in self.handleRemote(command) }
+                return .success
+            }
         }
         center.changePlaybackPositionCommand.isEnabled = false
+    }
+
+    /// One lock-screen / headphone command. The phone reacts at once — a pause
+    /// is silent immediately, whatever happens to the command — and the command
+    /// reaches MPD on a connection that is known to be alive.
+    func handleRemote(_ command: PhoneRemoteCommand) {
+        let received = Date()
+        guard let cmd = remoteCommandMPD(command, isPlaying: isPlaying, isPaused: isPaused) else {
+            MPDCommandLog.shared.record(command: "remote: \(command.rawValue)", duration: 0,
+                                        outcome: "nothing to do")
+            return
+        }
+        if let playing = remoteCommandResultIsPlaying(command, isPlaying: isPlaying) {
+            // Optimistic, like togglePlay. Longer lock than a tap: this may be
+            // about to reconnect first.
+            stateLockUntil = Date().addingTimeInterval(2)
+            isPaused = !playing && (isPlaying || isPaused)
+            isPlaying = playing                        // → phoneStreamFollowMPD
+            updateNowPlayingInfo()
+        }
+        let h = host, p = port, pw = password, partition = currentPartition
+        Q.async { [weak self] in
+            guard let self else { return }
+            let waited = Date().timeIntervalSince(received)
+            let outcome = self.sendEnsuringConnection(cmd, host: h, port: p, password: pw,
+                                                      partition: partition)
+            // How long the command sat in the queue is the number that would
+            // explain a press that seemed to be held until unlock.
+            MPDCommandLog.shared.record(command: "remote: \(command.rawValue) → \(cmd)",
+                                        duration: Date().timeIntervalSince(received),
+                                        outcome: String(format: "queued %.2f s; %@", waited, outcome))
+            self.poll()
+        }
+    }
+
+    /// Send one command, reconnecting first if the socket is down or has been
+    /// quiet long enough for MPD to have dropped it, and once more if it fails.
+    /// For lock-screen commands, where there is no banner to show a failure on
+    /// and a press that silently does nothing is the bug being fixed.
+    nonisolated private func sendEnsuringConnection(_ cmd: String, host: String, port: Int,
+                                                    password: String, partition: String) -> String {
+        func reconnect() -> Bool {
+            do {
+                try socket.connect(host: host, port: port, password: password)
+                if !partition.isEmpty { _ = try? socket.command("partition \"\(partition.esc)\"") }
+                DispatchQueue.main.async { [weak self] in
+                    // The store may have seen the old socket die; let it resync.
+                    if let self, !self.isConnected { self.connect() }
+                }
+                return true
+            } catch { return false }
+        }
+        var reconnected = false
+        if mpdConnectionNeedsRefresh(connected: socket.connected, idleSeconds: socket.idleSeconds) {
+            guard reconnect() else { return "not connected; reconnect failed" }
+            reconnected = true
+        }
+        do {
+            _ = try socket.command(cmd)
+            return reconnected ? "ok after reconnect" : "ok"
+        } catch MPDError.ack(let line) {
+            return Self.ackMessage(line)
+        } catch {
+            guard !reconnected, reconnect() else { return "failed: \(error.localizedDescription)" }
+            do { _ = try socket.command(cmd); return "ok after retry" }
+            catch { return "failed after retry: \(error.localizedDescription)" }
+        }
     }
 
     private func tearDownRemoteCommands() {
@@ -2785,8 +2870,14 @@ final class MPDStore: ObservableObject {
         // The playback *rate* alone isn't enough: the system reads playbackState
         // to know whether this app is still the playing one. It was never set,
         // which is why the now-playing entry could outlive the stream.
-        MPNowPlayingInfoCenter.default().playbackState =
-            isPlaying ? .playing : (isPaused ? .paused : .stopped)
+        MPNowPlayingInfoCenter.default().playbackState = nowPlayingPlaybackState
+    }
+
+    /// What the lock screen is told. A phone stream that is reconnecting says so
+    /// rather than claiming to play — the same honesty rule as the toggle.
+    private var nowPlayingPlaybackState: MPNowPlayingPlaybackState {
+        if isPlaying, case .reconnecting = oggState { return .interrupted }
+        return isPlaying ? .playing : (isPaused ? .paused : .stopped)
     }
 
     nonisolated static func parseStreamURL(_ s: String) -> URL? {
