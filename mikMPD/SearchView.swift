@@ -79,9 +79,9 @@ struct SearchView: View {
             if !albums.isEmpty {
                 Section {
                     ForEach(albums) { item in
-                        let playing = isCurrentAlbum(rowArtist: item.artist, rowAlbum: item.base,
+                        let playing = isCurrentAlbum(rowKey: item.groupingKey, rowArtist: item.artist,
                                                      compilationBase: item.compilationBase,
-                                                     current: store.currentSong)
+                                                     current: store.currentAlbumIdentity)
                         NavigationLink {
                             AlbumDetailView(album: item.variants[0], artist: item.artist,
                                             artistTag: "albumartist",

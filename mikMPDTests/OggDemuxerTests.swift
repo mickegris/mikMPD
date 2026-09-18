@@ -403,7 +403,11 @@ func drain(_ d: inout OggDemuxer) -> [OggPacket] {
 
     @Test func identifiesEachCodec() {
         #expect(OggCodecIdentifier.identify(firstPacket: opusHeadPacket()).displayName == "Opus")
-        #expect(OggCodecIdentifier.identify(firstPacket: [0x7F] + Array("FLAC".utf8) + [1, 0]) == .flac)
+        if case .flac = OggCodecIdentifier.identify(firstPacket: flacFirstPacket()) {} else {
+            Issue.record("FLAC not identified")
+        }
+        // A FLAC header whose STREAMINFO cannot be read gives nothing to decode with.
+        #expect(OggCodecIdentifier.identify(firstPacket: [0x7F] + Array("FLAC".utf8) + [1, 0]) == .unknown)
         #expect(OggCodecIdentifier.identify(firstPacket: [0x01] + Array("vorbis".utf8)) == .vorbis)
         #expect(OggCodecIdentifier.identify(firstPacket: payload(1, 30)) == .unknown)
     }
@@ -414,7 +418,7 @@ func drain(_ d: inout OggDemuxer) -> [OggPacket] {
         // the SDK headers. It is identified so the user gets a reason, never
         // decoded.
         #expect(OggCodecIdentifier.identify(firstPacket: opusHeadPacket()).isPlayable)
-        #expect(OggCodec.flac.isPlayable)
+        #expect(OggCodecIdentifier.identify(firstPacket: flacFirstPacket()).isPlayable)
         #expect(!OggCodec.vorbis.isPlayable)
         #expect(!OggCodec.unknown.isPlayable)
     }
@@ -480,6 +484,44 @@ func drain(_ d: inout OggDemuxer) -> [OggPacket] {
         #expect(HTTPStreamCodecs.supported.contains("Opus"))
         #expect(HTTPStreamCodecs.supported.contains("FLAC"))
         #expect(!HTTPStreamCodecs.supported.contains("Vorbis"))
+    }
+}
+
+/// A minimal Ogg FLAC first packet: mapping header, "fLaC", STREAMINFO.
+func flacFirstPacket(rate: Int = 44100, channels: Int = 2, bits: Int = 16, blockSize: Int = 4096) -> [UInt8] {
+    var si = [UInt8](repeating: 0, count: 34)
+    si[0] = UInt8(blockSize >> 8); si[1] = UInt8(blockSize & 0xFF)
+    si[2] = UInt8(blockSize >> 8); si[3] = UInt8(blockSize & 0xFF)
+    si[10] = UInt8((rate >> 12) & 0xFF)
+    si[11] = UInt8((rate >> 4) & 0xFF)
+    si[12] = UInt8((rate & 0x0F) << 4) | UInt8(((channels - 1) & 0x07) << 1) | UInt8(((bits - 1) >> 4) & 0x01)
+    si[13] = UInt8(((bits - 1) & 0x0F) << 4)
+    return [0x7F] + Array("FLAC".utf8) + [1, 0, 0, 1] + Array("fLaC".utf8) + [0x80, 0, 0, 34] + si
+}
+
+@Suite struct FLACStreamInfoTests {
+    @Test(arguments: [(44100, 2, 16, 4096), (48000, 2, 24, 4608), (96000, 1, 24, 4096), (192000, 6, 32, 1152)])
+    func readsRateChannelsBitsAndBlockSize(rate: Int, channels: Int, bits: Int, block: Int) throws {
+        let info = try #require(FLACStreamInfo.parse(oggFirstPacket:
+            flacFirstPacket(rate: rate, channels: channels, bits: bits, blockSize: block)))
+        #expect(info == FLACStreamInfo(sampleRate: rate, channels: channels, bitsPerSample: bits,
+                                       minBlockSize: block, maxBlockSize: block))
+    }
+
+    @Test func rejectsTruncatedOrForeignPackets() {
+        #expect(FLACStreamInfo.parse(oggFirstPacket: Array(flacFirstPacket().prefix(40))) == nil)
+        var notStreamInfo = flacFirstPacket()
+        notStreamInfo[13] = 0x84          // a VORBIS_COMMENT where STREAMINFO must be
+        #expect(FLACStreamInfo.parse(oggFirstPacket: notStreamInfo) == nil)
+    }
+
+    /// Only audio frames (0xFF sync) are decoded; every metadata block is skipped.
+    @Test func everyMetadataBlockIsAHeader() {
+        let codec = OggCodecIdentifier.identify(firstPacket: flacFirstPacket())
+        for first: UInt8 in [0x01, 0x04, 0x84, 0x06, 0x86] {
+            #expect(OggCodecIdentifier.isCommentHeader([first, 0, 0, 0], codec: codec))
+        }
+        #expect(!OggCodecIdentifier.isCommentHeader([0xFF, 0xF8, 0x59, 0x18], codec: codec))
     }
 }
 

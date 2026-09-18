@@ -23,6 +23,11 @@ typealias MPDRecord = [String: String]
 // access after init happens on MPDStore's serial queue Q (see CLAUDE.md).
 nonisolated final class MPDSocket: @unchecked Sendable {
     private(set) var connected = false
+    /// When the connection last completed a command. MPD drops clients idle for
+    /// longer than its `connection_timeout`, so a long-quiet socket is suspect
+    /// even while `connected` is still true (see `mpdConnectionNeedsRefresh`).
+    private(set) var lastActivity = Date.distantPast
+    var idleSeconds: TimeInterval { Date().timeIntervalSince(lastActivity) }
     private var fd: Int32 = -1
     private var buf = Data()
 
@@ -42,6 +47,7 @@ nonisolated final class MPDSocket: @unchecked Sendable {
             if resp.first?.hasPrefix("ACK") == true { disconnect(); throw MPDError.authFailed }
         }
         connected = true
+        lastActivity = Date()
     }
 
     func disconnect() {
@@ -59,6 +65,7 @@ nonisolated final class MPDSocket: @unchecked Sendable {
         do {
             try send(cmd + "\n")
             let records = try readRecords()
+            lastActivity = Date()
             MPDCommandLog.shared.record(command: cmd,
                                         duration: Date().timeIntervalSince(started),
                                         outcome: "ok (\(records.count) records)")
@@ -87,6 +94,7 @@ nonisolated final class MPDSocket: @unchecked Sendable {
         do {
             try send(cmd + "\n")
             let lines = try readUntilOK()
+            lastActivity = Date()
             if lines.first?.hasPrefix("ACK") == true { throw MPDError.ack(lines[0]) }
             MPDCommandLog.shared.record(command: cmd,
                                         duration: Date().timeIntervalSince(started),
@@ -160,6 +168,16 @@ nonisolated final class MPDSocket: @unchecked Sendable {
         var tv = timeval(tv_sec: 5, tv_usec: 0)
         setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
         setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+        // A connection the peer has reset — Wi-Fi roaming, a router dropping the
+        // NAT entry, MPD restarting — otherwise turns the next send() into
+        // SIGPIPE, whose default action kills the app outright, with no Swift
+        // error to catch. Verified: exit 141 on the first send after a reset.
+        // With this, send() returns EPIPE and the ordinary error path runs.
+        // The background poll writes every 2 s while phone streaming, so a
+        // locked phone was exactly where this bit. Per socket rather than
+        // signal(SIGPIPE, SIG_IGN), which would change it for every framework.
+        var noSigPipe: Int32 = 1
+        setsockopt(s, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
         return s
     }
 
@@ -167,7 +185,7 @@ nonisolated final class MPDSocket: @unchecked Sendable {
         let data = Array(s.utf8); var sent = 0
         while sent < data.count {
             let n = data.withUnsafeBytes { ptr in Darwin.send(fd, ptr.baseAddress! + sent, data.count - sent, 0) }
-            guard n > 0 else { throw MPDError.io("send failed") }
+            guard n > 0 else { throw MPDError.io("send failed (errno=\(errno))") }
             sent += n
         }
     }

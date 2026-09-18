@@ -74,6 +74,10 @@ Facts confirmed by querying a real server, each of which cost debugging time to 
 - **`xfade` is omitted from `status` when crossfade is 0** (not reported as `xfade: 0`).
   `poll()` handles this with `Int(s["xfade"] ?? "0") ?? 0`; any new status field may be absent
   when it holds its default.
+- **ReplayGain mode is per partition and is not in `status`** — only
+  `replay_gain_status` reports it, so the poll never sees it change. Refresh it
+  explicitly whenever the connection's partition changes. Crossfade and MixRamp
+  are per partition too, but do appear in `status`.
 - **ACK does not always keep the connection alive.** A bad *argument* on a *known* command
   ACKs and leaves the socket usable (`setvol 9999`). Some builds close the TCP connection
   outright for an *unknown* command, which surfaces as a non-ACK I/O error and disconnects.
@@ -120,7 +124,7 @@ This is an MPD (Music Player Daemon) client for iOS/iPadOS.
 
 ### Layers
 
-**MPDSocket** — Raw TCP socket using Darwin POSIX APIs. Sends text commands, reads lines until `OK` or `ACK`. Parses responses into `[[String: String]]` records by splitting on `:` and flushing on record-starter keys (`file`, `directory`, `playlist`, `outputid`, `partition`).
+**MPDSocket** — Raw TCP socket using Darwin POSIX APIs. Sends text commands, reads lines until `OK` or `ACK`. Parses responses into `[[String: String]]` records by splitting on `:` and flushing on record-starter keys (`file`, `directory`, `playlist`, `outputid`, `partition`). **Every socket sets `SO_NOSIGPIPE`** (MPDSocket and SnapcastSocket alike): without it the first `send()` after the peer resets the connection raises SIGPIPE, which kills the app with no Swift error to catch — verified, exit 141. The background poll writes every 2 s while phone streaming, so a Wi-Fi blip or an MPD restart on a locked phone was enough. `SocketResetTests` pins it with a loopback server that resets; without the option that test takes the whole test run down, so it cannot pass by accident.
 
 **MPDStore** — `final class MPDStore: ObservableObject`. Single store that owns the socket and all `@Published` state. Views never talk to the socket directly. All socket I/O runs on a dedicated `DispatchQueue` (`.userInteractive`); all `@Published` properties update on main thread.
 
@@ -139,7 +143,9 @@ This is an MPD (Music Player Daemon) client for iOS/iPadOS.
 ### Dual-timer design
 
 - **Poll timer**: fetches ground truth from MPD (`status`, `outputs`, and `currentsong` only when `songid` changed). Runs at 1s while playing, throttled to 3s while paused/stopped (`setPollingInterval`) to cut connections and main-thread dispatches.
-- **Display timer (0.1s)**: smoothly advances `elapsed` during playback without waiting for the next poll. Stopped entirely while paused/stopped (`setDisplayTimerActive`) for zero CPU wakes, restarted on resume.
+- **Display timer (0.1s)**: smoothly advances `elapsed` during playback without waiting for the next poll. It runs only when `displayTimerShouldRun` — MPD playing, the scene `.active`, **and** at least one on-screen view displaying time (`PlaybackClock.observers`, counted by `.observesPlaybackClock`) — so it never ticks in the background, on the Library tab, or while paused.
+- **`elapsed` lives on `PlaybackClock`, not on the store** (`store.clock`, injected as its own environment object; `store.elapsed` forwards to it). An `ObservableObject` has one `objectWillChange`, so a 10 Hz `@Published` on the store re-rendered all ~30 views observing it — an iOS CPU resource report caught the Albums list regrouping ~820 albums ten times a second (57 % CPU for minutes, on battery). Only `NowPlayingSeekBar` and `SyncedLyricsView` observe the clock. Bitrate was dropped from the UI for the same reason (it changed on nearly every poll); the audio format, which changes per song, stays on the store and is shown readably via `formatAudioFormat`.
+- **Lock-screen info is sent on change, not per poll** (`nowPlayingInfoNeedsUpdate`): the song, play state or artwork changing, or the position jumping more than 2 s from where the system's own extrapolation would put it. The `MPMediaItemArtwork` is built once per song.
 - `elapsed` is only reassigned on poll when the value actually changed, and `currentsong` is skipped when `songid` is unchanged from `lastSongID` (cached in `lastSong`) — both avoid redundant `@Published` churn during steady-state playback/pause.
 
 ### Optimistic UI with locking
@@ -188,8 +194,24 @@ fails exactly as `save` does when `playlist_directory` is unset, so availability
 costs no write; `canTransferQueue` is the published mirror. When it is off the app
 **names the setting and the file** rather than hiding the control.
 
-Modes (`repeat`/`random`/`single`/`consume`) travel with the queue because they
-describe it; **volume does not**, since it belongs to the target's outputs. The
+**Consume, crossfade, MixRamp and ReplayGain belong to the partition and never
+travel** — on either side. In MPD each partition has its own player, so all four
+are per partition; v1.7 copied the source's `consume` onto the target, which the
+user saw as the transfer "intermittently" changing settings (only when the two
+partitions differed). The app also read ReplayGain only on connect, so after
+following the music the button showed the *source's* mode — `switchPartition` and
+the transfer now refresh it. `performTransfer` snapshots both partitions'
+`PartitionSettings` before anything changes and checks them afterwards; drift is
+put back and reported in `TransferResult.notes`, and the outcome is logged to
+`MPDCommandLog`. `transferTargetSetupCommands` is pure so a test can pin that no
+partition-owned command is ever sent. **Repeat, random and single do travel**,
+read raw from the source's `status` on `Q` (so `single oneshot` survives),
+because they describe how this queue is played — a shuffled playlist stays
+shuffled. **Volume does not**, since it belongs to the target's outputs.
+The whole Q-side sequence is `MPDStore.performTransfer(on:…)`, static and
+socket-parameterised so the live test (`LiveTransferSettingsTests`, between two
+throwaway output-less partitions with the source stopped — nothing plays) drives
+exactly what the app runs. The
 app follows to the target afterwards — **and must record it the way a manual
 switch does** (`lastUsedPartitionName`, when "Remember partitions" is on).
 Without that, the refresh that follows still sees the source as remembered and
@@ -265,10 +287,14 @@ setting anywhere in the UI. An unclear or missing content type falls back to
 (`URLSession.bytes(for:)`, then cancel): an httpd output never ends, and the first
 version used `dataTask`, whose completion fires only when the body does — it
 downloaded a whole finite test file before answering and would have sat out its
-10 s timeout on every real stream start. **A server closing the stream ends phone
-streaming**: that arrives from `OggStreamPlayer` as `.idle`, not `.failed`
-(`endsPhoneStream`), and reacting to `.failed` alone left "Streaming to phone" on
-screen over silence. Each player's callbacks carry a token so a late one from a
+10 s timeout on every real stream start. **A lost stream is retried, then ends phone
+streaming**: a server close or a transient `URLError` puts the Ogg player in
+`.reconnecting(attempt:)` — 1, 2, 4, 8 s (`oggReconnectDelay`), about 15 s in all —
+and only a spent budget becomes `.failed`, which `endsPhoneStream`. v1.7 ended
+streaming at the first `.idle`, so any Wi-Fi blip or MPD restart silently switched
+the feature off; before that, reacting to `.failed` alone left "Streaming to
+phone" on screen over silence. Neither regresses: `.idle` now only follows an
+explicit `stop()`, and nothing retries beyond the budget. Each player's callbacks carry a token so a late one from a
 torn-down player cannot stop its successor. **Supported encoders are mp3,
 Opus and FLAC**, stated under the Stream URL field and again in the failure
 message; Ogg Vorbis is identified and refused, because iOS has no Vorbis decoder
@@ -318,6 +344,41 @@ so in a warning); and when its packet is spent the callback returns the non-zero
 440 Hz left, 554 Hz right — so a silent channel, a decoder that stops after one
 packet, or pre-skip applied twice each fails a test.
 
+**The Ogg player's lifecycle (v1.7.1), each part learned from a field report.**
+*Jitter buffer* (`OggBufferPolicy`): play at 2 s buffered, pause and refill to 2 s
+at an underrun (≤ 0.25 s), and drop incoming audio beyond 6 s — v1.7 buffered 0.5 s
+once and then stuttered through every hiccup, and nothing bounded how far behind
+MPD the phone could drift. *The engine is configured per format, never per
+bitstream*: MPD's Opus encoder starts a new chained bitstream at **every track
+change** (verified live: six bitstreams over five skips), and v1.7 tore the engine
+down for each one, cutting the song's tail and restarting from an empty buffer —
+"failed to play next song". The decoder is still replaced per bitstream (pre-skip
+and STREAMINFO belong to it); `LiveOggPlayerTests` pins one engine configuration
+across five track changes. *`node.play()` is only ever called on a running
+engine* (`playNodeLocked`) — on a stopped one it raises an Objective-C exception
+Swift cannot catch — and `AVAudioEngineConfigurationChange` is observed and
+rebuilt from. *Health is checked on every data arrival*: "playing" with nothing
+played back for 3 s (`oggStreamStalled`) means the engine died under the player,
+at no timer cost. *Buffer completions carry a generation*, so completions of
+discarded audio (which `node.stop()` fires) cannot drive the frame count
+negative. *Decoded packets are coalesced into ~100 ms buffers*, 10 schedules a
+second instead of 50. The idle timeout is 10 s: MPD's httpd output sends encoded
+silence while paused (verified), so silence on the wire means the server is gone.
+**FLAC needs its STREAMINFO to decode at all.** `AudioConverterNew` refuses a
+FLAC format with frames-per-packet 0 — v1.7 passed exactly that, so Ogg FLAC never
+played — and a value below the block size decodes nothing; no magic cookie is
+needed (all verified with the system decoder). `FLACStreamInfo` supplies the block
+size, channels and the **source's** sample rate, which MPD's FLAC encoder passes
+through (a CD rip is 44.1 kHz, and may change at a track boundary);
+`OggFLACFixtures` holds generated 44.1 k, 48 k and chained streams, and the tests
+check the tones come out at their true frequency.
+**Interruptions are the store's job too** (`observeAudioInterruptions`):
+`.began` suspends the player (`suspendPhoneStreamPlayer` — the stream is let go,
+so a silent phone uses no network or audio power), `.ended` with `.shouldResume`
+rejoins the live stream (`resumePhoneStreamPlayer`), never a stale buffer.
+`phoneStreamSuspended` counts as rendering for the background check, so being
+quiet on purpose never switches the feature off.
+
 **Audio route changes are the store's job while streaming** (`observeAudioRoute`,
 removed on stop). `phoneStreamRouteAction` stops the stream when a device goes
 away — headphones unplugged, Bluetooth gone — because AVAudioEngine stops itself
@@ -335,9 +396,10 @@ Ogg users only.
 
 `AVPlayer` plays an MPD httpd output URL on the device. The stream URL is per server profile (edited in the server form) and mirrored into the live `@AppStorage("httpStreamURL")` on switch. A toggle in Now Playing starts/stops the stream.
 
-- **AVAudioSession**: `.playback` category enables background audio (requires `UIBackgroundModes = [audio]` in Info.plist).
-- **Lock screen metadata**: `MPNowPlayingInfoCenter` displays title, artist, album, artwork, and elapsed time. Updated every 1s poll cycle (not the 10Hz display timer) — the system extrapolates elapsed time via `playbackRate`.
-- **Lock screen controls**: `MPRemoteCommandCenter` routes play/pause/next/previous to MPD commands via the socket queue. Closures capture `Q` and `socket` (both `Sendable`) to avoid `MainActor` isolation issues.
+- **AVAudioSession**: `.playback` category enables background audio (requires `UIBackgroundModes = [audio]` in Info.plist). **`setActive` never runs on the main thread** — it is a synchronous round trip to the audio server and Xcode flags it as a UI-hang risk; iOS has no async form (`activateWithOptions:completionHandler:` is watchOS-only). Every call goes through the serial `audioSessionQueue`, which also keeps a stop's deactivate ahead of the next start's activate; the start sequence continues on main once activation completes, and `phoneStreamGeneration` stops a late activation from starting a stream the user has already stopped or paused.
+- **Lock screen metadata**: `MPNowPlayingInfoCenter` displays title, artist, album, artwork, and elapsed time. Sent only when it changes (see "Dual-timer design") — the system extrapolates elapsed time via `playbackRate`. A reconnecting Ogg stream is reported with rate 0, not as playing (`nowPlayingRate` — the rate is iOS's only play-state signal).
+- **Lock screen controls go through the store** (`handleRemote`), not straight to the socket as in v1.7, which skipped the optimistic state and the lock-screen update and fired `try? sock.command(…)` into whatever state the socket was in. The `addTarget` closures are `@Sendable` and hop to the main actor explicitly. `remoteCommandMPD` sends explicit `pause 1`/`pause 0` (a bare `pause` does nothing on a stopped player, and a lock-screen pause must never become a resume through stale state). The command is sent by `sendEnsuringConnection`, which reconnects first when the socket is down or has been idle past `mpdConnectionNeedsRefresh`'s 45 s — MPD drops idle clients after `connection_timeout` (60 s default), and a phone iOS suspended while paused wakes for the press with a dead socket — and retries once on a fresh connection. Each remote command is logged with how long it waited on `Q`.
+- **The phone follows MPD's play state** (`isPlaying` didSet → `phoneStreamFollowMPD`), from this app's buttons, the lock screen or another client via the poll. A pause *suspends* the player — silent at once, stream closed — and play rejoins the stream at the live point. v1.7 left the phone playing out its buffer after a pause (AVPlayer holds up to 30 s), which read as the lock-screen pause being ignored, and resumed with stale audio; it also received, decoded and played MPD's encoded silence for as long as MPD stayed paused. Starting phone streaming while MPD is not playing starts suspended. **Phone streaming belongs to the partition it was started in** (`phoneStreamPartition`): the stream is that partition's httpd output, and `isPlaying` describes whichever partition the app is on — so following it after a switch muted the phone (target paused) or kept it on a stream nobody was controlling, and moving the queue away and back started the phone speaker unasked (device testing, v1.7.1). Leaving that partition — a manual switch or a Move Playback — stops phone streaming, and the toggle goes off (`phoneStreamPartitionAction`; an empty partition mid-reconnect is never a reason). Reconnects therefore always return to the partition they left: `scheduleReconnect` records it, and a failed attempt hands it on to the next. `phoneStreamSuspended` counts as rendering in the background check, so a paused phone keeps the feature on and its lock-screen controls.
 - **Background polling**: A `DispatchSourceTimer` on `Q` polls MPD every 2s while streaming, since `RunLoop`-based timers suspend when the app backgrounds.
 - **`parseStreamURL`**: validates http/https scheme and non-empty host. Lives on `MPDStore` as a static for testability.
 
@@ -363,7 +425,7 @@ More → Statistics reads MPD's `stats` into `MPDStats` (`loadStats`, `@Publishe
 
 `SnapcastView` (More tab) connects to a Snapcast server's JSON-RPC 2.0 control port (default 1705, TCP, newline-delimited). The Snapcast host/port are per-server-profile (`snapcastHost`/`snapcastPort` on `MPDServerProfile`); host defaults to the MPD host when blank.
 
-**Transport** — `SnapcastSocket` (`nonisolated @unchecked Sendable`, same pattern as MPDSocket) owns the raw Darwin POSIX TCP socket. It sets **both** `SO_SNDTIMEO` and `SO_RCVTIMEO` (5 s), like MPDSocket: with a send timeout only, the reader Thread blocked in `recv()` indefinitely and could be stopped solely from outside, by `disconnect()`'s `shutdown()`. Snapcast is push-based and usually idle, so a receive timeout is the *normal* case — `readOneLine` returns nil on it (letting `readLoop` re-check whether it is still the current connection, which is the thread's only way to end itself) and retries on `EINTR` rather than tearing down. Access invariant: `connect()` and `request()` only from `SnapcastStore`'s serial queue `Q`; `disconnect()` is thread-safe (callable from any thread). A dedicated reader Thread (started inside `connect()`) runs continuously, reading newline-delimited JSON lines and routing them:
+**Transport** — `SnapcastSocket` (`nonisolated @unchecked Sendable`, same pattern as MPDSocket) owns the raw Darwin POSIX TCP socket. It sets `SO_NOSIGPIPE` (see MPDSocket) and **both** `SO_SNDTIMEO` and `SO_RCVTIMEO` (5 s), like MPDSocket: with a send timeout only, the reader Thread blocked in `recv()` indefinitely and could be stopped solely from outside, by `disconnect()`'s `shutdown()`. Snapcast is push-based and usually idle, so a receive timeout is the *normal* case — `readOneLine` returns nil on it (letting `readLoop` re-check whether it is still the current connection, which is the thread's only way to end itself) and retries on `EINTR` rather than tearing down. Access invariant: `connect()` and `request()` only from `SnapcastStore`'s serial queue `Q`; `disconnect()` is thread-safe (callable from any thread). A dedicated reader Thread (started inside `connect()`) runs continuously, reading newline-delimited JSON lines and routing them:
 - Lines with a matching `"id"` → fulfill the `DispatchSemaphore` in the waiting `request()` call on Q.
 - Lines with a `"method"` but no `"id"` → Snapcast push notifications; dispatched via `onNotification: (@Sendable (String, Data) -> Void)?` (params serialized to `Data` for Sendable compliance).
 - `disconnect()` calls `Darwin.shutdown(fd, SHUT_RDWR)` to unblock any blocking `recv()` in the reader Thread, then closes the fd and fails all pending semaphores.
@@ -389,12 +451,12 @@ Two failures are deliberately **not** retried, via `shouldRetryConnect(after:)` 
 
 `isReconnecting` still prevents stacking, and `reconnectGeneration` is what lets an explicit `connect()` supersede a retry already in flight rather than racing it into a second connect. `cancelPendingReconnect()` is called from both `connect()` and `disconnect()`, so a retry armed three seconds ago cannot reopen a socket the app has just closed on purpose — backgrounding being the case that matters.
 
-`MPDClientApp` calls `store.handleEnteringBackground()` rather than testing `isPhoneStreaming` inline, because that flag alone is not evidence of playback: a stream that failed or was stopped by the server left it true forever, which held the audio session open (so other apps were never told they could resume) and suppressed the disconnect indefinitely. The check is `streamPlayer?.timeControlStatus == .paused` → stop the stream; `.waitingToPlayAtSpecifiedRate` is a stream still buffering and is left alone.
+`MPDClientApp` calls `store.handleEnteringBackground()` rather than testing `isPhoneStreaming` inline, because that flag alone is not evidence of playback: a stream that failed or was stopped by the server left it true forever, which held the audio session open (so other apps were never told they could resume) and suppressed the disconnect indefinitely. The check is `isStreamActuallyRendering`: suspended on purpose (MPD paused, an interruption) → keep; otherwise the Ogg player's `isRendering`, or `streamPlayer?.timeControlStatus == .paused` → stop the stream; `.waitingToPlayAtSpecifiedRate` is a stream still buffering and is left alone.
 
 **Nothing runs on termination.** There is no AppDelegate, no `applicationWillTerminate`, and no `deinit` anywhere — a force-quit is a SIGKILL, so the only defence against leaving system-level state behind is not to depend on cleanup running. Two consequences to preserve:
 
 - `startPhoneStream` tears down **before** touching the audio session. It used to activate the session and then call `stopPhoneStream()`, which deactivated it again with `.notifyOthersOnDeactivation` — telling the very apps it was about to interrupt that they could resume — and then called `play()` on a just-deactivated session.
-- `MPNowPlayingInfoCenter.playbackState` is set alongside `nowPlayingInfo`, and to `.stopped` when clearing it. The playback *rate* in the info dict is not enough: the system reads `playbackState` to decide whether this app is still the playing one, and without it a stale mikMPD card can outlive the stream in Control Center.
+- **Do not set `MPNowPlayingInfoCenter.playbackState`** — iOS ignores it and logs `[MRNowPlaying] Ignoring setPlaybackState because application does not contain entitlement com.apple.mediaremote.set-playback-state` (it only takes effect on macOS). v1.5 added it believing it cleared stale Control Center cards; on iOS what does that is clearing `nowPlayingInfo` and deactivating the audio session (`stopPhoneStream` does both), and the play state is the info's playback rate (`nowPlayingRate`).
 
 **More → Diagnostics → Clear Album Art Cache** deletes every cached cover *and* every `.miss` marker, then re-fetches the current song's art. It exists because a failed art lookup is remembered for 7 days, so fixing a lookup bug otherwise appears to change nothing; changing an art *key* has the same effect from the other direction, leaving old entries unreachable.
 
@@ -403,6 +465,7 @@ Two failures are deliberately **not** retried, via `shouldRetryConnect(after:)` 
 - MPD command arguments are escaped via `String.esc` (backslash + quote escaping) and wrapped in quotes to prevent injection.
 - Password stored in Keychain via `KeychainHelper`; legacy migration from UserDefaults runs on init.
 - **Never read `@Published` state from inside `Q.async`** — those properties are main-thread state. Capture what the command needs into a local *before* dispatching (`let v = repeatMode; Q.async { … }`), and hand results back through `completion: @escaping @MainActor (…)` parameters, which is how every `MPDStore` query returns.
+- **No derived collections computed in `body`.** Grouping, sorting and filtering of library-sized lists go into `@State`, recomputed when an input changes (`AlbumListView`, `GenreDetailView`, `ArtistListView`). In `body` they run on every store change. `AlbumGroup.groupingKey` is stored, and album rows compare against `store.currentAlbumIdentity` (derived once per song) through the precomputed-key `isCurrentAlbum(rowKey:…)` overload, not by re-deriving both keys per row per render.
 - Rows that start playback use the shared `.playableRow { … }` modifier (LibraryView.swift), which adds the tap target, a light `Haptics.tap()`, and a 350 ms accent-colour flash. Use it rather than a bare `.onTapGesture` so play feedback stays uniform across radio, CD, and library rows.
 - Enumerations that a view cycles through belong in Models.swift with their order and display names attached — see `ReplayGainMode` (`allCases` order *is* the cycle order, `next` wraps, `label` is the display name). The Now Playing view previously duplicated the order as a string array and the names as a ternary chain, so adding a mode meant editing two files in step.
 - **Artist tags fall back both ways.** `MPDSong.displayArtist` (artist → albumartist) is the mirror of `groupingArtist` (albumartist → artist); both go through `tagOr`, where a **present-but-blank tag counts as absent** and the returned value is deliberately **untrimmed** (it feeds `artCacheKey`, and trimming would orphan cached art for padded tags). Use `displayArtist` wherever a name is shown, navigated to, or sent to LRCLIB; `groupingArtist` for album identity, `artKey`, and cover-art lookups. Files with an AlbumArtist and no Artist are common, and used to read as "Unknown Artist" everywhere except the album page.

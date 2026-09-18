@@ -9,30 +9,7 @@ struct QueueView: View {
                     ContentUnavailableView("Queue is Empty", systemImage: "list.bullet",
                         description: Text("Add songs from the Library, or from Library \u{203A} Files."))
                 } else {
-                    List {
-                        Section {
-                            ForEach(store.queue) { song in
-                                QueueRow(song: song, isCurrent: isCurrentQueueRow(pos: song.pos, playlistPos: store.playlistPos))
-                                    .contentShape(Rectangle())
-                                    .onTapGesture(count: 2) { store.play(at: song.pos) }
-                                    .nowPlayingRow(isCurrentQueueRow(pos: song.pos, playlistPos: store.playlistPos))
-                                    .swipeActions(edge: .leading) {
-                                        Button { addRequest = AddToPlaylistRequest(uris: [song.file]) } label: {
-                                            Label("Playlist", systemImage: "music.note.list")
-                                        }.tint(.indigo)
-                                    }
-                                    .contextMenu {
-                                        Button { addRequest = AddToPlaylistRequest(uris: [song.file]) } label: {
-                                            Label("Add to Playlist…", systemImage: "music.note.list")
-                                        }
-                                    }
-                            }
-                            .onDelete { store.delete(at: $0) }
-                            .onMove { store.moveRow(from: $0, to: $1) }
-                        } footer: {
-                            Text("Double-tap to play. Long press or swipe to add to a playlist.")
-                        }
-                    }.listStyle(.plain)
+                    QueueList(addRequest: $addRequest)
                 }
             }
             .navigationTitle("Queue").navigationBarTitleDisplayMode(.inline)
@@ -69,6 +46,45 @@ struct QueueView: View {
         }
     }
 }
+/// The queue itself. A separate view because `editMode` must be read *inside*
+/// the NavigationStack the EditButton lives in — read in `QueueView` it is the
+/// outer, never-editing value.
+private struct QueueList: View {
+    @EnvironmentObject var store: MPDStore
+    @Environment(\.editMode) private var editMode
+    @Binding var addRequest: AddToPlaylistRequest?
+    var body: some View {
+        let editing = editMode?.wrappedValue.isEditing == true
+        List {
+            Section {
+                ForEach(store.queue) { song in
+                    // Single tap plays, like the Now Playing mini-queue. The row's
+                    // artist/album links still navigate when tapped on the text;
+                    // with only a double-tap handler here, a single tap fell
+                    // through to the List, which opened the first link (the artist).
+                    QueueRow(song: song, isCurrent: isCurrentQueueRow(pos: song.pos, playlistPos: store.playlistPos))
+                        .playableRow(isEnabled: !editing) { store.play(at: song.pos) }
+                        .nowPlayingRow(isCurrentQueueRow(pos: song.pos, playlistPos: store.playlistPos))
+                        .swipeActions(edge: .leading) {
+                            Button { addRequest = AddToPlaylistRequest(uris: [song.file]) } label: {
+                                Label("Playlist", systemImage: "music.note.list")
+                            }.tint(.indigo)
+                        }
+                        .contextMenu {
+                            Button { addRequest = AddToPlaylistRequest(uris: [song.file]) } label: {
+                                Label("Add to Playlist…", systemImage: "music.note.list")
+                            }
+                        }
+                }
+                .onDelete { store.delete(at: $0) }
+                .onMove { store.moveRow(from: $0, to: $1) }
+            } footer: {
+                Text("Tap to play. Long press or swipe to add to a playlist.")
+            }
+        }.listStyle(.plain)
+    }
+}
+
 struct QueueRow: View {
     let song: MPDSong; let isCurrent: Bool
     var body: some View {

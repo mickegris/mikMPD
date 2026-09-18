@@ -4,7 +4,7 @@ struct OutputsView: View {
     @AppStorage("rememberPartitions") private var rememberPartitions = false
     @State private var showNewPartition = false
     @State private var transferTarget: String?
-    @State private var transferResult: String?
+    @State private var transferResult: TransferResult?
     @State private var newPartitionName = ""
     @State private var partitionToDelete: String?
     @State private var partitionError: String?
@@ -77,7 +77,7 @@ struct OutputsView: View {
                                 titleVisibility: .visible) {
                 if let target = transferTarget {
                     Button("Move to \(target)") {
-                        store.transferQueue(toPartition: target) { transferResult = $0 }
+                        store.transferQueue(toPartition: target) { if $0.needsAttention { transferResult = $0 } }
                         transferTarget = nil
                     }
                 }
@@ -87,12 +87,12 @@ struct OutputsView: View {
                     Text("The queue moves from \(store.currentPartition) to \(target) and keeps playing from the same spot. \(store.currentPartition) stops.")
                 }
             }
-            .alert("Could Not Move Playback",
+            .alert(transferResult?.alertTitle ?? "",
                    isPresented: Binding(get: { transferResult != nil },
                                         set: { if !$0 { transferResult = nil } })) {
                 Button("OK", role: .cancel) { transferResult = nil }
             } message: {
-                Text(transferResult ?? "")
+                Text(transferResult?.alertMessage ?? "")
             }
             .alert("New Partition", isPresented: $showNewPartition) {
                 TextField("Name", text: $newPartitionName)

@@ -4,9 +4,12 @@ import SwiftUI
     @Environment(\.scenePhase) private var scenePhase
     var body: some Scene {
         WindowGroup {
-            ContentView().environmentObject(store)
+            ContentView()
+                .environmentObject(store)
+                .environmentObject(store.clock)
         }
         .onChange(of: scenePhase) { _, phase in
+            store.setSceneActive(phase == .active)
             switch phase {
             case .background:
                 store.handleEnteringBackground()

@@ -2,10 +2,13 @@
 //
 // One socket, one serial queue (Q).
 // Poll timer: 1s, fires on main RunLoop, work dispatched to Q.
-// Display timer: 0.1s, fires on main RunLoop, updates elapsed directly on main thread.
+// Display timer: 0.1s, fires on main RunLoop, updates elapsed directly on main thread,
+// and runs only while playing, foreground, and some view shows the time.
 //
 // Key design decisions:
-//   - elapsed/duration/isPlaying are @Published on the store itself
+//   - duration/isPlaying are @Published on the store itself; elapsed lives on
+//     `clock` (PlaybackClock) so its 10 Hz change does not re-render every view
+//     that observes the store
 //   - display timer advances elapsed by 0.1s each tick when playing
 //   - poll sets elapsed from MPD ground truth (unless seek-locked)
 //   - togglePlay captures state synchronously on main thread before dispatching
@@ -22,10 +25,21 @@ final class MPDStore: ObservableObject {
 
     // MARK: - @Published — all written on main thread
 
+    /// Elapsed time, which changes ten times a second while playing — observed
+    /// only by the views that display it. See PlaybackClock.swift.
+    let clock = PlaybackClock()
+    var elapsed: Double {
+        get { clock.elapsed }
+        set { clock.elapsed = newValue }
+    }
+
     // Playback primitives — view reads these directly
-    @Published var elapsed:     Double = 0
     @Published var duration:    Double = 0
-    @Published var isPlaying:   Bool   = false
+    @Published var isPlaying:   Bool   = false {
+        // The phone follows MPD's play state the moment it changes — from this
+        // app's buttons, the lock screen, or another client via the poll.
+        didSet { if isPlaying != oldValue { phoneStreamFollowMPD() } }
+    }
     @Published var isPaused:    Bool   = false
     @Published var volume:      Int    = 80
     @Published var repeatMode:  Bool   = false
@@ -36,12 +50,28 @@ final class MPDStore: ObservableObject {
     @Published var crossfadeSeconds: Int  = 0
     @Published var playlistPos: Int    = -1
     @Published var currentSongID: String = ""
-    @Published var bitrate:     String = ""
+    /// MPD's `audio` field, e.g. "44100:16:2". Changes with the song, so it is
+    /// cheap to publish here. (Bitrate was dropped: it changed on nearly every
+    /// poll for VBR files, re-rendering the app once a second, and was not
+    /// worth it.)
     @Published var audioFmt:    String = ""
-    @Published var currentPartition: String = ""
+    @Published var currentPartition: String = "" {
+        didSet { if currentPartition != oldValue { phoneStreamFollowPartition() } }
+    }
 
     // Other state
-    @Published var currentSong     = MPDSong()
+    @Published var currentSong     = MPDSong() {
+        didSet {
+            if currentSong.file != oldValue.file || currentSong.album != oldValue.album
+                || currentSong.groupingArtist != oldValue.groupingArtist {
+                currentAlbumIdentity = CurrentAlbumIdentity(currentSong)
+            }
+        }
+    }
+    /// What album rows compare themselves with, derived once per song rather than
+    /// once per row per render. Not published: it only changes together with
+    /// `currentSong`, which already is.
+    private(set) var currentAlbumIdentity = CurrentAlbumIdentity(MPDSong())
     @Published var lyricsState:    LyricsState     = .unavailable
     @Published var queue:          [MPDSong]       = []
     @Published var outputs:        [MPDOutput]     = []
@@ -165,6 +195,7 @@ final class MPDStore: ObservableObject {
 
     // MARK: - Init
     init() {
+        clock.onObserversChanged = { [weak self] in self?.updateDisplayTimer() }
         if let legacy = UserDefaults.standard.string(forKey: "mpd_password"), !legacy.isEmpty {
             KeychainHelper.save(key: "mpd_password", value: legacy)
             UserDefaults.standard.removeObject(forKey: "mpd_password")
@@ -228,6 +259,10 @@ final class MPDStore: ObservableObject {
     private func scheduleReconnect() {
         guard !isReconnecting else { return }
         isReconnecting = true
+        // Come back to the partition the connection was on. A new MPD connection
+        // starts in `default`, and a network blip is no reason to move the user —
+        // nor, while phone streaming, to end the stream (see phoneStreamPartition).
+        if partitionToRestore == nil, !currentPartition.isEmpty { partitionToRestore = currentPartition }
         reconnectGeneration &+= 1
         let generation = reconnectGeneration
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
@@ -307,6 +342,8 @@ final class MPDStore: ObservableObject {
             } catch {
                 DispatchQueue.main.async {
                     self.connectionError = error.localizedDescription
+                    // The retry must restore the same partition this attempt meant to.
+                    if self.partitionToRestore == nil { self.partitionToRestore = restorePartition }
                     // A wrong password or a non-MPD port fails the same way on
                     // every attempt; everything else is worth waiting out.
                     if shouldRetryConnect(after: error) { self.scheduleReconnect() }
@@ -476,7 +513,7 @@ final class MPDStore: ObservableObject {
         outputs = []; outputPartitions = [:]; outputNameToPartition = [:]; partitions = []
         searchResults = []; browseItems = []; playlists = []
         elapsed = 0; duration = 0; isPlaying = false; isPaused = false
-        playlistPos = -1; bitrate = ""; audioFmt = ""; currentPartition = ""
+        playlistPos = -1; audioFmt = ""; currentPartition = ""
         // playbackContext is cleared here and restored by loadPlaybackContext()
         // immediately after — it is per-server persisted state, not live state.
         lyricsState = .unavailable; playbackContext = nil
@@ -498,14 +535,9 @@ final class MPDStore: ObservableObject {
         RunLoop.main.add(p, forMode: .common)
         pollTimer = p
 
-        // Display timer starts running; first poll (≤1s away) calls setDisplayTimerActive
-        // to stop it immediately if MPD is paused/stopped.
-        let d = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
-            guard let self else { return }
-            Task { @MainActor in self.tickElapsed() }
-        }
-        RunLoop.main.add(d, forMode: .common)
-        displayTimer = d
+        // The display timer follows the first poll (≤1 s away), which knows
+        // whether MPD is playing.
+        updateDisplayTimer()
     }
 
     private func stopTimers() {
@@ -514,8 +546,27 @@ final class MPDStore: ObservableObject {
         currentPollInterval = 1.0
     }
 
-    /// Start or stop the 10 Hz display timer based on whether we are actively playing.
-    /// Stopping it eliminates 10 CPU wakes/second when paused or stopped.
+    /// Whether the app is in the foreground. Set from the scene phase; the
+    /// display timer never runs in the background, where nobody can see it —
+    /// the lock screen extrapolates elapsed time itself from `playbackRate`.
+    private var sceneActive = true
+
+    func setSceneActive(_ active: Bool) {
+        guard sceneActive != active else { return }
+        sceneActive = active
+        updateDisplayTimer()
+    }
+
+    /// Start or stop the 10 Hz display timer. It runs only while MPD is playing,
+    /// the app is in the foreground *and* some on-screen view shows the time
+    /// (`PlaybackClock.observers`) — otherwise it would publish ten times a
+    /// second to nothing. Stopped, it costs zero wakes; the poll keeps `elapsed`
+    /// right to within a second, and the timer resumes from there.
+    private func updateDisplayTimer() {
+        setDisplayTimerActive(displayTimerShouldRun(isPlaying: isPlaying, sceneActive: sceneActive,
+                                                    observers: clock.observers))
+    }
+
     private func setDisplayTimerActive(_ active: Bool) {
         if active {
             guard displayTimer == nil else { return }
@@ -603,7 +654,6 @@ final class MPDStore: ObservableObject {
             let vol  = Int(s["volume"]  ?? "80") ?? 80
             let pos  = Int(s["song"]    ?? "-1") ?? -1
             let sid  = s["songid"]  ?? ""
-            let br   = s["bitrate"] ?? ""
             let af   = s["audio"]   ?? ""
             let rep   = s["repeat"]  == "1"
             let ran   = s["random"]  == "1"
@@ -638,7 +688,7 @@ final class MPDStore: ObservableObject {
 
                 // Stop 10 Hz display timer while paused/stopped; restart when playing.
                 // Throttle poll from 1s → 3s when not playing.
-                self.setDisplayTimerActive(self.isPlaying)
+                self.updateDisplayTimer()
                 self.setPollingInterval(self.isPlaying ? 1.0 : 3.0)
 
                 // Only fire @Published setters when values actually change
@@ -647,7 +697,6 @@ final class MPDStore: ObservableObject {
                 if self.volume       != vol { self.volume       = vol }
                 if self.playlistPos  != pos { self.playlistPos  = pos }
                 if self.currentSongID != sid { self.currentSongID = sid }
-                if self.bitrate      != br  { self.bitrate      = br }
                 if self.audioFmt     != af  { self.audioFmt     = af }
 
                 let previousPartition = self.currentPartition
@@ -679,7 +728,7 @@ final class MPDStore: ObservableObject {
                 if let entry = self.recentRecorder.tick(song: song, isPlaying: self.isPlaying, now: Date()) {
                     self.pushRecent(entry)
                 }
-                if self.isPhoneStreaming { self.updateNowPlayingInfo() }
+                if self.isPhoneStreaming { self.updateNowPlayingInfoIfNeeded() }
             }
         } catch {
             DispatchQueue.main.async { [weak self] in
@@ -1747,155 +1796,40 @@ final class MPDStore: ObservableObject {
     /// moved, only the connection's partition binding and queue commands. See
     /// plans/move-active-output-hang.md before assuming otherwise.
     func transferQueue(toPartition target: String,
-                       completion: @escaping @MainActor (String?) -> Void) {
-        guard !isTransferringQueue else { completion("A transfer is already in progress"); return }
+                       completion: @escaping @MainActor (TransferResult) -> Void) {
+        guard !isTransferringQueue else {
+            completion(TransferResult(failure: "A transfer is already in progress")); return
+        }
         if let reason = transferRefusalReason(
             queueIsEmpty: queue.isEmpty,
             containsCDTracks: queue.contains { $0.sourceKind == .cd },
             targetPartition: target,
             currentPartition: currentPartition,
             storedPlaylistsAvailable: storedPlaylistsAvailable ?? true) {
-            completion(reason); return
+            completion(TransferResult(failure: reason)); return
         }
 
         let source = currentPartition
         let temp = transferTempPlaylistName()
-        let state: TransferPlaybackState = isPlaying ? .playing : (isPaused ? .paused : .stopped)
-        let pos = playlistPos
-        let at = elapsed
-        let dur = duration
         // Captured here, on main: @Published state must never be read from
-        // inside Q.async.
-        let modes = (rep: repeatMode, rnd: randomMode, sng: singleMode, csm: consumeMode)
+        // inside Q.async. These are only fallbacks — the transfer re-reads the
+        // source's status on Q just before the save.
+        let fallback = TransferFallback(
+            state: isPlaying ? .playing : (isPaused ? .paused : .stopped),
+            pos: playlistPos, elapsed: elapsed, duration: duration)
         isTransferringQueue = true
+        let sock = socket
 
         Q.async { [weak self] in
-            guard let self else { return }
-            var failure: String?
-
-            // Everything after the save must clean the scratch playlist up, on
-            // every path — it lives in the user's playlist directory.
-            func cleanup() {
-                _ = try? self.socket.command("rm \"\(temp.esc)\"")
-            }
-
-            // A target with no enabled outputs is refused before anything
-            // changes. One whose outputs are enabled but whose device is off
-            // cannot be seen from here — waiting for playback below catches that.
-            if state != .stopped, !source.isEmpty {
-                _ = try? self.socket.command("partition \"\(target.esc)\"")
-                let outs = (try? self.socket.command("outputs")) ?? []
-                _ = try? self.socket.command("partition \"\(source.esc)\"")
-                let enabled = outs
-                    .filter { $0["plugin"] != "dummy" && $0["outputenabled"] == "1" }
-                    .compactMap { $0["outputname"] }
-                if let why = transferTargetOutputsRefusal(target: target, enabledOutputs: enabled, willPlay: true) {
-                    DispatchQueue.main.async {
-                        self.isTransferringQueue = false
-                        completion(why)
-                    }
-                    return
-                }
-            }
-
-            // Ground truth for what to resume, read on Q milliseconds before the
-            // save rather than whatever the 10 Hz display timer had interpolated
-            // when the user tapped. `startedAt` then measures how long the
-            // transfer itself takes, so the seek can account for the music that
-            // kept playing during it.
-            var srcPos = pos, srcElapsed = at, srcDuration = dur, srcState = state
-            if let recs = try? self.socket.command("status") {
-                var st: [String: String] = [:]
-                for r in recs { st.merge(r) { _, new in new } }
-                if let v = Int(st["song"] ?? "")        { srcPos = v }
-                if let v = Double(st["elapsed"] ?? "")  { srcElapsed = v }
-                if let v = Double(st["duration"] ?? "") { srcDuration = v }
-                switch st["state"] {
-                case "play":  srcState = .playing
-                case "pause": srcState = .paused
-                case "stop":  srcState = .stopped
-                default: break
-                }
-            }
-            let startedAt = Date()
-
-            do {
-                // A leftover from a previous run under the same name would make
-                // `save` ACK on pre-0.24 servers, which take no replace mode.
-                _ = try? self.socket.command("rm \"\(temp.esc)\"")
-                _ = try self.socket.command("save \"\(temp.esc)\"")
-            } catch {
-                DispatchQueue.main.async {
-                    self.isTransferringQueue = false
-                    completion(Self.ackMessage(error.localizedDescription))
-                }
-                return
-            }
-
-            do {
-                // ---- build the target completely before touching the source ----
-                _ = try self.socket.command("partition \"\(target.esc)\"")
-                _ = try self.socket.command("clear")
-                _ = try self.socket.command("load \"\(temp.esc)\"")
-
-                // The four queue modes describe the queue, so they travel with
-                // it. Volume deliberately does not — it belongs to the target's
-                // own outputs, and carrying it over would blast a room at the
-                // level of a different one.
-                _ = try? self.socket.command("repeat \(modes.rep ? 1 : 0)")
-                _ = try? self.socket.command("random \(modes.rnd ? 1 : 0)")
-                _ = try? self.socket.command("single \(modes.sng ? 1 : 0)")
-                _ = try? self.socket.command("consume \(modes.csm ? 1 : 0)")
-
-                let seekTo = transferCompensatedElapsed(
-                    elapsed: srcElapsed,
-                    transferSeconds: Date().timeIntervalSince(startedAt),
-                    duration: srcDuration,
-                    state: srcState)
-                if let start = transferStartCommand(state: srcState, pos: srcPos, elapsed: seekTo) {
-                    // An `error:` left by an earlier failure in this partition
-                    // would otherwise read as this start failing.
-                    _ = try? self.socket.command("clearerror")
-                    _ = try self.socket.command(start)
-                    // Nothing else is sent until the target is audibly running.
-                    // The source keeps playing meanwhile, so a target whose
-                    // outputs cannot open costs nothing but a message.
-                    if case .failed(let why) = self.waitForTransferTarget() {
-                        _ = try? self.socket.command("stop")
-                        _ = try? self.socket.command("clear")
-                        throw TransferTargetDidNotStart(reason: why)
-                    }
-                    for cmd in transferFinishCommands(state: srcState) {
-                        _ = try self.socket.command(cmd)
-                    }
-                }
-
-                // ---- target is playing; only now stop the source ----
-                if !source.isEmpty {
-                    _ = try? self.socket.command("partition \"\(source.esc)\"")
-                    _ = try? self.socket.command("clear")
-                    _ = try? self.socket.command("stop")
-                }
-                // Follow the music, as Roon does: you transferred it because you
-                // want to keep controlling it.
-                _ = try? self.socket.command("partition \"\(target.esc)\"")
-            } catch let notStarted as TransferTargetDidNotStart {
-                failure = "\(target) could not start playing — its outputs may be switched off.\n\n"
-                    + "MPD said: \(notStarted.reason)\n\nNothing was moved; \(source) is unchanged."
-                if !source.isEmpty { _ = try? self.socket.command("partition \"\(source.esc)\"") }
-            } catch {
-                failure = Self.ackMessage(error.localizedDescription)
-                // Get back to where the user was; the source is untouched.
-                if !source.isEmpty { _ = try? self.socket.command("partition \"\(source.esc)\"") }
-            }
-            cleanup()
-
-            let landedOn = failure == nil ? target : source
+            let result = Self.performTransfer(on: sock, source: source, target: target,
+                                              scratch: temp, fallback: fallback)
             DispatchQueue.main.async {
+                guard let self else { return }
                 self.isTransferringQueue = false
+                let landedOn = result.failure == nil ? target : source
                 self.currentPartition = landedOn
                 self.partitionToRestore = nil
-                if failure == nil {
+                if result.failure == nil {
                     self.rememberPartitionForActiveServer(landedOn)
                     // What a manual switch records. Without it the refresh below
                     // still saw the *source* as the remembered partition, and
@@ -1906,9 +1840,174 @@ final class MPDStore: ObservableObject {
                 self.loadOutputs()
                 self.loadPartitions()
                 self.loadPlaylists()
-                completion(failure)
+                // Show the partition we landed on at once. ReplayGain is read only
+                // on demand (it is not in `status`), and the next poll could be
+                // 3 s away — both used to show the *source's* values for a while,
+                // which read as the transfer having changed them.
+                self.loadReplayGainStatus()
+                self.Q.async { [weak self] in self?.poll() }
+                completion(result)
             }
         }
+    }
+
+    /// What main-thread state said when the user tapped, in case `status` cannot
+    /// be read on Q.
+    nonisolated struct TransferFallback: Sendable {
+        let state: TransferPlaybackState
+        let pos: Int
+        let elapsed: Double
+        let duration: Double
+    }
+
+    /// The whole transfer, on the socket queue. Static and socket-parameterised
+    /// so a live test can drive exactly this sequence against a real server.
+    ///
+    /// Partition-owned settings — consume, crossfade, MixRamp, ReplayGain — are
+    /// never sent to either side. They are snapshotted on both partitions before
+    /// anything changes and checked again afterwards; drift is put back and
+    /// reported, so a transfer can never silently change them.
+    nonisolated static func performTransfer(on socket: MPDSocket, source: String, target: String,
+                                            scratch temp: String,
+                                            fallback: TransferFallback) -> TransferResult {
+        func merged(_ cmd: String) -> [String: String]? {
+            guard let recs = try? socket.command(cmd) else { return nil }
+            var d: [String: String] = [:]
+            for r in recs { d.merge(r) { _, new in new } }
+            return d
+        }
+        func settingsHere() -> PartitionSettings? {
+            guard let st = merged("status") else { return nil }
+            return PartitionSettings(status: st, replayGainStatus: merged("replay_gain_status"))
+        }
+        func bind(_ p: String) -> Bool {
+            !p.isEmpty && (try? socket.command("partition \"\(p.esc)\"")) != nil
+        }
+
+        // A target with no enabled outputs is refused before anything changes.
+        // One whose outputs are enabled but whose device is off cannot be seen
+        // from here — waiting for playback below catches that.
+        if fallback.state != .stopped, !source.isEmpty {
+            _ = bind(target)
+            let outs = (try? socket.command("outputs")) ?? []
+            _ = bind(source)
+            let enabled = outs
+                .filter { $0["plugin"] != "dummy" && $0["outputenabled"] == "1" }
+                .compactMap { $0["outputname"] }
+            if let why = transferTargetOutputsRefusal(target: target, enabledOutputs: enabled, willPlay: true) {
+                return TransferResult(failure: why)
+            }
+        }
+
+        // Ground truth for what to resume, read on Q milliseconds before the save
+        // rather than whatever the 10 Hz display timer had interpolated when the
+        // user tapped. The same read is the source's "before" snapshot.
+        // `startedAt` then measures how long the transfer itself takes, so the
+        // seek can account for the music that kept playing during it.
+        var srcPos = fallback.pos, srcElapsed = fallback.elapsed
+        var srcDuration = fallback.duration, srcState = fallback.state
+        let srcStatus = merged("status")
+        if let st = srcStatus {
+            if let v = Int(st["song"] ?? "")        { srcPos = v }
+            if let v = Double(st["elapsed"] ?? "")  { srcElapsed = v }
+            if let v = Double(st["duration"] ?? "") { srcDuration = v }
+            switch st["state"] {
+            case "play":  srcState = .playing
+            case "pause": srcState = .paused
+            case "stop":  srcState = .stopped
+            default: break
+            }
+        }
+        let srcBefore = srcStatus.map {
+            PartitionSettings(status: $0, replayGainStatus: merged("replay_gain_status"))
+        }
+        let startedAt = Date()
+
+        do {
+            // A leftover from a previous run under the same name would make
+            // `save` ACK on pre-0.24 servers, which take no replace mode.
+            _ = try? socket.command("rm \"\(temp.esc)\"")
+            _ = try socket.command("save \"\(temp.esc)\"")
+        } catch {
+            return TransferResult(failure: ackMessage(error.localizedDescription))
+        }
+
+        let setup = transferTargetSetupCommands(target: target, scratchPlaylist: temp,
+                                                sourceStatus: srcStatus ?? [:])
+        var failure: String?
+        var touchedTarget = false
+        var dstBefore: PartitionSettings?
+        do {
+            // ---- build the target completely before touching the source ----
+            _ = try socket.command(setup.required[0])            // partition <target>
+            touchedTarget = true
+            dstBefore = settingsHere()                           // before anything changes there
+            for cmd in setup.required.dropFirst() { _ = try socket.command(cmd) }
+            // Repeat/random/single travel with the queue; consume does not.
+            for cmd in setup.bestEffort { _ = try? socket.command(cmd) }
+
+            let seekTo = transferCompensatedElapsed(
+                elapsed: srcElapsed,
+                transferSeconds: Date().timeIntervalSince(startedAt),
+                duration: srcDuration,
+                state: srcState)
+            if let start = transferStartCommand(state: srcState, pos: srcPos, elapsed: seekTo) {
+                // An `error:` left by an earlier failure in this partition
+                // would otherwise read as this start failing.
+                _ = try? socket.command("clearerror")
+                _ = try socket.command(start)
+                // Nothing else is sent until the target is audibly running.
+                // The source keeps playing meanwhile, so a target whose
+                // outputs cannot open costs nothing but a message.
+                if case .failed(let why) = waitForTransferTarget(on: socket) {
+                    _ = try? socket.command("stop")
+                    _ = try? socket.command("clear")
+                    throw TransferTargetDidNotStart(reason: why)
+                }
+                for cmd in transferFinishCommands(state: srcState) {
+                    _ = try socket.command(cmd)
+                }
+            }
+
+            // ---- target is playing; only now stop the source ----
+            if bind(source) {
+                _ = try? socket.command("clear")
+                _ = try? socket.command("stop")
+            }
+        } catch let notStarted as TransferTargetDidNotStart {
+            failure = "\(target) could not start playing — its outputs may be switched off.\n\n"
+                + "MPD said: \(notStarted.reason)\n\nNothing was moved; \(source) is unchanged."
+        } catch {
+            failure = ackMessage(error.localizedDescription)
+        }
+        _ = try? socket.command("rm \"\(temp.esc)\"")
+
+        // ---- check both partitions' own settings, and repair any drift ----
+        var notes: [String] = []
+        var summary: [String] = []
+        func verify(_ before: PartitionSettings?, on partition: String, label: String) {
+            guard let before, bind(partition), let after = settingsHere() else {
+                summary.append("\(label) unchecked"); return
+            }
+            let drift = before.drift(to: after)
+            guard !drift.isEmpty else { summary.append("\(label) ok"); return }
+            for cmd in before.restoreCommands(from: after) { _ = try? socket.command(cmd) }
+            let repaired = settingsHere().map { before.drift(to: $0).isEmpty } ?? false
+            if let note = transferSettingsNote(partition: partition, drift: drift, repaired: repaired) {
+                notes.append(note)
+            }
+            summary.append("\(label) \(drift.joined(separator: "+")) \(repaired ? "restored" : "NOT restored")")
+        }
+        if touchedTarget { verify(dstBefore, on: target, label: "dst") }
+        if !source.isEmpty { verify(srcBefore, on: source, label: "src") }
+        MPDCommandLog.shared.record(command: "transfer \(source)→\(target) settings",
+                                    duration: Date().timeIntervalSince(startedAt),
+                                    outcome: summary.joined(separator: ", "))
+
+        // Follow the music on success, as Roon does: you transferred it because
+        // you want to keep controlling it. Otherwise go back to where you were.
+        _ = bind(failure == nil ? target : source)
+        return TransferResult(failure: failure, notes: notes)
     }
 
     /// Persist the partition against the active server profile, so a reconnect
@@ -1927,7 +2026,8 @@ final class MPDStore: ObservableObject {
     /// HDMI receiver — took 1.7 s, and a device waking from standby can take
     /// longer. A timeout only ever delays the failure message; success returns the
     /// moment playback is confirmed, and the source keeps playing throughout.
-    nonisolated private func waitForTransferTarget(timeout: TimeInterval = 8) -> TransferStartOutcome {
+    nonisolated private static func waitForTransferTarget(on socket: MPDSocket,
+                                                          timeout: TimeInterval = 8) -> TransferStartOutcome {
         let deadline = Date().addingTimeInterval(timeout)
         var previous: [String: String]?
         while true {
@@ -2042,6 +2142,10 @@ final class MPDStore: ObservableObject {
                 self.loadQueue()
                 self.loadOutputs()
                 self.loadPartitions()
+                // ReplayGain mode is per partition and not in `status`, so the poll
+                // never refreshes it — without this the button kept showing the
+                // previous partition's mode.
+                self.loadReplayGainStatus()
             }
         }
     }
@@ -2365,8 +2469,50 @@ final class MPDStore: ObservableObject {
     private var oggPlayerToken: UUID?
     /// Registered only while streaming to the phone.
     private var routeChangeObserver: NSObjectProtocol?
+    private var interruptionObserver: NSObjectProtocol?
+    /// Streaming to the phone is on, but deliberately silent — an interruption
+    /// (or, from item 2, MPD being paused). The players have let go of the
+    /// stream; `resumePhoneStreamPlayer` rejoins it live. Counted as "rendering"
+    /// by the background check, so being quiet on purpose never switches the
+    /// feature off.
+    private var phoneStreamSuspended = false
+    /// The partition phone streaming was started in. The stream is that
+    /// partition's httpd output, so it only makes sense while the app is looking
+    /// at that partition: elsewhere, `isPlaying` describes *other* music, and
+    /// following it muted the phone (target paused), played the stream's own
+    /// partition over the phone (target playing), or — after moving the queue away
+    /// and back — started the phone speaker unasked.
+    private var phoneStreamPartition: String?
 
     func togglePhoneStream() { isPhoneStreaming ? stopPhoneStream() : startPhoneStream() }
+
+    /// Every `setActive` goes through this serial queue, never the main thread:
+    /// it is a synchronous round trip to the audio server, and Xcode flags it on
+    /// main as a cause of UI hangs. iOS has no asynchronous form
+    /// (`activateWithOptions:completionHandler:` is watchOS-only). One serial
+    /// queue keeps the calls in order — a stop's deactivate always lands before
+    /// the next start's activate.
+    private let audioSessionQueue = DispatchQueue(label: "mikmpd.audiosession", qos: .userInitiated)
+    /// Bumped by every start and stop, so an activation that completes after the
+    /// user has already changed their mind does not start anything.
+    private var phoneStreamGeneration = 0
+
+    /// Activate the session off the main thread, then continue on main with nil
+    /// or the error's description.
+    nonisolated private static func activateAudioSession(on queue: DispatchQueue, setCategory: Bool,
+                                                         then: @escaping @MainActor (String?) -> Void) {
+        queue.async {
+            var failure: String?
+            do {
+                let session = AVAudioSession.sharedInstance()
+                if setCategory { try session.setCategory(.playback, mode: .default) }
+                try session.setActive(true)
+            } catch {
+                failure = error.localizedDescription
+            }
+            Task { @MainActor in then(failure) }
+        }
+    }
 
     func startPhoneStream() {
         guard let url = Self.parseStreamURL(httpStreamURL) else { return }
@@ -2376,40 +2522,47 @@ final class MPDStore: ObservableObject {
         // notification at the apps we were about to interrupt, and calling
         // play() on a session that had just been switched off.
         stopPhoneStream()
-        do {
-            let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playback, mode: .default)
-            try session.setActive(true)
-        } catch {
-            connectionError = "Audio session: \(error.localizedDescription)"
-            return
-        }
+        phoneStreamGeneration &+= 1
+        let generation = phoneStreamGeneration
         phoneStreamError = nil
+        phoneStreamPartition = currentPartition.isEmpty ? nil : currentPartition
         isPhoneStreaming = true
         observeAudioRoute()
+        observeAudioInterruptions()
         UIApplication.shared.beginReceivingRemoteControlEvents()
         setupRemoteCommands()
         startBgPollTimer()
         updateNowPlayingInfo()
 
-        // Which player can open this depends on what MPD is encoding, which only
-        // the response says. Probing costs one HEAD-shaped request and keeps the
-        // codec entirely out of the app's settings.
-        Self.probeStreamKind(url) { [weak self] kind in
-            guard let self, self.isPhoneStreaming else { return }
-            switch kind {
-            case .system: self.startSystemPlayer(url: url)
-            case .ogg:    self.startOggPlayer(url: url)
+        Self.activateAudioSession(on: audioSessionQueue, setCategory: true) { [weak self] failure in
+            guard let self, self.isPhoneStreaming, generation == self.phoneStreamGeneration else { return }
+            if let failure {
+                self.stopPhoneStream()
+                self.connectionError = "Audio session: \(failure)"
+                return
+            }
+            // Which player can open this depends on what MPD is encoding, which
+            // only the response says. Probing costs one HEAD-shaped request and
+            // keeps the codec entirely out of the app's settings.
+            Self.probeStreamKind(url) { [weak self] kind in
+                guard let self, self.isPhoneStreaming, generation == self.phoneStreamGeneration else { return }
+                switch kind {
+                case .system: self.startSystemPlayer(url: url)
+                case .ogg:    self.startOggPlayer(url: url)
+                }
             }
         }
     }
 
     private func startSystemPlayer(url: URL) {
-        let item = AVPlayerItem(url: url)
-        item.preferredForwardBufferDuration = 30  // buffer 30s ahead for poor connections
-        let player = AVPlayer(playerItem: item)
+        let player = AVPlayer()
         player.automaticallyWaitsToMinimizeStalling = true
         streamPlayer = player
+        // MPD not playing: stay quiet, and closed, until it is.
+        guard isPlaying else { phoneStreamSuspended = true; return }
+        let item = AVPlayerItem(url: url)
+        item.preferredForwardBufferDuration = 30  // buffer 30s ahead for poor connections
+        player.replaceCurrentItem(with: item)
         player.play()
     }
 
@@ -2420,24 +2573,33 @@ final class MPDStore: ObservableObject {
             guard let self, self.oggPlayerToken == token else { return }   // stale player
             self.oggState = state
             if case .failed(let message) = state { self.phoneStreamError = message }
-            // `.idle` counts too: it is how a server closing the connection
-            // arrives. Reacting to `.failed` alone left "Streaming to phone" on
-            // screen over silence, with the audio session still held.
-            if state.endsPhoneStream { self.stopPhoneStream() }
+            // `.failed` arrives once the reconnect budget is spent; `.idle` only
+            // after an explicit stop. Either way, never "Streaming to phone" over
+            // silence with the audio session still held.
+            if state.endsPhoneStream { self.stopPhoneStream(); return }
+            // Keep the lock screen honest about a stream that is coming back.
+            self.updateNowPlayingInfo()
         }
         oggPlayer = player
+        // MPD not playing: stay quiet, and closed, until it is.
+        guard isPlaying else { phoneStreamSuspended = true; return }
         player.start(url: url)
     }
 
     func stopPhoneStream() {
         stopObservingAudioRoute()
+        phoneStreamSuspended = false
+        phoneStreamPartition = nil
         streamPlayer?.pause()
         streamPlayer = nil
         oggPlayerToken = nil        // before stop(): its own .idle must be ignored
         oggPlayer?.stop()
         oggPlayer = nil
         oggState = .idle
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        phoneStreamGeneration &+= 1
+        audioSessionQueue.async {
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        }
         isPhoneStreaming = false
         UIApplication.shared.endReceivingRemoteControlEvents()
         stopBgPollTimer()
@@ -2459,6 +2621,99 @@ final class MPDStore: ObservableObject {
     private func stopObservingAudioRoute() {
         if let observer = routeChangeObserver { NotificationCenter.default.removeObserver(observer) }
         routeChangeObserver = nil
+        if let observer = interruptionObserver { NotificationCenter.default.removeObserver(observer) }
+        interruptionObserver = nil
+    }
+
+    /// A call, Siri, an alarm or another app's audio. AVAudioEngine stops
+    /// itself when one begins, and v1.7 did not notice: the Ogg player went on
+    /// "playing" silence. AVPlayer pauses itself but never resumes. Both now
+    /// suspend, and rejoin the live stream when iOS says to resume.
+    private func observeAudioInterruptions() {
+        guard interruptionObserver == nil else { return }
+        interruptionObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.interruptionNotification, object: nil, queue: .main
+        ) { [weak self] note in
+            let type = (note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt)
+                .flatMap(AVAudioSession.InterruptionType.init(rawValue:))
+            let options = AVAudioSession.InterruptionOptions(
+                rawValue: note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0)
+            Task { @MainActor in
+                guard let type else { return }
+                self?.handleAudioInterruption(phoneStreamInterruptionAction(type: type, options: options))
+            }
+        }
+    }
+
+    private func handleAudioInterruption(_ action: PhoneStreamInterruptionAction) {
+        guard isPhoneStreaming else { return }
+        switch action {
+        case .suspend: suspendPhoneStreamPlayer()
+        case .resume:  resumePhoneStreamPlayer()
+        case .ignore:  break
+        }
+    }
+
+    /// MPD's play state changed. Pausing used to leave the phone playing out
+    /// whatever it had buffered — up to 30 s for mp3 — which read as a lock-screen
+    /// pause being ignored; resuming then played stale audio before reaching MPD's
+    /// live point. Now a pause silences the phone at once and lets go of the
+    /// stream (while paused, MPD's httpd output only sends encoded silence — no
+    /// reason to receive, decode and play it), and play rejoins it live.
+    private func phoneStreamFollowMPD() {
+        guard isPhoneStreaming,
+              phoneStreamPartitionAction(streamPartition: phoneStreamPartition,
+                                         current: currentPartition) != .stop else { return }
+        if isPlaying { resumePhoneStreamPlayer() } else { suspendPhoneStreamPlayer() }
+    }
+
+    /// The app switched partition, by hand or by moving playback. Leaving the
+    /// stream's own partition ends phone streaming — visibly, the toggle goes
+    /// off — rather than leaving "Streaming to phone" on over a stream the app
+    /// is no longer following.
+    private func phoneStreamFollowPartition() {
+        guard isPhoneStreaming else { return }
+        switch phoneStreamPartitionAction(streamPartition: phoneStreamPartition, current: currentPartition) {
+        case .adopt: phoneStreamPartition = currentPartition
+        case .stop:  stopPhoneStream()
+        case .keep:  break
+        }
+    }
+
+    /// Go quiet without switching phone streaming off: let go of the stream so a
+    /// silent phone uses no network or audio power.
+    func suspendPhoneStreamPlayer() {
+        guard isPhoneStreaming, !phoneStreamSuspended else { return }
+        phoneStreamSuspended = true
+        oggPlayer?.suspend()
+        if let p = streamPlayer {
+            p.pause()
+            p.replaceCurrentItem(with: nil)      // drop the stale buffer
+        }
+    }
+
+    /// Rejoin the live stream — never resume a buffer that is behind MPD. Only
+    /// while MPD is playing: an interruption ending over a paused MPD stays quiet.
+    func resumePhoneStreamPlayer() {
+        guard isPhoneStreaming, phoneStreamSuspended, isPlaying,
+              let url = Self.parseStreamURL(httpStreamURL) else { return }
+        phoneStreamSuspended = false
+        let generation = phoneStreamGeneration
+        // The session normally stays active while suspended, so this is cheap —
+        // but it is still a round trip, and never on main.
+        Self.activateAudioSession(on: audioSessionQueue, setCategory: false) { [weak self] _ in
+            // Paused again, or stopped, while activating: start nothing.
+            guard let self, self.isPhoneStreaming, !self.phoneStreamSuspended,
+                  generation == self.phoneStreamGeneration else { return }
+            if let ogg = self.oggPlayer {
+                ogg.start(url: url)
+            } else if let p = self.streamPlayer {
+                let item = AVPlayerItem(url: url)
+                item.preferredForwardBufferDuration = 30
+                p.replaceCurrentItem(with: item)
+                p.play()
+            }
+        }
     }
 
     private func handleAudioRouteChange(reasonRawValue raw: UInt?) {
@@ -2468,6 +2723,8 @@ final class MPDStore: ObservableObject {
         case .stop:
             stopPhoneStream()
         case .restartOggStream:
+            // Not while quiet on purpose: that would start sound nobody asked for.
+            guard !phoneStreamSuspended else { return }
             if let url = Self.parseStreamURL(httpStreamURL) { oggPlayer?.start(url: url) }
         case .ignore:
             break
@@ -2503,29 +2760,91 @@ final class MPDStore: ObservableObject {
     private func setupRemoteCommands() {
         tearDownRemoteCommands()
         let center = MPRemoteCommandCenter.shared()
-        let q = self.Q
-        let sock = self.socket
-        center.playCommand.addTarget { @Sendable _ in
-            q.async { _ = try? sock.command("play") }
-            return .success
-        }
-        center.pauseCommand.addTarget { @Sendable _ in
-            q.async { _ = try? sock.command("pause 1") }
-            return .success
-        }
-        center.togglePlayPauseCommand.addTarget { @Sendable _ in
-            q.async { _ = try? sock.command("pause") }
-            return .success
-        }
-        center.nextTrackCommand.addTarget { @Sendable _ in
-            q.async { _ = try? sock.command("next") }
-            return .success
-        }
-        center.previousTrackCommand.addTarget { @Sendable _ in
-            q.async { _ = try? sock.command("previous") }
-            return .success
+        // Through the store, on main — not straight to the socket as v1.7 did,
+        // which skipped the optimistic state, the lock-screen update and every
+        // check. MediaPlayer calls these on its own terms; the closures stay
+        // @Sendable and hop explicitly, since a MainActor-inferred closure traps
+        // if invoked elsewhere (see PhoneStreamTests).
+        let targets: [(MPRemoteCommand, PhoneRemoteCommand)] = [
+            (center.playCommand, .play), (center.pauseCommand, .pause),
+            (center.togglePlayPauseCommand, .toggle),
+            (center.nextTrackCommand, .next), (center.previousTrackCommand, .previous),
+        ]
+        for (remote, command) in targets {
+            remote.addTarget { @Sendable [weak self] _ in
+                guard let self else { return .commandFailed }
+                Task { @MainActor in self.handleRemote(command) }
+                return .success
+            }
         }
         center.changePlaybackPositionCommand.isEnabled = false
+    }
+
+    /// One lock-screen / headphone command. The phone reacts at once — a pause
+    /// is silent immediately, whatever happens to the command — and the command
+    /// reaches MPD on a connection that is known to be alive.
+    func handleRemote(_ command: PhoneRemoteCommand) {
+        let received = Date()
+        guard let cmd = remoteCommandMPD(command, isPlaying: isPlaying, isPaused: isPaused) else {
+            MPDCommandLog.shared.record(command: "remote: \(command.rawValue)", duration: 0,
+                                        outcome: "nothing to do")
+            return
+        }
+        if let playing = remoteCommandResultIsPlaying(command, isPlaying: isPlaying) {
+            // Optimistic, like togglePlay. Longer lock than a tap: this may be
+            // about to reconnect first.
+            stateLockUntil = Date().addingTimeInterval(2)
+            isPaused = !playing && (isPlaying || isPaused)
+            isPlaying = playing                        // → phoneStreamFollowMPD
+            updateNowPlayingInfo()
+        }
+        let h = host, p = port, pw = password, partition = currentPartition
+        Q.async { [weak self] in
+            guard let self else { return }
+            let waited = Date().timeIntervalSince(received)
+            let outcome = self.sendEnsuringConnection(cmd, host: h, port: p, password: pw,
+                                                      partition: partition)
+            // How long the command sat in the queue is the number that would
+            // explain a press that seemed to be held until unlock.
+            MPDCommandLog.shared.record(command: "remote: \(command.rawValue) → \(cmd)",
+                                        duration: Date().timeIntervalSince(received),
+                                        outcome: String(format: "queued %.2f s; %@", waited, outcome))
+            self.poll()
+        }
+    }
+
+    /// Send one command, reconnecting first if the socket is down or has been
+    /// quiet long enough for MPD to have dropped it, and once more if it fails.
+    /// For lock-screen commands, where there is no banner to show a failure on
+    /// and a press that silently does nothing is the bug being fixed.
+    nonisolated private func sendEnsuringConnection(_ cmd: String, host: String, port: Int,
+                                                    password: String, partition: String) -> String {
+        func reconnect() -> Bool {
+            do {
+                try socket.connect(host: host, port: port, password: password)
+                if !partition.isEmpty { _ = try? socket.command("partition \"\(partition.esc)\"") }
+                DispatchQueue.main.async { [weak self] in
+                    // The store may have seen the old socket die; let it resync.
+                    if let self, !self.isConnected { self.connect() }
+                }
+                return true
+            } catch { return false }
+        }
+        var reconnected = false
+        if mpdConnectionNeedsRefresh(connected: socket.connected, idleSeconds: socket.idleSeconds) {
+            guard reconnect() else { return "not connected; reconnect failed" }
+            reconnected = true
+        }
+        do {
+            _ = try socket.command(cmd)
+            return reconnected ? "ok after reconnect" : "ok"
+        } catch MPDError.ack(let line) {
+            return Self.ackMessage(line)
+        } catch {
+            guard !reconnected, reconnect() else { return "failed: \(error.localizedDescription)" }
+            do { _ = try socket.command(cmd); return "ok after retry" }
+            catch { return "failed after retry: \(error.localizedDescription)" }
+        }
     }
 
     private func tearDownRemoteCommands() {
@@ -2535,11 +2854,14 @@ final class MPDStore: ObservableObject {
         center.togglePlayPauseCommand.removeTarget(nil)
         center.nextTrackCommand.removeTarget(nil)
         center.previousTrackCommand.removeTarget(nil)
-        // Clearing the info alone leaves the system's idea of playback state
-        // behind, which is what keeps a stale mikMPD card in Control Center
-        // after the stream ends (or after a force-quit, where nothing else runs).
-        MPNowPlayingInfoCenter.default().playbackState = .stopped
+        // No `playbackState` here or anywhere: on iOS the system ignores it
+        // ("[MRNowPlaying] Ignoring setPlaybackState because application does
+        // not contain entitlement com.apple.mediaremote.set-playback-state") —
+        // it only takes effect on macOS. What ends the card on iOS is clearing
+        // the info and deactivating the audio session, which stopPhoneStream does.
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        lastNowPlaying = nil
+        nowPlayingArtwork = nil
     }
 
     /// Entering the background.
@@ -2561,31 +2883,65 @@ final class MPDStore: ObservableObject {
     /// alone is not evidence — that is the whole point of the check above — and
     /// the Ogg player needs its own answer or the bug returns for Ogg users only.
     private var isStreamActuallyRendering: Bool {
+        if phoneStreamSuspended { return true }      // quiet on purpose
         if oggPlayer != nil { return oggState.isRendering }
         if let p = streamPlayer { return p.timeControlStatus != .paused }
         return false   // neither player started yet
     }
 
+    /// What the lock screen was last told, for `updateNowPlayingInfoIfNeeded`.
+    private var lastNowPlaying: (snapshot: NowPlayingInfoSnapshot, elapsed: Double, at: Date)?
+    /// Built once per song: a new MPMediaItemArtwork every poll made the system
+    /// re-process the same image every second.
+    private var nowPlayingArtwork: (key: String, artwork: MPMediaItemArtwork)?
+
+    private var nowPlayingSnapshot: NowPlayingInfoSnapshot {
+        NowPlayingInfoSnapshot(
+            title: currentSong.displayTitle, artist: currentSong.displayArtist,
+            album: currentSong.album, duration: duration,
+            playing: isPlaying, paused: isPaused,
+            hasArtwork: albumArtCache[currentSong.artKey] != nil)
+    }
+
+    /// Called from every poll while streaming, but only talks to the system when
+    /// something it cannot work out for itself has changed — the song, the play
+    /// state, the artwork arriving, or a jump in position (a seek, from any
+    /// client). Between those the lock screen extrapolates elapsed time from
+    /// `playbackRate`, which is how the API is meant to be used.
+    private func updateNowPlayingInfoIfNeeded() {
+        let now = Date()
+        guard nowPlayingInfoNeedsUpdate(last: lastNowPlaying?.snapshot,
+                                        lastElapsed: lastNowPlaying?.elapsed ?? 0,
+                                        lastAt: lastNowPlaying?.at ?? .distantPast,
+                                        current: nowPlayingSnapshot, elapsed: elapsed, now: now)
+        else { return }
+        updateNowPlayingInfo()
+    }
+
     func updateNowPlayingInfo() {
         guard isPhoneStreaming else { return }
+        let snapshot = nowPlayingSnapshot
+        lastNowPlaying = (snapshot, elapsed, Date())
         var info = [String: Any]()
-        info[MPMediaItemPropertyTitle] = currentSong.displayTitle
-        info[MPMediaItemPropertyArtist] = currentSong.displayArtist
-        info[MPMediaItemPropertyAlbumTitle] = currentSong.album
+        info[MPMediaItemPropertyTitle] = snapshot.title
+        info[MPMediaItemPropertyArtist] = snapshot.artist
+        info[MPMediaItemPropertyAlbumTitle] = snapshot.album
         info[MPMediaItemPropertyPlaybackDuration] = duration
         info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = elapsed
-        info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? 1.0 : 0.0
-        if let img = albumArtCache[currentSong.artKey] ?? Self.fallbackArtwork(for: currentSong) {
+        let reconnecting: Bool = { if case .reconnecting = oggState { true } else { false } }()
+        info[MPNowPlayingInfoPropertyPlaybackRate] = nowPlayingRate(isPlaying: isPlaying, reconnecting: reconnecting)
+        let artKey = "\(currentSong.artKey)|\(snapshot.hasArtwork)"
+        if let cached = nowPlayingArtwork, cached.key == artKey {
+            info[MPMediaItemPropertyArtwork] = cached.artwork
+        } else if let img = albumArtCache[currentSong.artKey] ?? Self.fallbackArtwork(for: currentSong) {
             // MediaPlayer invokes the request handler on its own queue —
             // it must be @Sendable or the MainActor inference traps there.
-            info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: img.size) { @Sendable _ in img }
+            let artwork = MPMediaItemArtwork(boundsSize: img.size) { @Sendable _ in img }
+            nowPlayingArtwork = (artKey, artwork)
+            info[MPMediaItemPropertyArtwork] = artwork
         }
+        // The rate is the play state on iOS; `playbackState` is ignored here.
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
-        // The playback *rate* alone isn't enough: the system reads playbackState
-        // to know whether this app is still the playing one. It was never set,
-        // which is why the now-playing entry could outlive the stream.
-        MPNowPlayingInfoCenter.default().playbackState =
-            isPlaying ? .playing : (isPaused ? .paused : .stopped)
     }
 
     nonisolated static func parseStreamURL(_ s: String) -> URL? {

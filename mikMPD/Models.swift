@@ -128,16 +128,19 @@ nonisolated func albumLookupTitle(_ album: String) -> String {
 /// wrong disc caption on each. Folding only punctuation and case keeps this safe — the
 /// artist is still part of every key that uses it, so distinct albums never merge.
 nonisolated func albumGroupingKey(_ album: String) -> String {
-    let base = albumBaseAndDisc(album).base
-        .replacingOccurrences(of: "\u{2013}", with: "-")   // en dash
-        .replacingOccurrences(of: "\u{2014}", with: "-")   // em dash
-        .replacingOccurrences(of: "\u{2212}", with: "-")   // minus sign
-        .replacingOccurrences(of: "\u{2018}", with: "'")   // left single quote
-        .replacingOccurrences(of: "\u{2019}", with: "'")   // right single quote
-        .replacingOccurrences(of: "\u{201C}", with: "\"")  // left double quote
-        .replacingOccurrences(of: "\u{201D}", with: "\"")  // right double quote
-        .replacingOccurrences(of: "\u{2026}", with: "...") // ellipsis
-    return base.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    // One pass over the scalars rather than eight replacingOccurrences — this
+    // runs for every album in a list (~820 here) each time the list regroups.
+    var folded = String.UnicodeScalarView()
+    for scalar in albumBaseAndDisc(album).base.unicodeScalars {
+        switch scalar {
+        case "\u{2013}", "\u{2014}", "\u{2212}": folded.append("-")    // en/em dash, minus
+        case "\u{2018}", "\u{2019}":             folded.append("'")    // smart single quotes
+        case "\u{201C}", "\u{201D}":             folded.append("\"")   // smart double quotes
+        case "\u{2026}":                         folded.append(contentsOf: "...".unicodeScalars)
+        default:                                 folded.append(scalar)
+        }
+    }
+    return String(folded).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
 }
 
 /// Collapse disc variants of the same album into one entry, preserving the
@@ -187,7 +190,9 @@ nonisolated func albumDiscCount(variants: [String], tagDiscs: Int?) -> Int {
 /// One row in an artist-aware album list: disc variants merged per artist.
 nonisolated struct AlbumGroup: Identifiable, Equatable {
     var artist: String
-    var base: String
+    var base: String {
+        didSet { groupingKey = albumGroupingKey(base) }
+    }
     var variants: [String]
     var tagDiscs: Int? = nil          // from listDiscCounts; nil = not yet fetched
     /// Set when this row is a compilation: the directory its tracks share. Nil
@@ -198,7 +203,19 @@ nonisolated struct AlbumGroup: Identifiable, Equatable {
     /// since its displayed artist is a placeholder shared with every other one.
     var artKeyArtist: String { compilationBase ?? artist }
     /// Punctuation-folded key; use this to look up disc maps, never `base` directly.
-    var groupingKey: String { albumGroupingKey(base) }
+    /// Stored, not computed: it runs two regexes and a string fold, and rows read
+    /// it on every render (disc maps, now-playing matching).
+    private(set) var groupingKey: String
+
+    init(artist: String, base: String, variants: [String], tagDiscs: Int? = nil,
+         compilationBase: String? = nil) {
+        self.artist = artist
+        self.base = base
+        self.variants = variants
+        self.tagDiscs = tagDiscs
+        self.compilationBase = compilationBase
+        self.groupingKey = albumGroupingKey(base)
+    }
     var discCount: Int { albumDiscCount(variants: variants, tagDiscs: tagDiscs) }
 }
 
@@ -700,6 +717,125 @@ nonisolated func shouldMigrateLegacyServer(persistedHost: String?, hasServers: B
     return true
 }
 
+/// MPD's `audio` status field made readable: "44100:16:2" → "44.1 kHz · 16-bit ·
+/// stereo", "96000:24:2" → "96 kHz · 24-bit · stereo", "48000:f:2" → "48 kHz ·
+/// 32-bit float · stereo", "dsd64:2" → "DSD64 · stereo". Anything it does not
+/// recognise comes back unchanged — showing MPD's own text beats guessing.
+nonisolated func formatAudioFormat(_ raw: String) -> String {
+    let parts = raw.split(separator: ":").map(String.init)
+    func channels(_ c: String) -> String? {
+        switch c {
+        case "1": "mono"
+        case "2": "stereo"
+        default:  Int(c).map { "\($0) ch" }
+        }
+    }
+    if parts.count == 2, parts[0].lowercased().hasPrefix("dsd"), let ch = channels(parts[1]) {
+        return "\(parts[0].uppercased()) · \(ch)"
+    }
+    guard parts.count == 3, let rate = Int(parts[0]), rate > 0, let ch = channels(parts[2]) else { return raw }
+    let khz = Double(rate) / 1000
+    let rateText = khz == khz.rounded() ? "\(Int(khz)) kHz" : String(format: "%.1f kHz", khz)
+    let bits: String?
+    switch parts[1] {
+    case "f":  bits = "32-bit float"
+    case "dsd": bits = "DSD"
+    default:   bits = Int(parts[1]).map { "\($0)-bit" }
+    }
+    return [rateText, bits, ch].compactMap { $0 }.joined(separator: " · ")
+}
+
+/// What the lock screen shows, minus elapsed time (which it extrapolates).
+nonisolated struct NowPlayingInfoSnapshot: Equatable {
+    var title: String
+    var artist: String
+    var album: String
+    var duration: Double
+    var playing: Bool
+    var paused: Bool
+    var hasArtwork: Bool
+}
+
+/// Whether the lock-screen info must be re-sent. The system extrapolates elapsed
+/// time from the playback rate, so re-sending every poll is wasted work; it is
+/// needed only when the snapshot changed or the position jumped (a seek) by
+/// more than `tolerance` from where extrapolation would put it.
+nonisolated func nowPlayingInfoNeedsUpdate(last: NowPlayingInfoSnapshot?, lastElapsed: Double,
+                                           lastAt: Date, current: NowPlayingInfoSnapshot,
+                                           elapsed: Double, now: Date,
+                                           tolerance: Double = 2) -> Bool {
+    guard let last, last == current else { return true }
+    let expected = lastElapsed + (current.playing ? now.timeIntervalSince(lastAt) : 0)
+    return abs(elapsed - expected) > tolerance
+}
+
+/// A lock-screen, Control Center or headphone command.
+nonisolated enum PhoneRemoteCommand: String, Equatable {
+    case play, pause, toggle, next, previous
+}
+
+/// The MPD command for a remote command given what MPD is doing, or nil when
+/// there is nothing to do. State-aware on purpose: a bare `pause` (what v1.7
+/// sent for the headphone toggle) does nothing on a *stopped* player, and a
+/// lock-screen "pause" must never become a resume because local state was stale
+/// — hence explicit `pause 1` / `pause 0`, never the flip-flop form.
+nonisolated func remoteCommandMPD(_ command: PhoneRemoteCommand, isPlaying: Bool, isPaused: Bool) -> String? {
+    switch command {
+    case .play:     isPlaying ? nil : (isPaused ? "pause 0" : "play")
+    case .pause:    isPlaying || isPaused ? "pause 1" : nil
+    case .toggle:   isPlaying ? "pause 1" : (isPaused ? "pause 0" : "play")
+    case .next:     "next"
+    case .previous: "previous"
+    }
+}
+
+/// Whether MPD will be playing after `command`, for the optimistic update — nil
+/// for commands that do not change play state.
+nonisolated func remoteCommandResultIsPlaying(_ command: PhoneRemoteCommand, isPlaying: Bool) -> Bool? {
+    switch command {
+    case .play:     true
+    case .pause:    false
+    case .toggle:   !isPlaying
+    case .next, .previous: nil
+    }
+}
+
+/// Whether the MPD connection should be re-established before a command is sent
+/// on it. MPD drops idle clients after `connection_timeout` (60 s by default), and
+/// a phone that iOS suspended while paused wakes for a lock-screen press with a
+/// socket that still *looks* connected — sending on it costs a 5 s read timeout
+/// before failing. Reconnecting first when it has been quiet for a while is
+/// cheaper than finding out.
+nonisolated func mpdConnectionNeedsRefresh(connected: Bool, idleSeconds: TimeInterval,
+                                           threshold: TimeInterval = 45) -> Bool {
+    !connected || idleSeconds > threshold
+}
+
+/// What phone streaming does when the app's partition is `current`.
+nonisolated enum PhoneStreamPartitionAction: Equatable {
+    /// Streaming started before the partition was known; this is its partition.
+    case adopt
+    case keep
+    /// The app has left the partition whose httpd output the phone is playing.
+    case stop
+}
+
+/// An empty `current` is a connection in between partitions (reconnecting,
+/// switching servers) and is never a reason to stop.
+nonisolated func phoneStreamPartitionAction(streamPartition: String?, current: String) -> PhoneStreamPartitionAction {
+    guard !current.isEmpty else { return .keep }
+    guard let streamPartition, !streamPartition.isEmpty else { return .adopt }
+    return streamPartition == current ? .keep : .stop
+}
+
+/// The lock screen's playback rate — on iOS the only play-state signal an app
+/// can give it (`MPNowPlayingInfoCenter.playbackState` is ignored without a
+/// private entitlement). A phone stream that is reconnecting shows as stopped
+/// rather than claiming to play, the same honesty rule as the toggle.
+nonisolated func nowPlayingRate(isPlaying: Bool, reconnecting: Bool) -> Double {
+    isPlaying && !reconnecting ? 1 : 0
+}
+
 // MARK: - Queue transfer between partitions
 
 /// What the source partition was doing, so the target can be put back into it.
@@ -759,6 +895,145 @@ nonisolated func transferTargetOutputsRefusal(target: String, enabledOutputs: [S
                                               willPlay: Bool) -> String? {
     guard willPlay, enabledOutputs.isEmpty else { return nil }
     return "\(target) has no enabled outputs, so nothing could play there."
+}
+
+/// The playback settings that belong to a *partition*, not to the queue, and
+/// that a transfer must therefore leave alone on both sides.
+///
+/// In MPD each partition has its own player, so crossfade, MixRamp and the
+/// ReplayGain mode are per partition — and so is consume, which v1.7 wrongly
+/// copied from the source onto the target. The user's rule: if the destination
+/// has consume on, track gain and a crossfade, they are still there afterwards,
+/// and the source is not touched either. `transferQueue` snapshots both
+/// partitions before and after, and repairs any drift it finds.
+nonisolated struct PartitionSettings: Equatable {
+    /// Raw: "0", "1" or (MPD 0.24) "oneshot" — never collapsed to a Bool.
+    var consume: String
+    /// Seconds. `xfade` is *absent* from `status` when crossfade is 0.
+    var crossfade: Int
+    /// nil when absent from `status`.
+    var mixrampDB: Double?
+    /// nil when absent or "nan" — MPD's way of saying MixRamp is off.
+    var mixrampDelay: Double?
+    /// From `replay_gain_status` (it is not in `status`); nil when that could
+    /// not be read, in which case it is left out of every comparison and repair
+    /// rather than "restored" to nothing.
+    var replayGainMode: String?
+
+    init(consume: String, crossfade: Int, mixrampDB: Double?, mixrampDelay: Double?,
+         replayGainMode: String?) {
+        self.consume = consume
+        self.crossfade = crossfade
+        self.mixrampDB = mixrampDB
+        self.mixrampDelay = mixrampDelay
+        self.replayGainMode = replayGainMode
+    }
+
+    init(status: [String: String], replayGainStatus: [String: String]?) {
+        consume = status["consume"] ?? "0"
+        crossfade = Int(status["xfade"] ?? "0") ?? 0
+        mixrampDB = status["mixrampdb"].flatMap(Double.init).flatMap { $0.isNaN ? nil : $0 }
+        mixrampDelay = status["mixrampdelay"].flatMap(Double.init).flatMap { $0.isNaN ? nil : $0 }
+        replayGainMode = replayGainStatus?["replay_gain_mode"]
+    }
+
+    private enum Field: CaseIterable { case consume, crossfade, mixramp, replayGain }
+
+    private func differs(_ f: Field, _ other: PartitionSettings) -> Bool {
+        switch f {
+        case .consume:   return consume != other.consume
+        case .crossfade: return crossfade != other.crossfade
+        case .mixramp:
+            return !Self.same(mixrampDB, other.mixrampDB) || !Self.same(mixrampDelay, other.mixrampDelay)
+        case .replayGain:
+            guard let a = replayGainMode, let b = other.replayGainMode else { return false }
+            return a != b
+        }
+    }
+
+    /// Compared with a tolerance: MPD prints floats, and a value written back
+    /// must not read as drift because of its last decimal.
+    private static func same(_ a: Double?, _ b: Double?) -> Bool {
+        switch (a, b) {
+        case (nil, nil): true
+        case let (x?, y?): abs(x - y) < 0.001
+        default: false
+        }
+    }
+
+    private static func name(_ f: Field) -> String {
+        switch f {
+        case .consume: "Consume"
+        case .crossfade: "Crossfade"
+        case .mixramp: "MixRamp"
+        case .replayGain: "ReplayGain"
+        }
+    }
+
+    /// Names of the settings that differ between `self` (before) and `after`,
+    /// in a fixed order, for messages and the log.
+    func drift(to after: PartitionSettings) -> [String] {
+        Field.allCases.filter { differs($0, after) }.map(Self.name)
+    }
+
+    /// Commands that put a partition back to `self`, for the drifted fields only.
+    func restoreCommands(from after: PartitionSettings) -> [String] {
+        var cmds: [String] = []
+        for f in Field.allCases where differs(f, after) {
+            switch f {
+            case .consume:   cmds.append("consume \(consume)")
+            case .crossfade: cmds.append("crossfade \(crossfade)")
+            case .mixramp:
+                if let db = mixrampDB { cmds.append("mixrampdb \(db)") }
+                cmds.append(mixrampDelay.map { "mixrampdelay \($0)" } ?? "mixrampdelay nan")
+            case .replayGain:
+                if let m = replayGainMode { cmds.append("replay_gain_mode \"\(m.esc)\"") }
+            }
+        }
+        return cmds
+    }
+}
+
+/// The queue modes that *do* travel with the queue — repeat, random and single
+/// describe how this queue is played, so a shuffled playlist stays shuffled in
+/// the new room. Read from the source's `status` on the socket queue (not from
+/// main-thread state, which lags a poll), and sent raw, so `single oneshot`
+/// survives. Consume is deliberately absent: it belongs to the partition.
+nonisolated func transferQueueModeCommands(sourceStatus st: [String: String]) -> [String] {
+    [("repeat", st["repeat"]), ("random", st["random"]), ("single", st["single"])]
+        .compactMap { key, value in value.map { "\(key) \($0)" } }
+}
+
+/// Everything the target is sent before playback starts, in order. The first
+/// three must succeed; the mode commands are best-effort. Pure so a test can pin
+/// that no partition-owned setting (consume, crossfade, MixRamp, ReplayGain)
+/// is ever in it.
+nonisolated func transferTargetSetupCommands(target: String, scratchPlaylist: String,
+                                             sourceStatus: [String: String])
+    -> (required: [String], bestEffort: [String]) {
+    (["partition \"\(target.esc)\"", "clear", "load \"\(scratchPlaylist.esc)\""],
+     transferQueueModeCommands(sourceStatus: sourceStatus))
+}
+
+/// Outcome of a transfer, for the UI. `failure` means nothing moved; `notes`
+/// are things worth telling the user either way — a partition setting that
+/// changed during the move and was put back (or could not be).
+nonisolated struct TransferResult: Equatable {
+    var failure: String?
+    var notes: [String] = []
+
+    var needsAttention: Bool { failure != nil || !notes.isEmpty }
+    var alertTitle: String { failure != nil ? "Could Not Move Playback" : "Playback Moved" }
+    var alertMessage: String { ([failure].compactMap { $0 } + notes).joined(separator: "\n\n") }
+}
+
+/// Note for one partition whose settings drifted during a transfer.
+nonisolated func transferSettingsNote(partition: String, drift: [String], repaired: Bool) -> String? {
+    guard !drift.isEmpty else { return nil }
+    let what = drift.joined(separator: ", ")
+    return repaired
+        ? "\(partition): \(what) changed during the move and was put back."
+        : "\(partition): \(what) changed during the move and could not be put back."
 }
 
 /// What the Move Playback sheet shows for one partition.
