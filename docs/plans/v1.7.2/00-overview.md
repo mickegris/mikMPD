@@ -9,6 +9,13 @@ a nice-to-have.
 |---|---|---|---|
 | 1 | Songs chip in the Library: every track A–Z (or Z–A), tap to play, Add Next / Add / Add to Playlist | [01-songs-library-view.md](01-songs-library-view.md) | **Server** (0.24 live, plus a 0.21 instance); device for the energy check |
 
+> **Status: implemented on branch `v1.7.2` (build 42).** Unit tests (29 new)
+> and the read-only live suite `LiveSongCatalogTests` pass against the 0.24
+> server: 10,488 songs in 11 pages, the largest 492 KiB, every URI exactly once.
+> Checked in the simulator: chip position, index, A–Z/Z–A, filter, context menu
+> and Go to Album. Not yet checked: a real MPD 0.21, and the on-device energy
+> run (TESTING.md §25).
+
 ## Version and branch
 
 - **Version:** `MARKETING_VERSION` 1.7.1 → **1.7.2**, `CURRENT_PROJECT_VERSION`

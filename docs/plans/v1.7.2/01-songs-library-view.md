@@ -112,14 +112,18 @@ the exact v1.7.1 energy lesson. Only `SongListView` observes the catalog.
 
 Why cache at all: `LibraryView` rebuilds the chip's view on every chip switch,
 so view-local `@State` would re-download 3.8 MiB each time the user glances at
-Albums and back. The cache lives **per connection** and is dropped when:
+Albums and back.
 
-- the connection or server changes (generation bump);
-- a database update finishes (`isUpdatingDB` true → false — it is already
-  observed from `updating_db` in `status`, so scans from other clients count);
-- a memory warning arrives while Songs is not on screen.
-
-It reloads lazily on the next appearance, never proactively.
+**Changed during implementation:** the cache is keyed on server **and**
+`stats`' `db_update`, not on the connection. `connect()` runs on every
+foreground resume, so a per-connection cache would re-download the library
+after every unlock. Each visit sends one `stats` (a few lines); an unchanged
+`db_update` means the list in memory is current — which also catches scans by
+other clients or while the app was backgrounded, which watching `isUpdatingDB`
+would miss. The list is dropped on a server switch (`SongCatalog.reset()`) and
+on a memory warning while Songs is not on screen. A walk in flight is abandoned
+when `connect()`/`disconnect()` bump a Q-only walk ID. It reloads lazily on the
+next appearance, never proactively.
 
 ### Sorting and sections (pure, Models.swift, unit-tested)
 
@@ -185,7 +189,7 @@ It reloads lazily on the next appearance, never proactively.
   timer, no polling, no background refresh.
 - **Per open:** one walk per connection — here 11 small requests, 3.8 MiB,
   < 0.2 s of server time — then the cache serves every later visit until the
-  database or connection changes.
+  database or server changes.
 - **No per-render work:** sort once on `Q`; filter on input change; catalog
   progress on its own `ObservableObject`, so the ~11 progress ticks re-render
   only the Songs view.

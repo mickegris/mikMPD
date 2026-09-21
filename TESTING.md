@@ -373,3 +373,29 @@ Diagnostics on, so the command log records remote commands.
       including across a track change between them (FLAC never played in 1.7.0)
 - [ ] **30 minutes locked, on Wi-Fi** → no crash, no silent stop
 
+
+## 25. Songs (v1.7.2)
+
+Library → Songs (issue #14). The read-only live suite
+`LiveSongCatalogTests` covers the page walk against the server; these are the
+parts only a person can judge.
+
+- [ ] The chip order is Albums, Artists, Recent, **Songs**, Genres …
+- [ ] First open shows "Loading N of M songs…" briefly, then "N songs"
+- [ ] A–Z: lowercase titles ("am i evil?") sit under A, not after Z;
+      “Heroes” is under H; numbers and symbols under # at the top
+- [ ] The index on the right jumps to each letter
+- [ ] Z–A reverses rows and index, and jumps to the top; the choice survives a relaunch
+- [ ] Filter "heroes" matches titles and the album “Heroes”; clearing it restores the list
+- [ ] Tap a row → it plays; the playing row is marked
+- [ ] Swipe trailing: Add, Add Next; swipe leading: Playlist
+- [ ] Long press: Add Next, Add to Queue, Add to Playlist…, Go to Album, Go to Artist
+- [ ] Switch to Albums and back → the list is instant (no reload)
+- [ ] Run a database update from More → Statistics, then open Songs → it reloads
+- [ ] Pull to refresh reloads while keeping the list on screen
+- [ ] Switch server → the old server's songs are never shown
+- [ ] Background the app mid-load, come back → it finishes (or reloads) cleanly
+- [ ] **Energy**, Release build on device: scroll the whole list via the index,
+      then stop → CPU gauge returns to idle
+- [ ] Against an MPD **0.21** server (Chord Poly, or Debian buster's 0.21.5):
+      loads, sorts and plays
