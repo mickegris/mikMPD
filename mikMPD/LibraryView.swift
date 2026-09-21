@@ -1,7 +1,7 @@
 import SwiftUI
 
 // Chip-bar order follows this declaration order (CaseIterable).
-enum LibTab: String, CaseIterable { case albums="Albums"; case artists="Artists"; case recentlyAdded="Recent"; case genres="Genres"; case playlists="Playlists"; case radio="Radio"; case cd="CD"; case files="Files" }
+enum LibTab: String, CaseIterable { case albums="Albums"; case artists="Artists"; case recentlyAdded="Recent"; case songs="Songs"; case genres="Genres"; case playlists="Playlists"; case radio="Radio"; case cd="CD"; case files="Files" }
 
 extension LibTab {
     var sfSymbol: String {
@@ -13,13 +13,55 @@ extension LibTab {
         case .radio:         "antenna.radiowaves.left.and.right"
         case .cd:            "opticaldisc"
         case .recentlyAdded: "sparkles"
+        case .songs:         "music.note"
         case .files:         "folder"
         }
     }
 }
 
+/// Whether a Library chip's search is active, owned by `LibraryView`.
+///
+/// Leaving a chip mid-search for one with no filter (Recent, Radio, CD,
+/// Files) removed the *active* search bar abruptly — UIKit logs "A navigation
+/// item is losing its active search controller" — and from then on no chip's
+/// filter field appeared at all until relaunch. `LibraryView` therefore ends
+/// the search before it switches chips, which needs to know and set whether
+/// the search is active: hence this binding, read by `librarySearchable`.
+private struct LibrarySearchPresentedKey: EnvironmentKey {
+    static let defaultValue: Binding<Bool>? = nil
+}
+extension EnvironmentValues {
+    var librarySearchPresented: Binding<Bool>? {
+        get { self[LibrarySearchPresentedKey.self] }
+        set { self[LibrarySearchPresentedKey.self] = newValue }
+    }
+}
+
+private struct LibrarySearchable: ViewModifier {
+    @Environment(\.librarySearchPresented) private var presented
+    @Binding var text: String
+    let prompt: String
+    func body(content: Content) -> some View {
+        if let presented {
+            content.searchable(text: $text, isPresented: presented,
+                               placement: .navigationBarDrawer(displayMode: .always), prompt: Text(prompt))
+        } else {
+            content.searchable(text: $text, placement: .navigationBarDrawer(displayMode: .always), prompt: Text(prompt))
+        }
+    }
+}
+
+extension View {
+    /// `.searchable` for a Library chip: lets `LibraryView` end the search
+    /// before switching chips. Attach it outside any loading branch.
+    func librarySearchable(text: Binding<String>, prompt: String) -> some View {
+        modifier(LibrarySearchable(text: text, prompt: prompt))
+    }
+}
+
 struct LibraryView: View {
     @State private var tab: LibTab = .albums
+    @State private var searchPresented = false
     var body: some View {
         NavigationStack {
             VStack(spacing:0) {
@@ -33,10 +75,25 @@ struct LibraryView: View {
                 case .radio:         RadioView()
                 case .cd:            CDView()
                 case .recentlyAdded: RecentlyAddedView()
+                case .songs:         SongsTab()
                 case .files:         BrowserView()
                 }
             }
+            .environment(\.librarySearchPresented, $searchPresented)
             .navigationTitle("Library").navigationBarTitleDisplayMode(.inline)
+        }
+    }
+
+    /// End an active search first, and switch on the next turn of the run
+    /// loop, so the outgoing chip's search bar is already inactive when its
+    /// view goes away (see `LibrarySearchPresentedKey`).
+    private func select(_ t: LibTab) {
+        guard t != tab else { return }
+        if searchPresented {
+            searchPresented = false
+            DispatchQueue.main.async { tab = t }
+        } else {
+            tab = t
         }
     }
 
@@ -58,7 +115,7 @@ struct LibraryView: View {
 
     @ViewBuilder
     func tabChip(_ t: LibTab) -> some View {
-        let button = Button { tab = t } label: {
+        let button = Button { select(t) } label: {
             Label(t.rawValue, systemImage:t.sfSymbol).font(.subheadline)
         }
         if t == tab { button.buttonStyle(.glassProminent) }
@@ -128,7 +185,7 @@ struct AlbumListView: View {
                     .listStyle(.plain)
             }
         }
-        .searchable(text: $filter, prompt: "Filter albums…")
+        .librarySearchable(text: $filter, prompt: "Filter albums…")
         .onChange(of: filter) { _, _ in recomputeGroups() }
         .onChange(of: albumSort) { _, _ in recomputeGroups() }
         .onChange(of: discMap) { _, _ in recomputeGroups() }
@@ -454,9 +511,12 @@ struct ArtistListView: View {
                     NavigationLink(destination:ArtistDetailView(artist:a)){
                         Label(a.isEmpty ? "(unknown)" : a, systemImage:"person").lineLimit(2)
                     }
-                }.listStyle(.plain).searchable(text:$filter,prompt:"Filter artists…")
+                }.listStyle(.plain)
             }
         }
+        // Outside the loading branch: a search field attached only once the
+        // list exists is never installed in the navigation bar.
+        .librarySearchable(text:$filter,prompt:"Filter artists…")
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
                 Menu {
@@ -581,9 +641,12 @@ struct GenreListView: View {
                     NavigationLink(destination:GenreDetailView(genre:g)){
                         Label(g.isEmpty ? "(none)" : g, systemImage:"tag").lineLimit(2)
                     }
-                }.listStyle(.plain).searchable(text:$filter,prompt:"Filter genres…")
+                }.listStyle(.plain)
             }
         }
+        // Outside the loading branch: a search field attached only once the
+        // list exists is never installed in the navigation bar.
+        .librarySearchable(text:$filter,prompt:"Filter genres…")
         .onAppear{ guard genres.isEmpty else{return}; store.listTag("genre"){genres=$0;loading=false} }
     }
 }
@@ -1001,12 +1064,20 @@ extension View {
 struct SongRow: View {
     let song: MPDSong
     var isCurrentlyPlaying: Bool = false
+    /// Off where rows are not in album order (Songs), where "7" means nothing.
+    var showsTrackNumber: Bool = true
+    /// Adds the album after the artist, for lists that mix albums.
+    var showsAlbum: Bool = false
+    private var subtitle: String {
+        guard showsAlbum, !song.album.isEmpty else { return song.displayArtist }
+        return song.displayArtist.isEmpty ? song.album : "\(song.displayArtist) · \(song.album)"
+    }
     var body: some View {
         HStack(spacing:10){
-            if !song.track.isEmpty { Text(song.track.components(separatedBy:"/").first ?? song.track).font(.caption2).foregroundStyle(.secondary).frame(minWidth:24,alignment:.trailing) }
+            if showsTrackNumber, !song.track.isEmpty { Text(song.track.components(separatedBy:"/").first ?? song.track).font(.caption2).foregroundStyle(.secondary).frame(minWidth:24,alignment:.trailing) }
             VStack(alignment:.leading,spacing:1){
                 Text(song.displayTitle).font(.subheadline).lineLimit(1)
-                if !song.displayArtist.isEmpty { Text(song.displayArtist).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+                if !subtitle.isEmpty { Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
             }
             Spacer()
             if isCurrentlyPlaying { NowPlayingMarker() }
@@ -1014,6 +1085,223 @@ struct SongRow: View {
         }.padding(.vertical,2)
     }
 }
+// MARK: - Songs
+
+/// Where a Songs row's context menu can navigate.
+enum SongDestination: Hashable {
+    case album(album: String, artist: String)
+    case artist(String)
+}
+
+/// Observes the store so `SongListView` does not have to: its body is trivial,
+/// and `SongListView`'s inputs rarely change, so SwiftUI skips re-evaluating
+/// the big list on most store updates.
+private struct SongsTab: View {
+    @EnvironmentObject var store: MPDStore
+    var body: some View {
+        SongListView(store: store, catalog: store.songCatalog, isConnected: store.isConnected)
+    }
+}
+
+/// Every song, A–Z or Z–A (issue #14). The data and its loading live in
+/// `SongCatalog`; this view only derives sections from it.
+///
+/// It deliberately does **not** observe the store: its body walks up to
+/// 100 k rows, and the store publishes on every poll change. `store` is a
+/// plain reference for actions and `isConnected` a value input; the rows,
+/// which are lazily built, are what observe the store (for the playing marker).
+struct SongListView: View {
+    let store: MPDStore
+    @ObservedObject var catalog: SongCatalog
+    let isConnected: Bool
+    @AppStorage("librarySortSongs") private var sort: SongSort = .az
+    @State private var filter = ""
+    @State private var scope: SongFilterScope = .all
+    /// Derived on input change, never in `body` (CLAUDE.md, Conventions).
+    @State private var sections: [SongSection] = []
+    @State private var shownCount = 0
+    @State private var filterTask: Task<Void, Never>?
+    @State private var addRequest: AddToPlaylistRequest?
+    @State private var destination: SongDestination?
+
+    private func recompute() {
+        let shown = displayedCatalog(catalog.songs, filter: filter, scope: scope, sort: sort)
+        shownCount = shown.count
+        sections = songSections(shown)
+    }
+
+    var body: some View {
+        content
+            // On the outer view, not the list: the list does not exist yet when
+            // the view appears (it is loading), and a search field attached
+            // later is never installed in the navigation bar.
+            .librarySearchable(text: $filter, prompt: "Filter songs…")
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Menu {
+                        ForEach(SongSort.allCases, id: \.self) { s in
+                            Button { sort = s } label: {
+                                if sort == s { Label(s.rawValue, systemImage: "checkmark") }
+                                else { Text(s.rawValue) }
+                            }
+                        }
+                    } label: { Image(systemName: "arrow.up.arrow.down") }
+                }
+            }
+            .sheet(item: $addRequest) { AddToPlaylistSheet(uris: $0.uris) }
+            .navigationDestination(item: $destination) { d in
+                switch d {
+                case .album(let album, let artist):
+                    AlbumDetailView(album: album, artist: artist.isEmpty ? nil : artist, artistTag: "albumartist")
+                case .artist(let artist):
+                    ArtistDetailView(artist: artist)
+                }
+            }
+            .onAppear {
+                catalog.attach()
+                recompute()
+                store.loadSongCatalog()
+            }
+            .onDisappear { catalog.detach() }
+            .onChange(of: isConnected) { _, connected in if connected { store.loadSongCatalog() } }
+            .onChange(of: catalog.revision) { _, _ in recompute() }
+            .onChange(of: sort) { _, _ in recompute() }
+            .onChange(of: scope) { _, _ in recompute() }
+            .onChange(of: filter) { _, _ in
+                // Filtering 10 k rows per keystroke is wasted work; wait for a pause.
+                filterTask?.cancel()
+                filterTask = Task {
+                    try? await Task.sleep(for: .milliseconds(250))
+                    if !Task.isCancelled { recompute() }
+                }
+            }
+    }
+
+    @ViewBuilder private var content: some View {
+        switch catalog.phase {
+        case .loaded:
+            list
+        case .loading(let loaded, let total):
+            VStack(spacing: 12) {
+                ProgressView(value: Double(loaded), total: Double(max(total, 1)))
+                    .frame(maxWidth: 240)
+                Text("Loading \(loaded.formatted()) of \(total.formatted()) songs…")
+                    .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        case .idle:
+            if isConnected { ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity) }
+            else { ContentUnavailableView("Not Connected", systemImage: "wifi.slash",
+                                          description: Text("Connect to an MPD server to list its songs.")) }
+        case .tooLarge(let n):
+            ContentUnavailableView("Library Too Large", systemImage: "music.note",
+                description: Text("This library has \(n.formatted()) songs, more than the Songs list loads (\(songCatalogLimit.formatted())). Use Search to find a song."))
+        case .unsupported:
+            ContentUnavailableView("Needs MPD 0.21 or Newer", systemImage: "music.note",
+                description: Text("The Songs list uses search features this server does not have."))
+        case .failed(let message):
+            ContentUnavailableView {
+                Label("Could Not Load Songs", systemImage: "exclamationmark.triangle")
+            } description: { Text(message) } actions: {
+                Button("Try Again") { store.loadSongCatalog(force: true) }
+            }
+        }
+    }
+
+    private var list: some View {
+        ScrollViewReader { proxy in
+        List {
+            // In the list, not `.searchScopes`: with the search field pinned
+            // visible, the navigation bar keeps room for the hidden scope bar,
+            // and that invisible bar swallowed taps on the chip bar below it.
+            Section {
+                Picker("Filter by", selection: $scope) {
+                    ForEach(SongFilterScope.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .listRowSeparator(.hidden)
+            }
+            // Hidden when the filter matched nothing: the empty-state overlay says so.
+            if shownCount > 0 {
+            Section {} header: {
+                Text("\(shownCount.formatted()) song\(shownCount == 1 ? "" : "s")")
+            } footer: {
+                // Above the list, not below: a footer after 10 k rows is never seen.
+                Text("Tap to play. Long press or swipe to add to the queue, play next, or add to a playlist.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+            .id(SongListView.topID)
+            }
+            ForEach(sections) { section in
+                Section(section.label) {
+                    ForEach(section.songs) { entry in
+                        SongCatalogRow(song: entry.song,
+                                       onAddToPlaylist: { addRequest = AddToPlaylistRequest(uris: [entry.song.file]) },
+                                       onNavigate: { destination = $0 })
+                    }
+                }
+                .sectionIndexLabel(section.label)
+            }
+        }
+        .listStyle(.plain)
+        .listSectionIndexVisibility(.visible)
+        .overlay {
+            if shownCount == 0 && !filter.isEmpty { ContentUnavailableView.search(text: filter) }
+        }
+        .refreshable { store.loadSongCatalog(force: true) }
+        // A new direction starts at its beginning, not at the old offset —
+        // which would land somewhere in the middle of the reversed list.
+        .onChange(of: sort) { _, _ in proxy.scrollTo(SongListView.topID, anchor: .top) }
+        }
+    }
+    private static let topID = "songs-top"
+}
+
+/// One Songs row. The actions match `AlbumDetailView.trackRows`, so a song
+/// behaves the same in every list.
+private struct SongCatalogRow: View {
+    @EnvironmentObject var store: MPDStore
+    let song: MPDSong
+    let onAddToPlaylist: () -> Void
+    let onNavigate: (SongDestination) -> Void
+    var body: some View {
+        let current = isCurrentTrack(file: song.file, currentFile: store.currentSong.file)
+        SongRow(song: song, isCurrentlyPlaying: current, showsTrackNumber: false, showsAlbum: true)
+            .nowPlayingRow(current)
+            .playableRow { store.addAndPlay(uri: song.file) }
+            .swipeActions(edge: .trailing) {
+                Button { store.add(uri: song.file) } label: { Label("Add", systemImage: "plus") }.tint(.green)
+                Button { store.addNext(uri: song.file) } label: {
+                    Label("Add Next", systemImage: "text.line.first.and.arrowtriangle.forward")
+                }.tint(.orange)
+            }
+            .swipeActions(edge: .leading) {
+                Button(action: onAddToPlaylist) { Label("Playlist", systemImage: "music.note.list") }.tint(.indigo)
+            }
+            .contextMenu {
+                Section {
+                    Button { store.addNext(uri: song.file) } label: {
+                        Label("Add Next", systemImage: "text.line.first.and.arrowtriangle.forward")
+                    }
+                    Button { store.add(uri: song.file) } label: { Label("Add to Queue", systemImage: "plus") }
+                    Button(action: onAddToPlaylist) { Label("Add to Playlist…", systemImage: "music.note.list") }
+                }
+                Section {
+                    if !song.album.isEmpty {
+                        Button { onNavigate(.album(album: song.album, artist: song.linkArtist)) } label: {
+                            Label("Go to Album", systemImage: "square.stack")
+                        }
+                    }
+                    if !song.linkArtist.isEmpty {
+                        Button { onNavigate(.artist(song.linkArtist)) } label: {
+                            Label("Go to Artist", systemImage: "person")
+                        }
+                    }
+                }
+            }
+    }
+}
+
 struct ArtThumbByKey: View {
     @EnvironmentObject var store: MPDStore
     let artist: String; let album: String

@@ -28,6 +28,9 @@ final class MPDStore: ObservableObject {
     /// Elapsed time, which changes ten times a second while playing — observed
     /// only by the views that display it. See PlaybackClock.swift.
     let clock = PlaybackClock()
+    /// Library → Songs. Its own object for the same reason as `clock`: see
+    /// SongCatalog.swift.
+    let songCatalog = SongCatalog()
     var elapsed: Double {
         get { clock.elapsed }
         set { clock.elapsed = newValue }
@@ -312,6 +315,8 @@ final class MPDStore: ObservableObject {
                 self.playlistSearchAvailable = nil
                 self.storedPlaylistsAvailable = nil
                 self.recentlyAddedRung = nil
+                // A Songs walk from before this connection must not continue on it.
+                self.songCatalogWalkID &+= 1
                 try self.socket.connect(host: h, port: p, password: pw)
                 // MPD accepts connections without auth even when a password is
                 // required — commands then all ACK with a permission error.
@@ -361,7 +366,7 @@ final class MPDStore: ObservableObject {
         // Synchronous — eliminates the stale-flag race where .active fires before
         // a deferred DispatchQueue.main.async block runs, causing connect() to be skipped.
         isConnected = false
-        Q.async { self.socket.disconnect() }
+        Q.async { self.songCatalogWalkID &+= 1; self.socket.disconnect() }
     }
 
     /// Called on every foreground transition. Reconnects if the socket is gone;
@@ -501,6 +506,7 @@ final class MPDStore: ObservableObject {
         httpStreamURL = profile.streamURL
         lastUsedPartitionName = profile.lastPartition.isEmpty ? nil : profile.lastPartition
         resetServerState()
+        songCatalog.reset()     // the list belongs to the old server
         loadRecentlyPlayed()
         loadPlaybackContext()   // must follow resetServerState, which clears it
         connect()
@@ -1133,6 +1139,91 @@ final class MPDStore: ObservableObject {
                     return (ka ?? .distantPast) > (kb ?? .distantPast)
                 }
             DispatchQueue.main.async { completion(songs) }
+        }
+    }
+
+    // MARK: - Songs (Library → Songs)
+
+    /// Which Songs walk is current. Q-only, same invariant as the socket;
+    /// bumped by `connect()` and `disconnect()`, so a walk begun against one
+    /// connection can never append pages read from the next.
+    nonisolated(unsafe) private var songCatalogWalkID = 0
+
+    /// Loads every song for the Songs list, or confirms the cached list is still
+    /// current. See SongCatalog.swift for why it is paged, unsorted on the
+    /// server and sorted here. `force` skips the `db_update` check.
+    func loadSongCatalog(force: Bool = false) {
+        let catalog = songCatalog
+        guard isConnected, let token = catalog.begin() else { return }
+        let serverID = activeServerID
+        let cachedKey = force ? nil : catalog.loadedKey
+        Q.async { [weak self] in
+            guard let self else { return }
+            let walkID = self.songCatalogWalkID
+            @Sendable func end(_ outcome: SongCatalog.Outcome) {
+                DispatchQueue.main.async { catalog.finish(outcome, token: token) }
+            }
+            @Sendable func describe(_ error: Error) -> String {
+                if case MPDError.ack(let line) = error { return MPDStore.ackMessage(line) }
+                return error.localizedDescription
+            }
+
+            // Unchanged database, same server: the list in memory is current.
+            let dbUpdate: String
+            do {
+                var r: MPDRecord = [:]
+                for rec in try self.socket.command("stats") { r.merge(rec) { _, new in new } }
+                dbUpdate = r["db_update"] ?? ""
+            } catch { end(.failed(describe(error))); return }
+            let key = "\(serverID)|\(dbUpdate)"
+            if key == cachedKey { end(.unchanged); return }
+
+            // An ACK here means no filter expressions: MPD older than 0.21.
+            @Sendable func total() throws -> Int {
+                var r: MPDRecord = [:]
+                for rec in try self.socket.command(songCatalogCountCommand) { r.merge(rec) { _, new in new } }
+                return Int(r["songs"] ?? "") ?? 0
+            }
+            let first: Int
+            do { first = try total() }
+            catch MPDError.ack { end(.unsupported); return }
+            catch { end(.failed(describe(error))); return }
+            if first > songCatalogLimit { end(.tooLarge(first)); return }
+
+            let load = SongCatalogLoad(walker: SongCatalogWalker(total: first))
+            DispatchQueue.main.async { catalog.progress(0, first, token: token) }
+
+            // One page per Q.async: the poll and user commands queued meanwhile
+            // run between pages instead of waiting for the whole library.
+            @Sendable func perform(_ step: SongCatalogWalker.Step) {
+                guard walkID == self.songCatalogWalkID else { end(.abandoned); return }
+                switch step {
+                case .fetch(let start, let stop):
+                    do {
+                        let records = try self.socket.command(
+                            songCatalogPageCommand(start: start, end: stop))
+                        let next = load.walker.accept(page: records.map { MPDSong($0) })
+                        let loaded = load.walker.songs.count, all = load.walker.total
+                        DispatchQueue.main.async { catalog.progress(loaded, all, token: token) }
+                        self.Q.async { perform(next) }
+                    } catch { end(.failed(describe(error))) }
+                case .recount:
+                    do {
+                        let n = try total()
+                        if n > songCatalogLimit { end(.tooLarge(n)); return }
+                        let next = load.walker.restart(total: n)
+                        self.Q.async { perform(next) }
+                    } catch { end(.failed(describe(error))) }
+                case .done:
+                    // Sorting 10 k titles with locale-aware comparison is the one
+                    // expensive step; it runs once, off both main and Q.
+                    let songs = load.walker.songs
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        end(.loaded(sortedCatalog(songs), key: key))
+                    }
+                }
+            }
+            perform(load.walker.firstStep)
         }
     }
 
@@ -3095,4 +3186,11 @@ enum KeychainHelper {
               let data = result as? Data else { return nil }
         return String(data: data, encoding: .utf8)
     }
+}
+
+/// The walker of one Songs load, shared between that load's page blocks.
+/// Touched only on `Q`, one block at a time — the same invariant as `MPDSocket`.
+nonisolated private final class SongCatalogLoad: @unchecked Sendable {
+    var walker: SongCatalogWalker
+    init(walker: SongCatalogWalker) { self.walker = walker }
 }

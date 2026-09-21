@@ -252,6 +252,22 @@ enum ArtistSort: String, CaseIterable {
     case za = "Z–A"
 }
 
+/// Songs list order (Library → Songs). Z–A is the A–Z list reversed, never a
+/// second sort — see SongCatalog.swift.
+enum SongSort: String, CaseIterable {
+    case az = "A–Z"
+    case za = "Z–A"
+}
+
+/// Which field the Songs filter matches — the scope row under its search field.
+/// `allCases` order is the segment order.
+enum SongFilterScope: String, CaseIterable {
+    case all = "All"
+    case title = "Title"
+    case artist = "Artist"
+    case album = "Album"
+}
+
 /// Sort a grouped album list. Empty artist/base always sort last regardless of direction.
 nonisolated func sortedAlbumGroups(_ groups: [AlbumGroup], by sort: AlbumSort) -> [AlbumGroup] {
     groups.sorted { a, b in
