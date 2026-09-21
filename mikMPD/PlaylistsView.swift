@@ -64,7 +64,7 @@ struct PlaylistListView: View {
         }
         // Outside the loading branch: a search field attached only once the
         // list exists is never installed in the navigation bar.
-        .searchable(text: $filter, prompt: "Filter playlists…")
+        .librarySearchable(text: $filter, prompt: "Filter playlists…")
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button {

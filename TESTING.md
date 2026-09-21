@@ -386,6 +386,9 @@ parts only a person can judge.
       Playlists had none on first visit before v1.7.2)
 - [ ] Type a filter in Songs, switch to Albums → Albums' field is empty and
       its list unfiltered
+- [ ] **Songs with an active filter → Recent → Albums → Songs** (the v1.7.2 field
+      report): every filter chip still shows its field, and the chip bar still
+      responds on Songs. Repeat via Radio, CD and Files
 - [ ] First open shows "Loading N of M songs…" briefly, then "N songs"
 - [ ] A–Z: lowercase titles ("am i evil?") sit under A, not after Z;
       “Heroes” is under H; numbers and symbols under # at the top

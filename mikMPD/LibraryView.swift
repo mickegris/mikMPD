@@ -19,8 +19,49 @@ extension LibTab {
     }
 }
 
+/// Whether a Library chip's search is active, owned by `LibraryView`.
+///
+/// Leaving a chip mid-search for one with no filter (Recent, Radio, CD,
+/// Files) removed the *active* search bar abruptly — UIKit logs "A navigation
+/// item is losing its active search controller" — and from then on no chip's
+/// filter field appeared at all until relaunch. `LibraryView` therefore ends
+/// the search before it switches chips, which needs to know and set whether
+/// the search is active: hence this binding, read by `librarySearchable`.
+private struct LibrarySearchPresentedKey: EnvironmentKey {
+    static let defaultValue: Binding<Bool>? = nil
+}
+extension EnvironmentValues {
+    var librarySearchPresented: Binding<Bool>? {
+        get { self[LibrarySearchPresentedKey.self] }
+        set { self[LibrarySearchPresentedKey.self] = newValue }
+    }
+}
+
+private struct LibrarySearchable: ViewModifier {
+    @Environment(\.librarySearchPresented) private var presented
+    @Binding var text: String
+    let prompt: String
+    func body(content: Content) -> some View {
+        if let presented {
+            content.searchable(text: $text, isPresented: presented,
+                               placement: .navigationBarDrawer(displayMode: .always), prompt: Text(prompt))
+        } else {
+            content.searchable(text: $text, placement: .navigationBarDrawer(displayMode: .always), prompt: Text(prompt))
+        }
+    }
+}
+
+extension View {
+    /// `.searchable` for a Library chip: lets `LibraryView` end the search
+    /// before switching chips. Attach it outside any loading branch.
+    func librarySearchable(text: Binding<String>, prompt: String) -> some View {
+        modifier(LibrarySearchable(text: text, prompt: prompt))
+    }
+}
+
 struct LibraryView: View {
     @State private var tab: LibTab = .albums
+    @State private var searchPresented = false
     var body: some View {
         NavigationStack {
             VStack(spacing:0) {
@@ -38,7 +79,21 @@ struct LibraryView: View {
                 case .files:         BrowserView()
                 }
             }
+            .environment(\.librarySearchPresented, $searchPresented)
             .navigationTitle("Library").navigationBarTitleDisplayMode(.inline)
+        }
+    }
+
+    /// End an active search first, and switch on the next turn of the run
+    /// loop, so the outgoing chip's search bar is already inactive when its
+    /// view goes away (see `LibrarySearchPresentedKey`).
+    private func select(_ t: LibTab) {
+        guard t != tab else { return }
+        if searchPresented {
+            searchPresented = false
+            DispatchQueue.main.async { tab = t }
+        } else {
+            tab = t
         }
     }
 
@@ -60,7 +115,7 @@ struct LibraryView: View {
 
     @ViewBuilder
     func tabChip(_ t: LibTab) -> some View {
-        let button = Button { tab = t } label: {
+        let button = Button { select(t) } label: {
             Label(t.rawValue, systemImage:t.sfSymbol).font(.subheadline)
         }
         if t == tab { button.buttonStyle(.glassProminent) }
@@ -130,7 +185,7 @@ struct AlbumListView: View {
                     .listStyle(.plain)
             }
         }
-        .searchable(text: $filter, prompt: "Filter albums…")
+        .librarySearchable(text: $filter, prompt: "Filter albums…")
         .onChange(of: filter) { _, _ in recomputeGroups() }
         .onChange(of: albumSort) { _, _ in recomputeGroups() }
         .onChange(of: discMap) { _, _ in recomputeGroups() }
@@ -461,7 +516,7 @@ struct ArtistListView: View {
         }
         // Outside the loading branch: a search field attached only once the
         // list exists is never installed in the navigation bar.
-        .searchable(text:$filter,prompt:"Filter artists…")
+        .librarySearchable(text:$filter,prompt:"Filter artists…")
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
                 Menu {
@@ -591,7 +646,7 @@ struct GenreListView: View {
         }
         // Outside the loading branch: a search field attached only once the
         // list exists is never installed in the navigation bar.
-        .searchable(text:$filter,prompt:"Filter genres…")
+        .librarySearchable(text:$filter,prompt:"Filter genres…")
         .onAppear{ guard genres.isEmpty else{return}; store.listTag("genre"){genres=$0;loading=false} }
     }
 }
@@ -1080,11 +1135,7 @@ struct SongListView: View {
             // On the outer view, not the list: the list does not exist yet when
             // the view appears (it is loading), and a search field attached
             // later is never installed in the navigation bar.
-            .searchable(text: $filter, prompt: "Filter songs…")
-            // Shown as a segmented row under the field while filtering.
-            .searchScopes($scope, activation: .onSearchPresentation) {
-                ForEach(SongFilterScope.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-            }
+            .librarySearchable(text: $filter, prompt: "Filter songs…")
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Menu {
@@ -1160,6 +1211,16 @@ struct SongListView: View {
     private var list: some View {
         ScrollViewReader { proxy in
         List {
+            // In the list, not `.searchScopes`: with the search field pinned
+            // visible, the navigation bar keeps room for the hidden scope bar,
+            // and that invisible bar swallowed taps on the chip bar below it.
+            Section {
+                Picker("Filter by", selection: $scope) {
+                    ForEach(SongFilterScope.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .listRowSeparator(.hidden)
+            }
             // Hidden when the filter matched nothing: the empty-state overlay says so.
             if shownCount > 0 {
             Section {} header: {

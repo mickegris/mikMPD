@@ -185,10 +185,23 @@ next appearance, never proactively.
 
 ### Added after first review: filter scopes
 
-Owner request: a filter row choosing the field. `.searchScopes` adds a
-segmented **All / Title / Artist / Album** row under the filter field while it
-is active (`SongFilterScope` in Models.swift; not persisted — it resets with the
-field). Artist matches either the track artist or the album artist.
+Owner request: a filter row choosing the field: a segmented **All / Title /
+Artist / Album** row at the top of the Songs list (`SongFilterScope` in
+Models.swift; not persisted). Artist matches either the track artist or the
+album artist. It first shipped as `.searchScopes`; see below for why it moved.
+
+### Added after device testing: filter fields across the Library
+
+A screen recording showed the filter field vanishing from every chip after
+Songs (search active) → Recent → Albums. Reproduced in the simulator, and it
+needs no search at all: visiting any chip without a filter (Recent, Radio, CD,
+Files) collapsed the navigation-bar search drawer for good. Fixes, all in
+`librarySearchable` / `LibraryView`: pin the drawer with `displayMode: .always`;
+end an active search before switching chips; attach the field outside loading
+branches (Artists, Genres and Playlists had none on first visit); and move the
+Songs scope row into the list, because a hidden `.searchScopes` bar in a pinned
+drawer swallowed taps on the chip bar. Tried and rejected: `.id(tab)` on the
+stack root (no effect) and on the `NavigationStack` (resets the `TabView`).
 
 ## Energy (acceptance criterion)
 
