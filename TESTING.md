@@ -381,6 +381,11 @@ Library → Songs (issue #14). The read-only live suite
 parts only a person can judge.
 
 - [ ] The chip order is Albums, Artists, Recent, **Songs**, Genres …
+- [ ] Fresh launch, then each of Albums, Artists, Songs, Genres, Playlists →
+      each shows its own "Filter …" field at once (Artists, Genres and
+      Playlists had none on first visit before v1.7.2)
+- [ ] Type a filter in Songs, switch to Albums → Albums' field is empty and
+      its list unfiltered
 - [ ] First open shows "Loading N of M songs…" briefly, then "N songs"
 - [ ] A–Z: lowercase titles ("am i evil?") sit under A, not after Z;
       “Heroes” is under H; numbers and symbols under # at the top

@@ -60,9 +60,11 @@ struct PlaylistListView: View {
                     }
                 }
                 .listStyle(.plain)
-                .searchable(text: $filter, prompt: "Filter playlists…")
             }
         }
+        // Outside the loading branch: a search field attached only once the
+        // list exists is never installed in the navigation bar.
+        .searchable(text: $filter, prompt: "Filter playlists…")
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button {

@@ -456,9 +456,12 @@ struct ArtistListView: View {
                     NavigationLink(destination:ArtistDetailView(artist:a)){
                         Label(a.isEmpty ? "(unknown)" : a, systemImage:"person").lineLimit(2)
                     }
-                }.listStyle(.plain).searchable(text:$filter,prompt:"Filter artists…")
+                }.listStyle(.plain)
             }
         }
+        // Outside the loading branch: a search field attached only once the
+        // list exists is never installed in the navigation bar.
+        .searchable(text:$filter,prompt:"Filter artists…")
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
                 Menu {
@@ -583,9 +586,12 @@ struct GenreListView: View {
                     NavigationLink(destination:GenreDetailView(genre:g)){
                         Label(g.isEmpty ? "(none)" : g, systemImage:"tag").lineLimit(2)
                     }
-                }.listStyle(.plain).searchable(text:$filter,prompt:"Filter genres…")
+                }.listStyle(.plain)
             }
         }
+        // Outside the loading branch: a search field attached only once the
+        // list exists is never installed in the navigation bar.
+        .searchable(text:$filter,prompt:"Filter genres…")
         .onAppear{ guard genres.isEmpty else{return}; store.listTag("genre"){genres=$0;loading=false} }
     }
 }
