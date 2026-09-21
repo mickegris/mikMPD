@@ -387,6 +387,8 @@ parts only a person can judge.
 - [ ] The index on the right jumps to each letter
 - [ ] Z–A reverses rows and index, and jumps to the top; the choice survives a relaunch
 - [ ] Filter "heroes" matches titles and the album “Heroes”; clearing it restores the list
+- [ ] The scope row (All / Title / Artist / Album) appears under the field while
+      filtering; "soundgarden" finds 31 under All and Artist, none under Title
 - [ ] Tap a row → it plays; the playing row is marked
 - [ ] Swipe trailing: Add, Add Next; swipe leading: Playlist
 - [ ] Long press: Add Next, Add to Queue, Add to Playlist…, Go to Album, Go to Artist

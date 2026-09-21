@@ -259,6 +259,15 @@ enum SongSort: String, CaseIterable {
     case za = "Z–A"
 }
 
+/// Which field the Songs filter matches — the scope row under its search field.
+/// `allCases` order is the segment order.
+enum SongFilterScope: String, CaseIterable {
+    case all = "All"
+    case title = "Title"
+    case artist = "Artist"
+    case album = "Album"
+}
+
 /// Sort a grouped album list. Empty artist/base always sort last regardless of direction.
 nonisolated func sortedAlbumGroups(_ groups: [AlbumGroup], by sort: AlbumSort) -> [AlbumGroup] {
     groups.sorted { a, b in

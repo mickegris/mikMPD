@@ -1055,6 +1055,7 @@ struct SongListView: View {
     let isConnected: Bool
     @AppStorage("librarySortSongs") private var sort: SongSort = .az
     @State private var filter = ""
+    @State private var scope: SongFilterScope = .all
     /// Derived on input change, never in `body` (CLAUDE.md, Conventions).
     @State private var sections: [SongSection] = []
     @State private var shownCount = 0
@@ -1063,7 +1064,7 @@ struct SongListView: View {
     @State private var destination: SongDestination?
 
     private func recompute() {
-        let shown = displayedCatalog(catalog.songs, filter: filter, sort: sort)
+        let shown = displayedCatalog(catalog.songs, filter: filter, scope: scope, sort: sort)
         shownCount = shown.count
         sections = songSections(shown)
     }
@@ -1074,6 +1075,10 @@ struct SongListView: View {
             // the view appears (it is loading), and a search field attached
             // later is never installed in the navigation bar.
             .searchable(text: $filter, prompt: "Filter songs…")
+            // Shown as a segmented row under the field while filtering.
+            .searchScopes($scope, activation: .onSearchPresentation) {
+                ForEach(SongFilterScope.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            }
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Menu {
@@ -1104,6 +1109,7 @@ struct SongListView: View {
             .onChange(of: isConnected) { _, connected in if connected { store.loadSongCatalog() } }
             .onChange(of: catalog.revision) { _, _ in recompute() }
             .onChange(of: sort) { _, _ in recompute() }
+            .onChange(of: scope) { _, _ in recompute() }
             .onChange(of: filter) { _, _ in
                 // Filtering 10 k rows per keystroke is wasted work; wait for a pause.
                 filterTask?.cancel()
@@ -1148,6 +1154,8 @@ struct SongListView: View {
     private var list: some View {
         ScrollViewReader { proxy in
         List {
+            // Hidden when the filter matched nothing: the empty-state overlay says so.
+            if shownCount > 0 {
             Section {} header: {
                 Text("\(shownCount.formatted()) song\(shownCount == 1 ? "" : "s")")
             } footer: {
@@ -1156,6 +1164,7 @@ struct SongListView: View {
                     .font(.footnote).foregroundStyle(.secondary)
             }
             .id(SongListView.topID)
+            }
             ForEach(sections) { section in
                 Section(section.label) {
                     ForEach(section.songs) { entry in

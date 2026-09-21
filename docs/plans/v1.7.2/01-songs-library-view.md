@@ -183,6 +183,13 @@ next appearance, never proactively.
     queue, play next, or add to a playlist." — shown **above** the list, since a
     footer after 10 k rows is never seen.
 
+### Added after first review: filter scopes
+
+Owner request: a filter row choosing the field. `.searchScopes` adds a
+segmented **All / Title / Artist / Album** row under the filter field while it
+is active (`SongFilterScope` in Models.swift; not persisted — it resets with the
+field). Artist matches either the track artist or the album artist.
+
 ## Energy (acceptance criterion)
 
 - **Idle cost: zero.** Nothing is fetched until the Songs chip is opened; no

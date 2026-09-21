@@ -175,6 +175,24 @@ private func titles(_ list: [CatalogSong]) -> [String] { list.map(\.song.display
         #expect(titles(displayedCatalog(sorted, filter: "arrival", sort: .az)) == ["Anna"])
         #expect(displayedCatalog(sorted, filter: "  ", sort: .az).count == 3)
     }
+
+    /// "Road" is in an album name only; scoped to Title it matches nothing.
+    @Test func scopeLimitsTheField() {
+        #expect(titles(displayedCatalog(sorted, filter: "road", scope: .album, sort: .az)) == ["Crash"])
+        #expect(displayedCatalog(sorted, filter: "road", scope: .title, sort: .az).isEmpty)
+        #expect(displayedCatalog(sorted, filter: "road", scope: .artist, sort: .az).isEmpty)
+        #expect(titles(displayedCatalog(sorted, filter: "abba", scope: .artist, sort: .az)) == ["Anna"])
+        #expect(titles(displayedCatalog(sorted, filter: "anna", scope: .title, sort: .az)) == ["Anna"])
+    }
+
+    /// A compilation track is found by its album artist as well as its own.
+    @Test func artistScopeMatchesAlbumArtist() {
+        let s = MPDSong(["file": "va/1.flac", "title": "Street Life", "artist": "Randy Crawford",
+                         "albumartist": "Various Artists", "album": "Jackie Brown"])
+        let list = sortedCatalog([s], locale: en)
+        #expect(displayedCatalog(list, filter: "various", scope: .artist, sort: .az).count == 1)
+        #expect(displayedCatalog(list, filter: "crawford", scope: .artist, sort: .az).count == 1)
+    }
 }
 
 @Suite struct SongCatalogWalkerTests {

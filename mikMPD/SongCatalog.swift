@@ -148,14 +148,25 @@ nonisolated func songSections(_ songs: [CatalogSong], locale: Locale = .current)
     return out
 }
 
-/// The list as shown: filtered (title, artist or album) and in the chosen
-/// direction. Z–A is the A–Z list reversed.
-nonisolated func displayedCatalog(_ sorted: [CatalogSong], filter: String, sort: SongSort) -> [CatalogSong] {
+/// The list as shown: filtered on the scope's field(s) and in the chosen
+/// direction. Z–A is the A–Z list reversed. Artist matches either credit
+/// (`displayArtist` or `groupingArtist`), so a compilation track is found by
+/// its own artist and by the album artist.
+nonisolated func displayedCatalog(_ sorted: [CatalogSong], filter: String,
+                                  scope: SongFilterScope = .all, sort: SongSort) -> [CatalogSong] {
     let q = filter.trimmingCharacters(in: .whitespaces)
+    func title(_ s: MPDSong) -> Bool { s.displayTitle.localizedCaseInsensitiveContains(q) }
+    func artist(_ s: MPDSong) -> Bool {
+        s.displayArtist.localizedCaseInsensitiveContains(q) || s.groupingArtist.localizedCaseInsensitiveContains(q)
+    }
+    func album(_ s: MPDSong) -> Bool { s.album.localizedCaseInsensitiveContains(q) }
     let filtered = q.isEmpty ? sorted : sorted.filter {
-        $0.song.displayTitle.localizedCaseInsensitiveContains(q)
-            || $0.song.displayArtist.localizedCaseInsensitiveContains(q)
-            || $0.song.album.localizedCaseInsensitiveContains(q)
+        switch scope {
+        case .all:    title($0.song) || artist($0.song) || album($0.song)
+        case .title:  title($0.song)
+        case .artist: artist($0.song)
+        case .album:  album($0.song)
+        }
     }
     return sort == .az ? filtered : filtered.reversed()
 }
